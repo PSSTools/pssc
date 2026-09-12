@@ -556,9 +556,24 @@ Every test that could loop (GC-4.4 especially) carries `@pytest.mark.timeout`.
 
 ### 7.1 What works today — measured, not assumed
 
-Measured 2026-09-11 by driving one representative of each group through the bc
-harness (`scratchpad/probe_matrix.py`, 27 cases). Status is what the *toolchain*
-does, not what a test asserts.
+Re-measured **2026-09-12** with `tests/unit/integration/_generic_constraint_probe.py`
+(29 cases, promoted out of the scratchpad). Status is what the *toolchain* does,
+not what a test asserts.
+
+**Every remaining failure is now provably not a generic-constraint problem.** Each
+failing case carries a `control`: the same model with the generic constraint
+written out by hand. If the control dies identically the row reports `NOT-OURS`
+and names what actually broke, so the work lands on the layer that owns it. All
+five remaining failures report that.
+
+What changed since 2026-09-11 is dv-solve, not this frontend. The
+arithmetic-in-a-comparison limit that blocked GC-2.4 and GC-3.5 is **closed** —
+arithmetic now compiles under `<`/`>`/`!=`, chained, on both sides, in an `||`
+leaf, in an implication or if/else consequent, and under a negated membership.
+Closing it needed thirteen fixes, the last of them found by driving these very
+cases: a reified comparison propagated only one of its two operands, turning
+`(k<3) || (j < k+2)` into a false unsat. See
+`packages/dv-solve/docs/expr_coverage_gaps_2026-09-11.md`.
 
 | Group | Status | Evidence |
 |---|---|---|
@@ -569,22 +584,22 @@ does, not what a test asserts.
 | GC-1.7 conflicting generics | **works; provenance present, unused** | `CompileUnsatError` — right *class* of answer (unsat, not a silent wrong one). Each contributing statement now names its declaration (W6), but no consumer reads it, so the *message* still names nothing (GC-11.4) |
 | GC-2.1/2.2 literal params, two refs | **works** | intersection of two instantiations holds |
 | GC-2.3 actual is a rand field | **works** | |
-| GC-2.4 actual is an expression | **blocked, not ours** | see W4.1 — `x < a + 1` fails *without any generic constraint* |
+| GC-2.4 actual is an expression | **works** | was W4.1; dv-solve compiles `x < a + 1` now, so the actual may be any expression |
 | GC-2.5 `const` parameter | **works** (accepted; not enforced — NEG-9) | |
 | GC-2.7 zero-parameter form | **works** | |
 | GC-3.7 value-yielding | **works** (W2) | the expression is substituted at each use site, so two references reify at their own widths |
-| GC-3.1 value-yielding `max` | **substitutes; unsolvable** | the LRM's own body is a ternary, and be-bc lowers no ternary at all (W4.5) |
-| GC-3.5 value-yielding, typed | **substitutes; unsolvable** | `x == twice(10)` becomes `x == (10 + 10)`, past dv-solve's arithmetic limit (W4.1) |
+| GC-3.1 value-yielding `max` | **substitutes; NOT-OURS** | the LRM's own body is a ternary and be-bc lowers no `ExprIfExp` at all, generic or not. The *second* wall behind it is gone: dv-solve now reifies a var-var inequality condition, so the be-bc lowering alone should turn this green |
+| GC-3.5 value-yielding, typed | **works** | `x == twice(10)` becomes `x == (10 + 10)`, which dv-solve now folds and solves |
 | NEG-8 value form as a statement | **works, good message** | "yields a value, not a constraint … use it in an expression" |
 | GC-4.4 ungated recursion | **works** | reported by name, as *missing a gate* rather than as a bare cycle (W3) |
-| GC-5.1 struct scope | **unknown** | harness cannot observe struct sub-fields — see W4 |
+| GC-5.1 struct scope | **resolves; NOT-OURS** | no longer unknown. The frontend is correct — `c` reaches the IR holding `self.x < 20` and `self.x > 10`, provenance-stamped to `lt`. A struct is never flattened into the solve problem: `rand S s` arrives as one scalar var that solves to 0, so a *plain* constraint inside `S` is equally unobservable. Same family as GC-9.6 |
 | GC-5.3 component scope | **works** (W1b) | body may use only its parameters; reaching for a component field is now reported |
 | GC-5.4/5.5 package scope | **works** (W1b) | was: reference resolved, then `ast2ir` dropped it and the constraint silently vanished |
-| GC-6.1/6.2 inheritance/shadowing | **resolves; unobservable** | expansion is correct in the IR, but an action inheriting from another reaches the solver with no fields at all — see W4.4 |
+| GC-6.1/6.2 inheritance/shadowing | **resolves; NOT-OURS** | expansion is correct in the IR; `action A : Base` reaches the solver with no fields at all, and the control confirms it (`unsupported constraint expression ExprAttribute`) for a plain inherited constraint too — see W4.4 |
 | GC-9.1/9.2 under if/else, implication | **works** (W1a) | each arm instantiates its own reference; the condition still selects between them |
 | GC-9.5 `unique` in a generic body | **works** | |
-| GC-9.6 `foreach` in a generic body | **broken twice** | be-bc lacks array flattening *and* pssparser emits an internal error — see W5 |
-| GC-9.7 inline `with {}` | **blocked, not ours** | be-bc: "inline traversal constraints are a later phase" |
+| GC-9.6 `foreach` in a generic body | **NOT-OURS** | be-bc lacks array flattening (`foreach constraints require array flattening`); the control fails identically. The pssparser `Failed to get scope` diagnostic (§7.5, W5) still prints and is still unaddressed — it just is not what blocks the row |
+| GC-9.7 inline `with {}` | **NOT-OURS** | be-bc: "inline traversal constraints are a later phase"; the control confirms it |
 | GC-10 deprecated `dynamic` | **works** (inertness); warning untested | |
 | NEG-1 local var in body | **error, structural** (W3) | a syntax error, and correctly so — PSS's constraint grammar admits no variable declaration, so §13.1.2 a holds for *every* constraint; a fixed one rejects it identically |
 | NEG-6 typo'd reference | **works, good message** | `unknown identifier 'gg'; did you mean 'g'?` |
@@ -595,9 +610,12 @@ does, not what a test asserts.
 | GC-11.1/11.2/11.3 provenance | **works** (W6) | every instantiated statement, substituted value and folded operand carries `ir.Provenance`: the declaration chain, the declaring scope, and a per-reference site number |
 | GC-11.4 unsat names both | **data present; no consumer** | the two statements name `lo` and `hi`; dv-solve's unsat report reads neither, and §8.4 does not require it to |
 
-The shape of that table is the plan. Almost every "broken" row is one of two
-defects, and almost every "blocked" row is not a generic-constraints problem at
-all.
+The shape of that table was the plan, and the plan is now spent: every frontend
+workstream has landed, and **no row is blocked on generic constraints**. What is
+left is four gaps in layers below — be-bc ternary lowering, struct flattening,
+array flattening, type inheritance — plus one declared-later-phase (inline
+traversal `with {}`). Each is named by the row it blocks and confirmed by that
+row's control.
 
 ### 7.2 The two defects behind most of the failures
 
@@ -722,9 +740,10 @@ site means each reference is typed by its own arguments and its own context, whi
 specialization machinery at all. Recording one type on the declaration would invite
 reifying once and reusing it, which is the thing GC-3.7/3.8 exist to catch.
 
-What W2 does **not** get is a solve for most of GC-3, because the substituted
-arithmetic lands outside what dv-solve compiles (W4.1) and the LRM's own ternary
-body is not lowered at all (W4.5). Those cases assert on the IR instead, each
+What W2 did **not** get, at the time, was a solve for most of GC-3: the
+substituted arithmetic landed outside what dv-solve compiled (W4.1) and the LRM's
+own ternary body is not lowered at all (W4.5). W4.1 closed on 2026-09-12, so
+GC-3.5 now solves and only the ternary rows are left. Those cases assert on the IR instead, each
 naming the hand-written control that fails identically without any generic
 constraint — and they assert the *rendered expression*, not merely that no call
 remains, since a dropped reference would also leave no call.
@@ -853,9 +872,9 @@ Ordered by leverage. W1 turned six broken rows green.
 |---|---|---|---|
 | ~~**W1a**~~ ✅ | Expand references **nested inside** constraint statements and boolean expressions — if/else arms, implication consequents, `foreach` bodies, nested scopes, and operands of `&&`/`\|\|`/`!` | GC-1.5, GC-9.1, GC-9.2 green | pssc |
 | ~~**W1b**~~ ✅ | Resolve declarations in **other scopes** — component, package (`static`), and base types | GC-5.3/5.4/5.5 green; GC-6.1/6.2 resolve but are blocked by W4.4 | pssc |
-| ~~**W2**~~ ✅ | **Value-yielding form**: lower a reference in value position by substituting the single expression at the use site | GC-3.7 and NEG-8 green; the rest of GC-3 substitutes correctly but waits on W4.1/W4.5 | pssc |
+| ~~**W2**~~ ✅ | **Value-yielding form**: lower a reference in value position by substituting the single expression at the use site | GC-3.5/3.7 and NEG-8 green (GC-3.5 since W4.1 closed); GC-3.1/3.3/3.4 substitute correctly and wait on W4.5 alone | pssc |
 | ~~**W3**~~ ✅ | **Diagnostics at the frontend** instead of as be-bc lowering errors: `default` under a generic (§13.3 g), a random actual for a `const` parameter, random-gated recursion (§13.1.2 d), shadowing with a mismatched signature (§13.1.2 c). NEG-1 (§13.1.2 a) closed as a grammar rule — see §7.2.4 | NEG-1, NEG-4, NEG-5, NEG-7, NEG-9, GC-4.3, GC-4.4, GC-6.3/6.4 green | pssc |
-| **W4** | **Not generic constraints** — five independent blockers found while probing (§7.4) | GC-2.4, GC-3.1–3.5, GC-5.1, GC-9.6, GC-9.7, GC-7.x | dv-solve, be-bc, harness |
+| **W4** | **Not generic constraints** — five independent blockers found while probing (§7.4). **W4.1 (dv-solve arithmetic) is closed**; W4.2 is not the harness after all but missing struct flattening | still blocks GC-3.1/3.3/3.4, GC-5.1, GC-9.6, GC-9.7, GC-7.x | be-bc, ir-core lowering |
 | **W5** | **pssparser**: a parameter referenced from a `foreach` body inside a generic constraint produces `TaskResolveSymbolPathRef: Failed to get scope`, and that message never reaches the marker list (§7.5) | GC-9.6 | pssparser |
 | ~~**W6**~~ ✅ | **Provenance** (decision §8.4): lowered constraints carry the generic they came from — the chain, the declaring scope and a per-reference site number, as inert names rather than node links (§7.2.5) | GC-11.1/11.2/11.3 green; GC-11.4 has the data but no consumer | pssc + ir-core |
 
@@ -863,41 +882,39 @@ Ordered by leverage. W1 turned six broken rows green.
 
 Worth stating separately so they are not "fixed" in the wrong place:
 
-1. **Arithmetic in a comparison is mostly not compiled — by dv-solve, not be-bc.**
-   Re-measured while implementing W2, because W2's whole output is arithmetic and
-   the attribution had to be right. be-bc lowers these fine; they fail in the
-   solver, as `CompileIncompleteError: constraint(s) could not be compiled
-   natively`, which is a *different* failure from the `LoweringError` in items 3
-   and 5 and points at a different repo.
+1. ~~**Arithmetic in a comparison is mostly not compiled — by dv-solve, not
+   be-bc.**~~ ✅ **CLOSED 2026-09-12.** All ten shapes that used to fail now
+   solve through the bc path: under `<`/`>`/`!=`, two chained operations,
+   arithmetic on both sides, in an implication or if/else consequent, in an `||`
+   leaf, literal-only, and under a negated membership. GC-2.4 and GC-3.5 are
+   green.
 
-   The boundary: **one** arithmetic operation with a bare variable *or* a
-   constant on the other side of an `==`. With no generic constraint anywhere,
-   `j == k + 1`, `j == k * 2`, `j == k + l`, `k + 1 == 200` and `x % 4 == 0` all
-   solve, while all of these fail:
+   Kept as a record because the attribution was the hard part and the shape of
+   the fix is worth knowing. dv-solve has two engines taking the same
+   `SolveProblem`, and every shape the propagator engine rejected its own
+   bit-blasting engine solved correctly — a coverage gap in one engine's shape
+   matcher, not a missing capability. One missing function arm (`_value_to_var`
+   had no `EXPR_BINARY` case) accounted for most of the table, which is why `&&`
+   worked where `||` failed on the identical leaf.
 
-   | shape | example |
-   |---|---|
-   | arithmetic under `<`/`>`/`!=` | `x < a + 1`, `x > a - 1`, `x != a + 1` |
-   | two chained operations | `j == (k + 1) + 1`, `j == k * 2 + 1` |
-   | arithmetic on both sides | `j + 1 == k + 2` |
-   | arithmetic in an equality under an implication | `sel == 1 -> j == k + 1` |
-   | arithmetic in an equality under `\|\|` | `j == k + 1 \|\| sel > 200` |
-   | literal-only arithmetic (not folded) | `x == 10 + 10` |
+   The sting in the tail: fixing the shape matcher **exposed a false unsat**.
+   Reified `guard ↔ (x ≤ y)` propagated only `x`, never `y`, in its guard=0
+   branch — sufficient while reification only ever ran against a constant, and
+   not once both operands could be variables. `(k<3) || (j < k+2)` came back
+   `NO-SOLUTION` on a problem with five models. Propagation that is sound but
+   deduces nothing is indistinguishable from unsat at the API, which is the
+   failure mode to keep in mind when reading any "unsat" from this path. Full
+   account in `packages/dv-solve/docs/expr_coverage_gaps_2026-09-11.md` (G13).
 
-   This blocks GC-2.4, GC-3.2/3.3/3.4 and GC-3.5.
-
-   **Written up in full, at dv-solve's own API**, in
-   `packages/dv-solve/docs/expr_coverage_gaps_2026-09-11.md` (probe beside it).
-   The short version: dv-solve has two engines that both take a `SolveProblem`,
-   and every shape the propagator engine rejects, its own bit-blasting engine
-   solves correctly — so it is a coverage gap in one engine's shape matcher with
-   no fallback, not a missing capability. One missing function arm
-   (`_value_to_var` has no `EXPR_BINARY` case) accounts for most of the table,
-   and `&&` works where `||` fails on the identical leaf because the two take
-   different paths.
-2. **The harness cannot observe struct sub-fields.** `rand S s;` yields one
-   result key `s`, so a constraint on `s.x` cannot be checked. Blocks GC-5.1 and
-   every struct-scoped case. File against `_bc_harness.py`.
+2. **A struct is never flattened into the solve problem.** Re-measured
+   2026-09-12, and this is *not* the harness limitation it was first filed as.
+   `rand S s;` reaches the solver as one scalar var that solves to 0, so no
+   constraint inside `S` — generic or plain — has anything to act on; the
+   harness yielding a single result key `s` is a symptom, not the cause. The
+   control in the probe states the same bound by hand and is equally
+   unobservable. Blocks GC-5.1 and every struct-scoped case. File against the
+   lowering (`PSSToScenarioPass` / be-bc), alongside item 3 — it is the same
+   missing aggregate flattening, one level up from arrays.
 3. **`foreach` flattening and inline `with {}` traversal constraints** are
    declared later-phase work by be-bc's own error messages. Blocks GC-9.6, GC-9.7
    and all of GC-7.
@@ -918,15 +935,14 @@ Worth stating separately so they are not "fixed" in the wrong place:
    implementing W2. File against be-bc — and note §2 anticipated this as the
    `expr_ite` risk, which turns out to be not weak propagation but no support.
 
-   **And there is a second blocker stacked underneath it.** Measured at
-   dv-solve's API on 2026-09-11: a ternary with a var-var *inequality* condition
-   — `(k < l) ? l : k`, i.e. the LRM's shape exactly — is rejected by dv-solve's
-   propagator engine too, while `(k == 1) ? l : k` and `(k < 10) ? l : k` both
-   compile. So landing the be-bc lowering alone will not make GC-3.1/3.4 solve;
-   the reification gap (R2 in
-   `packages/dv-solve/docs/expr_coverage_gaps_2026-09-11.md`) has to land as
-   well. Worth knowing before anyone times the be-bc work and expects the rows
-   to turn green.
+   ~~**And there is a second blocker stacked underneath it.**~~ ✅ **That half is
+   closed (2026-09-12).** A ternary with a var-var *inequality* condition —
+   `(k < l) ? l : k`, the LRM's shape exactly — used to be rejected by dv-solve's
+   propagator engine as well, while `(k == 1) ? l : k` compiled. R2 generalised
+   reification to all six comparisons over two materialised operands, so the
+   condition is no longer the obstacle. **Landing the be-bc lowering should now
+   be sufficient** to turn GC-3.1/3.4 green, where before it would have hit a
+   second wall.
 
 ### 7.5 A silent diagnostic
 
@@ -956,7 +972,7 @@ The suite is written in full up front; groups land as the implementation does.
 | 2 (W1b) ✅ | **W1b**, then GC-5.3/5.4/5.5, GC-6.1/6.2 | **Done 2026-09-11** (§7.2.1). GC-5.3/5.4/5.5 green; GC-6.x resolves in the IR but waits on W4.4. |
 | 2 (W1a) ✅ | **W1a**, then GC-1.5, GC-9.1/9.2 | **Done 2026-09-11** (§7.2.2). Expansion now recurses through nested statements and folds a reference used as an operand. |
 | 3 (W3) ✅ | **W3**, then NEG-1/4/5/7/9, GC-4.3, GC-6.3/6.4 | **Done 2026-09-11** (§7.2.4). Five diagnostics moved to the frontend; NEG-1 closed as a grammar rule. |
-| 4 (W2) ✅ | **W2**, then GC-3 | **Done 2026-09-11** (§7.2.3). GC-3.7 and NEG-8 solve; GC-3.1/3.3/3.4/3.5 substitute correctly and are asserted on the IR, gated on W4.1 (dv-solve arithmetic) and W4.5 (no ternary lowering). |
+| 4 (W2) ✅ | **W2**, then GC-3 | **Done 2026-09-11** (§7.2.3). GC-3.7, NEG-8 and — since W4.1 closed on 2026-09-12 — GC-3.5 solve. GC-3.1/3.3/3.4 substitute correctly and are asserted on the IR, now gated on W4.5 (be-bc ternary lowering) **alone**. |
 | 5 (W6) ✅ | **W6**, then GC-11 | **Done 2026-09-11** (§7.2.5). `ir.Base.provenance`; every instantiation names its declaration chain and reference site. GC-11.4 stops at "the data is present" — no consumer reads it, which §8.4 anticipated. |
 | **6** | GC-4 (recursion over a list), GC-9.3–9.6, GC-7, GC-8 | Gated on W4 — array flattening, inline `with`, and scenario-level lookahead are be-bc work, not frontend work. |
 
@@ -967,8 +983,16 @@ constraint test can mask a partially-correct implementation indefinitely.
 
 **Every xfail reason must name the workstream** (W1a, W4.1, …) rather than say
 "not implemented". The probe above exists because the previous round of reasons
-did not distinguish "our bug" from "a be-bc gap", and two of the three
-`SOLVE-FAIL` rows turned out not to be generic-constraint problems at all.
+did not distinguish "our bug" from "a be-bc gap" — and the point has only been
+reinforced: with controls added, **all five** remaining failing rows report
+`NOT-OURS`. An xfail whose reason says "not implemented" would have sent every
+one of them to the wrong repo.
+
+W4.1 (dv-solve arithmetic) is closed as of 2026-09-12, so no new xfail should
+cite it. The landed suite has no W4.1-gated xfail to remove — its only marker is
+a *conditional* one on a pre-phase-1a pssparser, which does not fire on a current
+parser — but any case that asserts on the IR *because* the arithmetic would not
+solve can now assert the solve instead, which is the stronger claim.
 
 Rough sizing: ~61 test functions, ~9 of them negative. Landed so far: 71 —
 `tests/unit/integration/test_generic_constraints.py` (58, all passing) and
