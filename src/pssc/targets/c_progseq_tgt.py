@@ -7,8 +7,8 @@ functions, and a component struct + factory. The memory-access seam is selected
 by ``--link-style`` (vtable / direct / mmio); the register accessors and every
 operation body are emitted identically across the three styles.
 
-Design: design/pss-c-cpp-progseq-gen-design.md (§3)
-Plan:   design/pss-c-cpp-progseq-gen-impl-plan.md
+Design: docs/design/pss-c-cpp-progseq-gen-design.md (§3)
+Plan:   docs/design/pss-c-cpp-progseq-gen-impl-plan.md
 """
 from __future__ import annotations
 

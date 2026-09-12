@@ -27,7 +27,7 @@ is not the code under test:
    generated `pssc_reg_pkg.sv` and the REAL generated constants against a stub
    bus and checks the resulting register value. Structural assertions on
    generated text have missed this class of bug before (see the operand-
-   bracketing defect in `docs/reg-masked-access-status.md` §5).
+   bracketing defect in `docs/design/reg-masked-access-status.md` §5).
 """
 import argparse
 import os

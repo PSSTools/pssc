@@ -3,7 +3,7 @@
 They used not to. `!x` reached pssc as `x`, and so did `-x` and `~x`: the
 parser's `visitExpression` built the operand of a unary expression and then
 constructed nothing, so the operator was discarded with no diagnostic at any
-severity. See `docs/pssparser-defects-2026-08-02.md`, D5.
+severity. See `docs/design/pssparser-defects-2026-08-02.md`, D5.
 
 This was the most damaging defect in the toolchain, because the output is not
 wrong-looking -- it is *inverted*. Five operations in the WB DMA operation model

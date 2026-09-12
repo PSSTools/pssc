@@ -16,8 +16,8 @@ why a model like WB DMA -- whose entire per-channel operation surface lives on a
 sub-component -- generated a header that compiled cleanly and contained none of
 the operations anybody wanted.
 
-Design: design/pss-c-cpp-progseq-gen-design.md (§3.5, §3.6, §3.7),
-docs/op-model-c-embedded-design.md (§4).
+Design: docs/design/pss-c-cpp-progseq-gen-design.md (§3.5, §3.6, §3.7),
+docs/design/op-model-c-embedded-design.md (§4).
 """
 from __future__ import annotations
 

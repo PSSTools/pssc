@@ -18,7 +18,7 @@ Both are fixed by the three-pass elaboration in
 distinction is the whole point: every input below parses cleanly and exits 0 in
 both orders, before and after the fix. A test that asserted "no exception" would
 have passed throughout -- which is exactly how this survived. See
-`docs/pssparser-defects-2026-08-02.md` D5 for the same lesson learned the same
+`docs/design/pssparser-defects-2026-08-02.md` D5 for the same lesson learned the same
 way.
 """
 import pytest
@@ -102,7 +102,7 @@ def test_an_extension_adding_a_field_survives_either_order(tmp_path, reverse):
 
 
 # --------------------------------------------------------------------------
-# constants folded into an array size (file-order-probes.md E2)
+# constants folded into an array size (packages/dv-flow-libpss/docs/file-order-probes.md E2)
 
 _CONST = "package m_pkg { const int N_CH = 4; }\n"
 _ARRAY = """

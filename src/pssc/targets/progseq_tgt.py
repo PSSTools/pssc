@@ -6,8 +6,8 @@ structs + register-model classes, per-component export-API interface classes, an
 import-API interface (extends the core ``pss_mem_if``), implementation
 classes, a parameterized import adapter, and a factory.
 
-Design: design/pss-programming-seq-gen-design.md
-Plan:   design/pss-programming-seq-gen-impl-plan.md
+Design: docs/design/pss-programming-seq-gen-design.md
+Plan:   docs/design/pss-programming-seq-gen-impl-plan.md
 """
 from __future__ import annotations
 

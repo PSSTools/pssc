@@ -1,4 +1,4 @@
-"""The invariant of docs/reg-masked-access-plan.md §1.1.
+"""The invariant of docs/design/reg-masked-access-plan.md §1.1.
 
     The IR for every spelling of a masked register write is the same IR, and no
     field-name string survives into it.

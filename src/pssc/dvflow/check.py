@@ -7,7 +7,7 @@ Why ``order_check`` compares counts, not status
 -----------------------------------------------
 
 PSS has no declare-before-use rule, but front ends do not all implement that.
-``docs/pssparser-defects-2026-08-02.md`` D3 records a front end that, handed
+``docs/design/pssparser-defects-2026-08-02.md`` D3 records a front end that, handed
 the same model in a different file order, leaves most cross-file references
 unresolved -- and still reports ``0 errors`` and exits 0. A regression test
 that asserts on the exit status passes identically before and after the fix,

@@ -2,7 +2,7 @@
 
 The operation model is a close transcription of its PSS source, so the prose
 belongs in the output at the same points -- it is the part a reader cannot
-recover from the code. See docs/pss-comment-propagation-plan.md in fw-wb-dma.
+recover from the code. See docs/design/pss-comment-propagation-plan.md in fw-wb-dma.
 
 Two things are asserted throughout, and the second matters more than the first:
 

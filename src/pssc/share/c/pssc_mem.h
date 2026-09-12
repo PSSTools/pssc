@@ -7,7 +7,7 @@
  *
  * Every generated register accessor and operation body calls those primitives
  * and is byte-identical across the three link styles; only the seam selected at
- * generation time differs. See design/pss-c-cpp-progseq-gen-design.md (§3.2).
+ * generation time differs. See docs/design/pss-c-cpp-progseq-gen-design.md (§3.2).
  */
 #ifndef PSSC_MEM_H
 #define PSSC_MEM_H

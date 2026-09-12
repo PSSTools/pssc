@@ -46,7 +46,7 @@ def test_no_dataclasses_ir_shim_in_pssc():
     The canonical IR lives in zuspec.ir.core; importing it through
     ``from zuspec.dataclasses import ir`` is a legacy alias that re-couples pssc
     to zuspec-dataclasses.  Every pssc source file must target zuspec.ir.core
-    directly (see docs/be-py-runtime-relocation-design.md, Phase 0).
+    directly (see docs/design/be-py-runtime-relocation-design.md, Phase 0).
     """
     import pathlib
     import pssc
@@ -66,7 +66,7 @@ def test_import_pssc_does_not_pull_in_dataclasses():
 
     The Python runtime now lives in ``zuspec.be.py``; ``zuspec.dataclasses`` is a
     frontend that pssc depends on only for tests.  Importing pssc must stay free
-    of it (see docs/be-py-runtime-relocation-design.md, Phase 4).  Run in a
+    of it (see docs/design/be-py-runtime-relocation-design.md, Phase 4).  Run in a
     subprocess so an already-imported dataclasses (from another test) can't mask a
     regression.
     """

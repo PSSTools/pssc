@@ -5,7 +5,7 @@ unrecognized call by emitting it verbatim, producing output that named a
 function the target language does not have. It exits 0, the dv-flow task goes
 green, and the failure surfaces much later as an unresolved symbol -- if
 anything ever elaborates the generated class at all. See
-`docs/lowering-call-legality.md` §1.
+`docs/design/lowering-call-legality.md` §1.
 
 THE SHAPE. Three tiers, because the targets genuinely differ in capability and a
 flat per-target list has no contract to hold them together:

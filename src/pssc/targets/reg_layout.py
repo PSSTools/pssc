@@ -19,7 +19,7 @@ snapshot stays green forever. Two backends computing offsets two ways is
 therefore the worst kind of duplication available here, and this is the answer
 to it.
 
-Design: docs/generator-style-extensions-design.md; plan P8.T1.
+Design: docs/design/generator-style-extensions-design.md; plan P8.T1.
 """
 from __future__ import annotations
 

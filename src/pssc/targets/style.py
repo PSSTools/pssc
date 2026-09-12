@@ -18,7 +18,7 @@ What they share is the *discovery* protocol -- `name`, `target`, and the
 `pssc.styles` entry-point group -- not the methods, because "how do you spell a
 type name" has no cross-language answer.
 
-Design: docs/generator-style-extensions-design.md §2.5.
+Design: docs/design/generator-style-extensions-design.md §2.5.
 """
 from __future__ import annotations
 

@@ -12,7 +12,7 @@ Scalar offsets come from the front-end's pre-computed ``offset_map``; array
 offsets are derived by evaluating the affine ``get_offset_of_instance_array``
 body at index 0 and 1.
 
-Design: design/pss-programming-seq-gen-design.md (§6.3, §6.4).
+Design: docs/design/pss-programming-seq-gen-design.md (§6.3, §6.4).
 """
 from __future__ import annotations
 

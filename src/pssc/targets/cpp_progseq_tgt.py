@@ -6,8 +6,8 @@ Emits a single header: register value unions (shared with the C backend),
 and the component class + factory. The user subclasses ``pssc::mem_if`` (virtual
 dispatch) -- no redirect trick.
 
-Design: design/pss-c-cpp-progseq-gen-design.md (§4)
-Plan:   design/pss-c-cpp-progseq-gen-impl-plan.md
+Design: docs/design/pss-c-cpp-progseq-gen-design.md (§4)
+Plan:   docs/design/pss-c-cpp-progseq-gen-impl-plan.md
 """
 from __future__ import annotations
 

@@ -19,7 +19,7 @@ for the abstraction (`pssc::mem_if`, `pssc_mem*.h`, `--mem-access`). `bus_expr`
 keeps `bus` because it renders the HANDLE (`pssc_bus(s)`), which is the one
 thing here that really is a bus.
 
-Design: docs/generator-style-extensions-design.md §2.5.1.
+Design: docs/design/generator-style-extensions-design.md §2.5.1.
 """
 from __future__ import annotations
 

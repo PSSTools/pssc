@@ -8,7 +8,7 @@ and `/** */` for documentation; the C output is uniformly `/* */`, which is
 what every other comment it emits already looks like; a `#` language (Python,
 Make, shell) has one form for both. All are selected with ``style``.
 
-See docs/pss-comment-propagation-plan.md for where the text comes from, and why
+See docs/design/pss-comment-propagation-plan.md for where the text comes from, and why
 orphaned comments are not among it.
 """
 from typing import List, Optional

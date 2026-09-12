@@ -11,7 +11,7 @@ Emits, for the register subtree reachable from a root component:
     identically across all link styles; only ``pssc_bus`` (defined in
     lower_progseq) varies.
 
-Design: design/pss-c-cpp-progseq-gen-design.md (§3.3, §3.4).
+Design: docs/design/pss-c-cpp-progseq-gen-design.md (§3.3, §3.4).
 """
 from __future__ import annotations
 

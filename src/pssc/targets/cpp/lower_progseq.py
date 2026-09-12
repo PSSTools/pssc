@@ -23,7 +23,7 @@ as members, already exist. So a component is constructed with the seam alone and
 goes. `create()` does both for the root, which is what a caller normally wants.
 See ``pssc::reg``'s note on why it holds a pointer rather than a reference.
 
-Design: design/pss-c-cpp-progseq-gen-design.md (§4.4, §4.5).
+Design: docs/design/pss-c-cpp-progseq-gen-design.md (§4.4, §4.5).
 """
 from __future__ import annotations
 

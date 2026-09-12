@@ -10,8 +10,7 @@
 //                        width-based transaction sizing)
 //   * channel_c       -- PSS `sync_pkg::channel_c<Te, DEPTH>` (§21.9.1)
 //
-// Design: design/pss-programming-seq-gen-design.md (§5).
-// Validated reference: examples/export/programming_seqs/wb_dma_sv_proto.sv.
+// Design: docs/design/pss-programming-seq-gen-design.md (§5).
 
 package pssc_reg_pkg;
 

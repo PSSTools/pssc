@@ -9,7 +9,7 @@
  * it instantiates the selected action's root coroutine and posts it onto the
  * bridge timebase. This header stays free of any model specifics.
  *
- * Companion design: design/pssc-c-bridge-runtime-design.md (Phase C1).
+ * Companion design: docs/design/pssc-c-bridge-runtime-design.md (Phase C1).
  */
 #ifndef INCLUDED_ZSP_BRIDGE_H
 #define INCLUDED_ZSP_BRIDGE_H

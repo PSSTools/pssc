@@ -11,8 +11,11 @@ and have it run the exact register-programming sequence the PSS describes,
 expressed against an abstract bus the consumer supplies (front-door BFM,
 backdoor poke, or a C model — unchanged).
 
-The worked example throughout is the WISHBONE DMA model in
-``examples/export/programming_seqs/`` (``dma_regs.pss`` + ``dma_engine.pss``).
+The worked example throughout is the WISHBONE DMA model shipped as package data
+in ``src/pssc/testing/models/`` (``dma_regs.pss`` + ``dma_engine.pss``). It
+travels in the wheel, so the commands below work from an installed pssc as well
+as from a checkout; :func:`pssc.testing.op_model_sources` returns the two paths
+in dependency order wherever it landed.
 
 Quick start
 -----------
@@ -21,9 +24,10 @@ Generate the package and put the bundled core package on your compile order:
 
 .. code-block:: console
 
+   $ MODEL=$(python -c "import pssc.testing as t; print(t.model_dir())")
+
    $ pssc compile -t op-model-sv --root dma_engine_c \
-         examples/export/programming_seqs/dma_regs.pss \
-         examples/export/programming_seqs/dma_engine.pss \
+         $MODEL/dma_regs.pss $MODEL/dma_engine.pss \
          -o out/
 
    $ pssc sv-core-path --file     # path to pssc_reg_pkg.sv (the core runtime)
@@ -204,17 +208,19 @@ Worked example
 --------------
 
 Each backend ships a self-checking testbench that drives the generated WB DMA API
-through a mock bus and prints ``WB_DMA PROTOTYPE PASS``, plus a validated
-hand-written reference the generator converges on (references live under
-``examples/export/programming_seqs/``):
+through a mock bus and prints ``WB_DMA PROTOTYPE PASS``:
 
-- **SV** — TB ``tests/progseq/data/wb_dma_tb.sv``, reference ``wb_dma_sv_proto.sv``;
-  gated under Verilator.
-- **C** — TB ``tests/progseq/data/c/wb_dma_tb*.c``, reference ``c_proto/``; gated
-  under gcc + clang. The reference compiles all three link styles from one source,
-  demonstrating the byte-identical bodies.
-- **C++** — TB ``tests/progseq/data/cpp/wb_dma_tb.cpp``, reference ``cpp_proto/``;
-  gated under g++ + clang++.
+- **SV** — TB ``tests/progseq/data/wb_dma_tb.sv``; gated under Verilator.
+- **C** — TB ``tests/progseq/data/c/wb_dma_tb*.c``; gated under gcc + clang. The
+  testbench compiles all three link styles from one source, demonstrating the
+  byte-identical bodies.
+- **C++** — TB ``tests/progseq/data/cpp/wb_dma_tb.cpp``; gated under g++ + clang++.
+
+Each backend was originally brought up against a hand-written prototype that the
+generator was made to converge on — ``wb_dma_sv_proto.sv``, ``c_proto/``,
+``cpp_proto/``. Those prototypes were working notes, not part of the shipped
+example, and are no longer in the tree; the testbenches above are what still
+holds the backends to their behaviour.
 
 C backend (``op-model-c``)
 --------------------------
@@ -229,8 +235,7 @@ Bodies keep native value-returning reads, native ``return``, and native
 
    $ pssc compile -t op-model-c --root dma_engine_c --prefix wb_dma \
          --link-style vtable \
-         examples/export/programming_seqs/dma_regs.pss \
-         examples/export/programming_seqs/dma_engine.pss -o out/
+         $MODEL/dma_regs.pss $MODEL/dma_engine.pss -o out/
 
    $ pssc c-core-path --file pssc_mem_vtable.h   # locate a core seam header
 
@@ -443,5 +448,5 @@ See also
   bundled core runtime/seam header(s) for your build.
 - ``docs/custom-generator-styles.md`` — restyling one of these backends, or
   adding a target of your own, without forking pssc.
-- ``docs/op-model-manifest.md`` — ``--emit-manifest``, so a consumer never has
-  to parse the generated code.
+- ``pssc.targets.manifest`` — ``--emit-manifest``, so a consumer never has to
+  parse the generated code.

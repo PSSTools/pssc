@@ -25,7 +25,7 @@ them checkable independently of any emitter: `tests/progseq/test_body_walker.py`
 runs them against what the C emitter computes for itself, on the real WB DMA
 model, before either backend is asked to move (plan P7.T1).
 
-Design: docs/generator-style-extensions-design.md I6; plan Phase 7.
+Design: docs/design/generator-style-extensions-design.md I6; plan Phase 7.
 """
 from __future__ import annotations
 

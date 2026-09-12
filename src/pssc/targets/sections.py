@@ -12,7 +12,7 @@ nothing after an upstream rename, and the customisation would disappear from
 the output with nothing to say it had. An exception at generation time is the
 only way that surfaces at all.
 
-Design: docs/generator-style-extensions-design.md §2.6.1.
+Design: docs/design/generator-style-extensions-design.md §2.6.1.
 """
 from __future__ import annotations
 

@@ -254,8 +254,8 @@ class SvDpiTarget(_CTarget):
 
 # ---------------------------------------------------------------------------
 # sv-dpi-bridge: multi-action C scenario driven from SV via the zsp_bridge DPI
-# runtime (Backend B, Phase C1). See design/pssc-c-bridge-runtime-design.md and
-# design/pssc-c1-impl-plan.md. No imports yet (C2+).
+# runtime (Backend B, Phase C1). See docs/design/pssc-c-bridge-runtime-design.md and
+# docs/design/pssc-c1-impl-plan.md. No imports yet (C2+).
 # ---------------------------------------------------------------------------
 
 def _c_share_dir() -> Path:

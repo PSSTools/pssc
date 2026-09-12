@@ -18,7 +18,7 @@ tested:
      section emitters read it; nothing recomputes a lowering to answer a
      question about it.
 
-Design: docs/generator-style-extensions-design.md §2.6.1.
+Design: docs/design/generator-style-extensions-design.md §2.6.1.
 """
 from __future__ import annotations
 

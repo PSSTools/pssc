@@ -11,7 +11,7 @@ come off the `OpModel` and are the model's statements about the device. The
 split is not a matter of taste -- a policy that could move an address would be
 a supported way to generate firmware that talks to the wrong offsets.
 
-Design: docs/generator-style-extensions-design.md §2.5.
+Design: docs/design/generator-style-extensions-design.md §2.5.
 """
 from __future__ import annotations
 

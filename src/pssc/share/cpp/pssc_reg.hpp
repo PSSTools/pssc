@@ -8,7 +8,7 @@
 // output arguments, no status outs. The value<->raw round-trip is a byte copy of
 // the value-union, which the generated value structs are (trivially copyable).
 //
-// Design: design/pss-c-cpp-progseq-gen-design.md (§4.2).
+// Design: docs/design/pss-c-cpp-progseq-gen-design.md (§4.2).
 #ifndef PSSC_REG_HPP
 #define PSSC_REG_HPP
 

@@ -205,7 +205,7 @@ def gate(root, ctx, target: str, language: str, ctor_names=None) -> None:
     written where the SV backend needed it and never propagated to the two
     backends with the NARROWEST lowering, which are the ones most likely to
     meet a call they cannot render. `OpModelTarget.check()` absorbs this in
-    P2 of docs/generator-style-extensions-plan.md.
+    P2 of docs/design/generator-style-extensions-plan.md.
     """
     from ..driver import CompileError
     bad = validate_calls(root, ctx, target, ctor_names=ctor_names)

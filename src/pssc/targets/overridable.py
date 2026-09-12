@@ -23,7 +23,7 @@ it is a decision somebody makes rather than a thing that happens (design I14).
 `pairs_with` records the other half of a method that cannot be overridden
 alone -- see :func:`check_pairs`.
 
-Design: docs/generator-style-extensions-design.md §2.6.2, §6.
+Design: docs/design/generator-style-extensions-design.md §2.6.2, §6.
 """
 from __future__ import annotations
 

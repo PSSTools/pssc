@@ -3,10 +3,13 @@ Programming-Sequence Generation — Architecture
 
 This page summarizes how the ``op-model-sv`` target lowers a PSS component tree to
 SystemVerilog. The authoritative design notes are
-``design/pss-programming-seq-gen-design.md`` (scheme) and
-``design/pss-programming-seq-gen-impl-plan.md`` (implementation/test/doc plan);
-the validated reference output is
-``examples/export/programming_seqs/wb_dma_sv_proto.sv``.
+``docs/design/pss-programming-seq-gen-design.md`` (scheme) and
+``docs/design/pss-programming-seq-gen-impl-plan.md`` (implementation/test/doc plan).
+It was brought up against a hand-written ``wb_dma_sv_proto.sv`` that the
+generator was made to converge on; that prototype was a working note rather than
+part of the shipped example and is no longer in the tree. What holds the backend
+to its behaviour now is ``tests/progseq/`` — the golden snapshots plus the
+self-checking testbench under Verilator.
 
 Pipeline
 --------
@@ -83,9 +86,11 @@ C and C++ backends
 The ``op-model-c`` and ``op-model-cpp`` targets reuse the language-neutral model
 (``progseq_model``: walk + classify + the hoisted affine-offset and type-list
 helpers) verbatim; only the per-language *emission* differs. The authoritative
-notes are ``design/pss-c-op-model-cpp-gen-design.md`` and
-``design/pss-c-op-model-cpp-gen-impl-plan.md``; the validated references are
-``examples/export/programming_seqs/c_proto/`` and ``cpp_proto/``.
+notes are ``docs/design/pss-c-cpp-progseq-gen-design.md`` and
+``docs/design/pss-c-cpp-progseq-gen-impl-plan.md``. As with the SV backend, the
+``c_proto/`` and ``cpp_proto/`` prototypes those notes converge on were working
+notes and are not in the tree; the C/C++ testbenches under
+``tests/progseq/data/`` are the behavioural gate.
 
 The one thing that varies between backends is the **seam** — how a register
 access reaches the user's bus:
@@ -155,14 +160,13 @@ rather than reimplementing them; see ``docs/custom-generator-styles.md``.
   address is the one thing in a generated API a golden snapshot cannot check, so
   it is computed once.
 - ``pssc.targets.call_legality`` / ``validate_calls`` — which calls a target may
-  lower, and the pre-emission gate that refuses the rest with a location. See
-  ``docs/lowering-call-legality.md``.
+  lower, and the pre-emission gate that refuses the rest with a location.
 - ``pssc.targets.style`` (and ``targets/c/style.py``) — the naming and layout
   decisions, so a house convention is a policy rather than a fork.
 - ``pssc.targets.sections`` / ``comments`` / ``overridable`` — file assembly,
   comment rendering, and the published override surface.
 - ``pssc.targets.manifest`` — the elaborated model as JSON
-  (``--emit-manifest``); see ``docs/op-model-manifest.md``.
+  (``--emit-manifest``); ``SCHEMA`` there names and versions the format.
 
 Per-target modules
 ------------------

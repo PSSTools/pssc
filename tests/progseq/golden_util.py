@@ -1,6 +1,6 @@
 """Byte-exact snapshots of the operation-model backends' output.
 
-The extension work (docs/generator-style-extensions-plan.md) has three phases
+The extension work (docs/design/generator-style-extensions-plan.md) has three phases
 that claim "no change in generated output" while moving most of the C backend
 around. That claim is only worth something if a machine checks it, which is
 what this is for.

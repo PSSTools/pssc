@@ -24,7 +24,7 @@ def ast_comments(node: Any) -> Tuple[Optional[str], Optional[str]]:
     Orphans -- comments a blank line detached from any construct -- are
     deliberately dropped. That is the mechanism by which a file note above the
     imports stays out of the generated code, and by which an author suppresses
-    propagation of any one comment. See docs/pss-comment-propagation-plan.md.
+    propagation of any one comment. See docs/design/pss-comment-propagation-plan.md.
     """
     getter = getattr(node, "getComments", None)
     if getter is None:

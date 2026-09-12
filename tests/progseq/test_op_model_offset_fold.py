@@ -28,7 +28,7 @@ Two properties are asserted, and the second is the one with teeth:
 Every failure mode is an error rather than a fallback, because the PSS function
 answers an unknown instance with -1, and -1 in an address computation wraps to a
 wild address that nothing downstream will complain about. See
-docs/lowering-call-legality.md §7.1.
+docs/design/lowering-call-legality.md §7.1.
 """
 import argparse
 import os

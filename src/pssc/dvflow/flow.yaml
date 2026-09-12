@@ -4,7 +4,7 @@
 #*
 #* Reference tasks emit the bundled SV/C/C++ core source as filesets; build
 #* tasks consume PSS source (std.FileSet type: pssSource) and run one pssc
-#* output style each. See docs/dvflow-tasks-design.md.
+#* output style each. See docs/design/dvflow-tasks-design.md.
 #****************************************************************************
 package:
   name: pssc
@@ -116,7 +116,7 @@ package:
       and reversed -- and fails if the two produce different IR. Exit status
       alone cannot catch this: a front end that drops cross-file references in
       one order still reports `0 errors` and exits 0
-      (`docs/pssparser-defects-2026-08-02.md`, D3). The failure message carries
+      (`docs/design/pssparser-defects-2026-08-02.md`, D3). The failure message carries
       the node and reference counts of both orders, so the size of the loss is
       visible.
     with:

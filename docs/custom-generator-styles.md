@@ -460,8 +460,8 @@ pssc compile -t fixture -X fixture-style=loud --root wb_dma_c -o gen/ *.pss
 list, so a typo in a `-X` is a diagnostic rather than a silent default.
 
 Every op-model target also gets `--emit-manifest FILE` for free: the elaborated
-model as JSON, so a consumer never has to parse generated code. See
-[`op-model-manifest.md`](op-model-manifest.md).
+model as JSON, so a consumer never has to parse generated code. The schema is
+declared in `pssc.targets.manifest`, which carries its version.
 
 ---
 
@@ -513,8 +513,8 @@ You may **add** to the common tier; you may never shrink it. A target that
 cannot render a common-tier call is not a style — it is a different backend, and
 `assert_common_tier` will say so. To declare a call unsupported, give the reason
 in the entry; it is printed to the model author, so make it a sentence they can
-act on. See [`lowering-call-legality.md`](lowering-call-legality.md) for the
-tiers and the dispositions.
+act on. `pssc.targets.call_legality` is where the tiers and the dispositions
+are declared.
 
 ---
 
@@ -625,8 +625,5 @@ snapshot comparison can see it.
 
 * [`extension-stability.md`](extension-stability.md) — what `stable` and
   `provisional` promise, and how a method joins the override surface
-* [`op-model-manifest.md`](op-model-manifest.md) — the `--emit-manifest` schema
-* [`lowering-call-legality.md`](lowering-call-legality.md) — the tiers, the
-  dispositions, and what the gate refuses
 * [`cli.md`](cli.md) — every option of every built-in target
-* `docs/generator-style-extensions-design.md` — why the seams are where they are
+* `docs/design/generator-style-extensions-design.md` — why the seams are where they are

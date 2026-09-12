@@ -7,7 +7,7 @@ becomes a class of ``pssc::reg`` members + nested-group members, constructed
 ``(pssc::mem_if&, addr_t base)`` with ``base+offset`` folded into each child;
 arrays become ``std::array`` built via an index-sequence helper.
 
-Design: design/pss-c-cpp-progseq-gen-design.md (§4.2, §4.3).
+Design: docs/design/pss-c-cpp-progseq-gen-design.md (§4.2, §4.3).
 """
 from __future__ import annotations
 

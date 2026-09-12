@@ -5,8 +5,8 @@ reachable component, and classifies functions by kind. Deliberately free of any
 SystemVerilog/C specifics so future backends (SV now; C-embedded, C++/host
 later -- design §10.6) can share it.
 
-See design/pss-programming-seq-gen-design.md (§6.2) and
-design/pss-programming-seq-gen-impl-plan.md (Phase 0 findings).
+See docs/design/pss-programming-seq-gen-design.md (§6.2) and
+docs/design/pss-programming-seq-gen-impl-plan.md (Phase 0 findings).
 """
 from __future__ import annotations
 
@@ -68,7 +68,7 @@ DEFAULT_CTOR_NAMES = frozenset({"ctor", "init", "initialize"})
 #:
 #: Still one value per context rather than a parameter on every call: threading
 #: it through the ~20 `func_kind` call sites belongs with `OpModel`, which
-#: carries it as a field (P2 of docs/generator-style-extensions-plan.md). A
+#: carries it as a field (P2 of docs/design/generator-style-extensions-plan.md). A
 #: ContextVar is correct under asyncio and under sequential reuse -- the two
 #: ways compiles actually share a process today -- and wrong only for two
 #: compiles running in different THREADS at the same time, which nothing does.
@@ -313,7 +313,7 @@ def walk_tree(root_dtype, resolve) -> CompNode:
 # Hoisted from sv/lower_reg_model.py so every backend (SV, C, C++) shares one
 # copy. These evaluate the PSS `get_offset_of_instance[_array]` bodies, which are
 # entirely language-neutral; SV, C, and C++ all need (base, stride) and scalar
-# offsets. See design/pss-c-cpp-progseq-gen-design.md §6.1.
+# offsets. See docs/design/pss-c-cpp-progseq-gen-design.md §6.1.
 
 _DT_STRUCT = "DataTypeStruct"
 

@@ -315,7 +315,7 @@ class _BodyEmitter(BodyWalker):
         and the generated SV register-group class has no such method, so an
         emitted call is code that does not compile. It was emitted anyway,
         because nothing consulted the classification: see
-        `docs/lowering-call-legality.md` §1.1.
+        `docs/design/lowering-call-legality.md` §1.1.
 
         Returns ``None`` when the call is not one of these at all (so the caller
         falls through); raises :class:`OffsetFoldError` when it IS one and

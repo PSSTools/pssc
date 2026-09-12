@@ -37,7 +37,12 @@ the toctree above because this build has no Markdown parser configured.
   target of your own
 - ``docs/extension-stability.md`` — what the published surfaces promise, and the
   deprecation window
-- ``docs/op-model-manifest.md`` — the ``--emit-manifest`` schema
-- ``docs/lowering-call-legality.md`` — which PSS calls each target may lower
+- ``pssc.targets.call_legality`` — which PSS calls each target may lower
 - ``docs/op-model-c-embedded.md`` — the C operation-model API with no heap
+- ``docs/op-model-manifest.md`` — the ``--emit-manifest`` schema
 - ``docs/cli.md`` — CLI reference
+
+``docs/design/`` holds the design notes and implementation plans the shipped
+source cites by section. They are archived working notes, not guides: each
+carries a banner saying so, and the code is the authority where the two
+disagree.

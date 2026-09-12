@@ -2,7 +2,7 @@
 """Rewrite the operation-model golden snapshots (tests/progseq/golden/).
 
 The snapshots are what makes "byte-identical" mean something in the phases of
-docs/generator-style-extensions-plan.md that claim to preserve output. That
+docs/design/generator-style-extensions-plan.md that claim to preserve output. That
 guarantee survives exactly as long as regenerating stays a deliberate act, so
 this script refuses to run unless ``PSSC_GOLDEN_REGEN=1`` is set.
 

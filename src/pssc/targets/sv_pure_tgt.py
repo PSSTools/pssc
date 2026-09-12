@@ -1,8 +1,8 @@
 """Pure-SystemVerilog target (``sv-pure``).
 
 This is the incremental-traversal pure-SV lowering path (see
-``docs/pure-sv-incremental-design.md`` and
-``docs/pure-sv-implementation-plan.md``). It lowers a subset of PSS to SV that is
+``docs/design/pure-sv-incremental-design.md`` and
+``docs/design/pure-sv-implementation-plan.md``). It lowers a subset of PSS to SV that is
 solved entirely by the native SV constraint solver -- no DPI, no external
 ``dv-solve`` on the default path.
 
