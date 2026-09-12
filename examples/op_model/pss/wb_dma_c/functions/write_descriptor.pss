@@ -1,0 +1,65 @@
+import addr_reg_pkg::*;
+import wb_dma_regs_pkg::*;
+import wb_dma_types_pkg::*;
+
+extend component wb_dma_c {
+
+    // Write one external descriptor into memory and link it to its predecessor.
+    //
+    // *§3.2 group 3, configuration.* Completes when the descriptor is in memory
+    // at ``at``, terminated (DESC_NEXT zero), and ``prev`` -- if there is one --
+    // points at it. Waits for nothing. Returns a handle to the slot immediately
+    // after ``at``, i.e. the natural place for the next descriptor, so a caller
+    // can build a list in place one link at a time.
+    //
+    // This is DEVICE KNOWLEDGE written through a memory path, not a path to
+    // memory: the next-pointer linkage and the EOL rule are the operation, the
+    // layout is declared by :pss:struct:`wb_dma_desc_s`, and ``write32`` is
+    // merely how it lands. That is what makes it an operation where a generic
+    // ``write_buffer()`` would not be.
+    //
+    // ``at`` must be reachable from interface 0: descriptors are fetched from
+    // IF0 regardless of which interface the DATA moves on (§3.3).
+    //
+    // :param at:   where this descriptor goes
+    // :param prev: the descriptor to link from; null/zero means "head of list"
+    // :param desc: the descriptor contents; the caller's copy is not modified
+    target function addr_handle_t write_descriptor(
+            addr_handle_t   at,
+            addr_handle_t   prev,
+            wb_dma_desc_s   desc) {
+        wb_dma_desc_s d;
+        bit[32]       csr_word;
+
+        // Deep copy: `desc` is the caller's struct (aggregates pass by handle)
+        // and we terminate this link ourselves.
+        d      = desc;
+        d.next = 0;
+
+        // This block is one call -- write_struct(at, d) -- once read_struct /
+        // write_struct land; they are commented out of the front end's
+        // addr_reg_pkg ("TODO: generic type"). wb_dma_desc_s already declares
+        // the packed layout, so nothing here adds information.
+        csr_word  = (bit[32])d.csr.tot_sz;
+        csr_word |= ((bit[32])d.csr.dst_sel) << 16;
+        csr_word |= ((bit[32])d.csr.src_sel) << 17;
+        csr_word |= ((bit[32])d.csr.inc_dst) << 18;
+        csr_word |= ((bit[32])d.csr.inc_src) << 19;
+        csr_word |= ((bit[32])d.csr.eol)     << 20;
+
+        write32(at,                                                csr_word);
+        write32(make_handle_from_handle(at, 4),                    d.adr0);
+        write32(make_handle_from_handle(at, 8),                    d.adr1);
+        write32(make_handle_from_handle(at, WB_DMA_DESC_NEXT_OFF), d.next);
+
+        // Extend the list. The check is on the resolved address rather than a
+        // handle comparison, because an address handle is opaque and not
+        // usefully comparable.
+        if (addr_value(prev) != 0) {
+            write32(make_handle_from_handle(prev, WB_DMA_DESC_NEXT_OFF),
+                    (bit[32])addr_value(at));
+        }
+
+        return make_handle_from_handle(at, WB_DMA_DESC_BYTES);
+    }
+}

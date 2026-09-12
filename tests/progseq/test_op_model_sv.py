@@ -2,7 +2,7 @@
 
 This is the component-tree projection: sub-component accessors, an `init`
 lowered into the constructor, and the blocking `yield` contract. The flat model
-in `examples/export/programming_seqs` covers the same backend from the other
+in `src/pssc/testing/models` covers the same backend from the other
 direction, and both must keep working -- a change that fixes one and breaks the
 other is not progress.
 

@@ -4,7 +4,7 @@
 // This is the shape the WB DMA operation model moved to when its register
 // package became generated from SystemRDL: the offsets are stated once, in the
 // register model, and the binding code asks for them. It is exercised nowhere
-// in the flat example (`examples/export/programming_seqs`, whose `ctor` body is
+// in the flat example (`src/pssc/testing/models`, whose `ctor` body is
 // empty) and nowhere in `examples/op_model` (whose constructor uses map
 // constants), which is why an unlowerable `get_offset_of_instance_array` shipped
 // in generated output that did not compile.

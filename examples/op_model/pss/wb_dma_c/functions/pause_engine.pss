@@ -1,0 +1,37 @@
+import wb_dma_regs_pkg::*;
+
+extend component wb_dma_c {
+
+    // Pause or un-pause the whole engine, and wait until it has taken effect.
+    //
+    // *§3.2 group 2, configuration.* Global, not per-channel.
+    //
+    // Completes when a readback of ``CSR.PAUSE`` matches the requested value.
+    // The engine only pauses after the CURRENT transfer completes, so the write
+    // and the state change are NOT simultaneous -- which is the entire reason
+    // this is an operation rather than a register write, and the clearest small
+    // illustration of the blocking rule: the operation is not done when the
+    // store retires.
+    //
+    // It waits for that readback, and is the one wait in this model with no
+    // interrupt behind it -- in a real driver, a retry or timer loop rather than
+    // an ISR wake. The global CSR is not read-to-clear, so unlike the channel
+    // CSR this poll is genuinely side-effect-free and may run any number of
+    // times.
+    //
+    // :param pause: 1 to pause, 0 to resume
+    target function void pause_engine(bit pause) {
+        wb_dma_gcsr_s gcsr;
+
+        gcsr.pause = pause;
+        regs.csr.write(gcsr);
+
+        while (true) {
+            gcsr = regs.csr.read();
+            if (gcsr.pause == pause) {
+                break;
+            }
+            yield;
+        }
+    }
+}

@@ -1,0 +1,62 @@
+import wb_dma_regs_pkg::*;
+import wb_dma_types_pkg::*;
+
+extend component wb_dma_ch_c {
+
+    // Program a channel's registers from a config, without arming it.
+    //
+    // *§3.2 group 1, configuration.* Completes when CHn_SZ / A0 / AM0 / A1 /
+    // AM1 and the RW bits of CHn_CSR reflect ``cfg``; the channel is NOT
+    // enabled. Waits for nothing -- straight-line stores, no driver state,
+    // callable from any context including with a lock held.
+    //
+    // Kept alongside ``transfer_single()``, which takes the same config and
+    // subsumes this for the common case, for exactly one reason:
+    // ``transfer_list()`` needs CHK_SZ programmed BEFORE the chain is armed
+    // (§3.3), and a descriptor carries no chunk size.
+    //
+    // The CSR is written whole rather than read-modify-written, because at this
+    // point nothing is running on the channel and a read would consume the
+    // read-to-clear status bits for no reason.
+    //
+    // :param cfg: what to program; capability-gated fields are skipped when the
+    //             channel was built without the capability
+    target function void configure_channel(wb_dma_ch_cfg_s cfg) {
+        wb_dma_sz_s   sz;
+        wb_dma_csr_s  csr;
+
+        regs.adr0.write_val(cfg.src);
+        regs.am0.write_val(cfg.src_mask);
+        regs.adr1.write_val(cfg.dst);
+        regs.am1.write_val(cfg.dst_mask);
+
+        sz.tot_sz = cfg.tot_sz;
+        sz.chk_sz = cfg.chk_sz;
+        regs.sz.write(sz);
+
+        // CH_EN is what arms the channel, so it must not ride along with the
+        // configuration write.
+        csr.ch_en        = 0;
+
+        csr.src_sel      = (bit)cfg.src_if;
+        csr.dst_sel      = (bit)cfg.dst_if;
+        csr.inc_src      = cfg.inc_src;
+        csr.inc_dst      = cfg.inc_dst;
+        csr.mode         = (bit)cfg.mode;
+        csr.prio         = cfg.prio;
+        csr.sz_wb        = cfg.sz_wb;
+
+        // Capability-gated. Hardware silently ignores these on a channel built
+        // without the capability, so decline rather than pretend they took.
+        if (caps.ars) {
+            csr.ars     = cfg.auto_restart;
+            csr.rest_en = cfg.hw_restart_en;
+        }
+
+        csr.ine_done     = cfg.int_on_done;
+        csr.ine_err      = cfg.int_on_err;
+        csr.ine_chk_done = cfg.int_on_chunk;
+
+        regs.csr.write(csr);
+    }
+}

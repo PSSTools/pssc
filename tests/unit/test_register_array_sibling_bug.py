@@ -5,7 +5,7 @@ registers of the group-array element could not be resolved -- accessing
 `regs.group_array[i].SOME_REG` failed with "Failed to find elem SOME_REG".
 
 Discovered while implementing the WISHBONE DMA driver
-(examples/export/programming_seqs): the register file had a 3-word reserved
+(src/pssc/testing/models): the register file had a 3-word reserved
 pad modeled as `reg_c<bit[32]> _reserved[3]` declared before the per-channel
 group array `channels[31]`, and every `regs.channels[ch].CSR` access failed.
 

@@ -10,7 +10,7 @@ class declares no such method, so the output did not compile:
             not found in class 'wb_dma_regs_c'
 
 It shipped because nothing exercised the shape. The flat example
-(`examples/export/programming_seqs`) has an EMPTY `ctor`; `examples/op_model`
+(`src/pssc/testing/models`) has an EMPTY `ctor`; `examples/op_model`
 has a real one, but it restates the map as constants rather than asking the
 register group. `data/offset_fold.pss` is the missing case, kept small and
 separate rather than folded into either example so the other suites' golden text

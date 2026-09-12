@@ -43,7 +43,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
-from .op_model import op_model_sources
+from .op_model import op_model_sources, small_model_dir, small_model_sources
 
 _HERE = Path(__file__).resolve().parent
 
@@ -91,10 +91,10 @@ class Config:
 #: included since the backend was brought up to it. Kept because a config that
 #: needs a deliberately narrow model should reach for this rather than invent
 #: another one.
-SMALL_MODEL = (_HERE / ".." / ".." / "examples" / "export" /
-               "programming_seqs").resolve()
-SMALL_SOURCES = (str(SMALL_MODEL / "dma_regs.pss"),
-                 str(SMALL_MODEL / "dma_engine.pss"))
+#: It is package data under `src/pssc/testing/`, not a path in the test tree --
+#: see `op_model.small_model_dir`.
+SMALL_MODEL = Path(small_model_dir())
+SMALL_SOURCES = tuple(small_model_sources())
 
 
 #: The frozen set. Chosen to cover every code path the later refactors touch;

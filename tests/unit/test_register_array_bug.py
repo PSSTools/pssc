@@ -4,7 +4,7 @@ a `reg_group_c`-derived component that contains a `reg_c<...>` field failed to
 link with a spurious "unknown type" error.
 
 Discovered while modeling the WISHBONE DMA/Bridge register file
-(examples/export/programming_seqs), where the natural model is an array of
+(src/pssc/testing/models), where the natural model is an array of
 per-channel register groups:
 
     package dma_pkg {

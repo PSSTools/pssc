@@ -2,7 +2,7 @@
  * MODEL actually depends on, plus an access trace.
  *
  * Distinct from dma_mock.h, which serves the FLAT example model
- * (`examples/export/programming_seqs`). That mock cannot gate the component
+ * (`src/pssc/testing/models`). That mock cannot gate the component
  * tree, because the flat model has one register bank and the tree has five: an
  * engine-global block plus four per-channel banks at base + 0x20 + 0x20*i. The
  * per-channel base arithmetic is generated from the tree walk and is exercised

@@ -1,0 +1,125 @@
+import addr_reg_pkg::*;
+import sync_pkg::*;
+import wb_dma_cfg_pkg::*;
+import wb_dma_regs_pkg::*;
+import wb_dma_types_pkg::*;
+
+// The per-channel MMIO operation model (§3).
+//
+// Every operation the processor initiates against ONE DMA channel lives here.
+// The engine-global operations live on :pss:comp:`wb_dma_c`, which owns an
+// array of these.
+//
+// **Why per-channel components rather than a `chan` parameter.** The completion
+// condition is a channel register, so making the channel an instance rather
+// than an index keeps every access in the operation code index-free
+// (``regs.csr.read()``), which is both clearer and safer than indexing a
+// register array with a runtime value. It also matches the review decision that
+// a waking thread reads its own channel's status register (§3.1.1). The cost is
+// that each channel binds its own top-level register group.
+//
+// **Two layers, and every target gets both.**
+//
+// ``core``
+//     ``configure_channel``, ``set_auto_restart``, ``set_software_pointer``,
+//     ``transfer_single_start``, ``transfer_list_start``,
+//     ``stop_channel_start``, ``check_completion``. Arm-and-return plus a
+//     single-read poll; nothing here ever waits. The low-level driver API.
+//
+// ``end-to-end``
+//     ``wait_completion``, ``transfer_single``, ``transfer_list``,
+//     ``stop_channel``. Each is a ``*_start()`` followed by
+//     ``repeat { probe_status; wait_hint }``.
+//
+// What varies between profiles is one function body -- ``wait_hint()``, which
+// either suspends on :pss:field:`wake` or spins with ``yield``. Nothing else
+// reads ``HAS_EVENT_WAIT`` except ``notify_irq()``, the event producer.
+//
+// The end-to-end layer adds no device knowledge, only the loop. That is what
+// makes the core trustworthy without a second regression: every SystemVerilog
+// run drives the core through the end-to-end wrappers.
+component wb_dma_ch_c {
+
+    // Which channel this is, in ``dma_req_i``/``dma_ack_o`` and INT_SRC bit
+    // numbering.
+    //
+    // Integrator-facing identity: no operation here reads it, because each
+    // channel reaches its own registers through :pss:field:`regs` rather than
+    // by index. It is what an environment correlates a channel against.
+    int                 chan;
+
+    // Build-time capabilities.
+    //
+    // An absent capability makes the corresponding control bit silently ignored
+    // by hardware, so operations consult this rather than assuming everything
+    // is present.
+    wb_dma_ch_caps_s    caps;
+
+    // This channel's MMIO register bank.
+    //
+    // A TOP-LEVEL register group, bound to its own non-allocatable region
+    // rather than nested inside the device's global group.
+    wb_dma_ch_regs_c    regs;
+
+    // The in-progress guard: holds one token from the moment an end-to-end
+    // operation arms this channel until its completion has been reported.
+    //
+    // **What it buys.** Reading CHn_CSR clears ERR and the three
+    // interrupt-source bits (``src/rdl/wb_dma_ch_regs.rdl``). The end-to-end
+    // layer contains that hazard inside a loop that exits holding the value; a
+    // firmware caller driving ``*_start()`` and ``check_completion()`` by hand
+    // does not. Polling a channel nobody armed, and polling past a completion
+    // already consumed, are both invisible without a guard -- the device
+    // answers a stale read exactly as it answers a live one.
+    //
+    // It is NOT a lock: the one-operation-per-channel rule is still the
+    // caller's to keep. It is a detector for the case where it has been broken.
+    // ``stop_channel_start()`` is exempt and claims nothing, because it aborts a
+    // transfer that is by definition already holding the token.
+    //
+    // A channel rather than a flag because PSS 3.1 has no mutable component
+    // attribute to latch a bit in (§9.1.6); a depth-1 channel IS the latch. It
+    // never blocks -- only ``try_put()``/``try_get()`` are used (§21.9.1) -- so
+    // it costs a target with no scheduler nothing but a saturating counter.
+    channel_c<bit, 1>   inflight;
+
+    // The wake-up hint for this channel's waiter.
+    //
+    // NOT the completion event -- that is always CHn_CSR, re-read on every
+    // wake. This only says "something happened, look again".
+    //
+    // A channel and not a flag for the same reason as :pss:field:`inflight`,
+    // plus one more: flag-then-block has a lost-wakeup window, where an
+    // interrupt arriving between arming the hardware and setting the bit is
+    // dropped and the waiter blocks forever. A channel IS the registration --
+    // an interrupt that arrives before anyone waits leaves a token, and the next
+    // ``get()`` returns immediately.
+    //
+    // **Depth 1 is the design.** It makes this a coalescing binary semaphore:
+    // interrupts arriving while a token is pending are absorbed by ``try_put()``
+    // failing, and a channel nobody waits on accumulates at most ONE stale
+    // token. That bound is what lets ``notify_irq()`` post to every channel
+    // blind.
+    //
+    // Deliberately not gated, unlike ``notify_irq()``. A ``channel_c`` member
+    // costs a polling target nothing -- it is ``get()``, not the declaration,
+    // that needs a scheduler, and ``wait_hint()`` never calls it there.
+    // (pssparser could not gate it anyway: a declaration inside a ``compile if``
+    // is invisible to every later file, defect 4, and this member is read from
+    // two of them.)
+    channel_c<bit, 1>   wake;
+
+    // Bind this channel's register bank.
+    //
+    // Called from ``wb_dma_c::initialize()``, itself called from the
+    // environment's ``init_down`` exec: component attributes are mutable only
+    // during initialization, and ``set_handle()`` is only legal from an init
+    // exec.
+    //
+    // :param id:   this channel's index, stored as :pss:field:`chan`
+    // :param bank: handle to this channel's register bank
+    solve function void initialize(int id, addr_handle_t bank) {
+        chan = id;
+        regs.set_handle(bank);
+    }
+}

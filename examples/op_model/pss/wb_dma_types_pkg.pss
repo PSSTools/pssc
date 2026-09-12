@@ -1,0 +1,250 @@
+// Shared declarations for the WISHBONE DMA/Bridge operation model.
+//
+// Plain data with no behaviour: the constants that size the device, the enums
+// that name its modes, and the structs that carry an operation's arguments.
+//
+// The DEVICE's parameters live here; the REGISTER MAP's do not.
+// ``wb_dma_regs_pkg`` is generated in full from ``src/rdl`` and holds every
+// offset, bit position and access rule. What is left over is this: facts about
+// the part, not about its register file.
+package wb_dma_types_pkg {
+    import std_pkg::*;      // packed_s, for the descriptor's memory layout
+
+    // The build-time channel count (RTL ``ch_count``).
+    //
+    // It sizes the static register structure, so it is a compile-time constant
+    // and it is what ``ch[]`` and the environment's ``hs[]`` are declared with.
+    // How many channels an instance actually USES is the runtime
+    // ``wb_dma_c.num_ch``, constrained to be no greater than this.
+    //
+    // Must match ``-P NUM_CH`` on both exports in ``src/rdl/flow.yaml``.
+    // Nothing checks that the two agree: raise ``NUM_CH`` alone and the
+    // generated group carries more banks than this model drives; lower it alone
+    // and ``ch[]`` indexes banks that were never emitted. Raise them together.
+    //
+    // :group: Device parameters
+    static const int      WB_DMA_MAX_CH  = 4;
+
+    // The device's MMIO window, for the non-allocatable region the environment
+    // reserves: 0x20 bytes of engine-global registers followed by
+    // ``WB_DMA_MAX_CH`` channel banks of 0x20 bytes each.
+    //
+    // The two literals mirror the RDL's ``bank[NUM_CH] @0x20 += 0x20`` and are
+    // the only place left that restates them -- ``wb_dma_c::initialize()`` takes
+    // the bank offsets from the generated group. A SIZE cannot be had that way:
+    // the generated accessor answers for indices 0..NUM_CH-1, and asking it
+    // where the array ends means evaluating it one past the last element.
+    //
+    // :group: Device parameters
+    static const bit[64]  WB_DMA_REG_SPAN = 0x20 + WB_DMA_MAX_CH * 0x20;
+
+    // Which WISHBONE master interface an endpoint of a transfer uses
+    // (``CSR.SRC_SEL`` / ``CSR.DST_SEL``, §4.4.1).
+    //
+    // External descriptors are always fetched from interface 0, whichever
+    // interface the DATA moves on (§3.3).
+    //
+    // :group: Enumerations
+    enum wb_dma_if_e {
+        WB_DMA_IF0 = 0,
+        WB_DMA_IF1 = 1
+    }
+
+    // Channel transfer mode (``CSR.MODE``, §3.2).
+    //
+    // ``WB_DMA_SOFTWARE``
+    //     The engine moves the whole transfer on its own once armed, so
+    //     ``transfer_single()`` is executable from a processor alone.
+    //
+    // ``WB_DMA_HW_HANDSHAKE``
+    //     Each chunk is pulled by ``dma_req_i``. A ``transfer_single()`` in this
+    //     mode CANNOT complete without a concurrent ``wb_dma_hs_c`` producer
+    //     calling ``request_chunk()`` (§2.2).
+    //
+    // :group: Enumerations
+    enum wb_dma_mode_e {
+        WB_DMA_SOFTWARE     = 0,
+        WB_DMA_HW_HANDSHAKE = 1
+    }
+
+    // The outcome of an end-to-end operation, and the result of a poll.
+    //
+    // An abort via ``stop_channel()`` is reported as ``WB_DMA_ERROR`` rather
+    // than as a distinct clean stop -- the device sets ERR on a STOP write
+    // (§3.2.2). That is a firmware-visible wart, carried into the model
+    // verbatim rather than smoothed over here.
+    //
+    // ``WB_DMA_PENDING`` is the non-blocking core's third answer:
+    // ``check_completion()`` has read CHn_CSR and neither DONE nor ERR was set.
+    // It is APPENDED rather than given its own enum so that
+    // ``check_completion()`` and ``wait_completion()`` share a return type with
+    // no conversion between the two layers, and so that ``WB_DMA_DONE == 0``
+    // and ``WB_DMA_ERROR == 1`` keep the values that cross into generated
+    // SystemVerilog.
+    //
+    // The end-to-end operations NEVER return ``WB_DMA_PENDING``: they return
+    // only once the channel has reached a terminal state, so a caller of
+    // ``transfer_single()`` has exactly two outcomes to handle.
+    //
+    // :group: Enumerations
+    enum wb_dma_status_e {
+        WB_DMA_DONE,
+        WB_DMA_ERROR,
+        WB_DMA_PENDING
+    }
+
+    // Which aggregate interrupt output a channel is routed to (§4.2).
+    //
+    // The two banks are independent; a channel may be routed to both.
+    //
+    // :group: Enumerations
+    enum wb_dma_int_bank_e {
+        WB_DMA_INT_A,
+        WB_DMA_INT_B
+    }
+
+    // Build-time per-channel capabilities (RTL ``chN_conf``).
+    //
+    // Modelled because they change WHICH OPERATIONS ARE LEGAL on a channel: an
+    // absent capability makes the corresponding control bit SILENTLY IGNORED by
+    // hardware rather than raising an error (App. A), so a test that programs
+    // ARS on a channel built without it gets no error and no auto-restart.
+    //
+    // Set on ``wb_dma_ch_c.caps`` from an init exec, and read by the operations
+    // to decide what they will attempt.
+    //
+    // :group: Structures
+    struct wb_dma_ch_caps_s {
+        // Whether the channel is built at all. Integrator-facing: no operation
+        // consults it, because an absent channel has no component to call.
+        bool present  = true;
+        bool ars      = true;   // auto restart supported
+        bool ed       = true;   // external (linked-list) descriptors supported
+        bool cbuf     = true;   // circular buffers / software pointer supported
+    }
+
+    // Everything ``configure_channel()`` programs into a channel's register
+    // bank (§3.2, ``chan_cfg_s``).
+    //
+    // Fields that land directly on a CSR bit are declared ``bit`` rather than
+    // ``bool`` so the operation code can assign them into the register-value
+    // struct without a conversion; the trailing comment names the bit.
+    //
+    // Deliberately NOT in here: anything the DMA drives itself, and anything
+    // belonging to the test writer's own memory path. Filling the source region
+    // and checking the destination region are plain memory accesses, not part
+    // of the transfer's configuration.
+    //
+    // :group: Structures
+    struct wb_dma_ch_cfg_s {
+        rand bit[32]        src;            // CHn_A0
+        rand bit[32]        dst;            // CHn_A1
+
+        // Circular-buffer masks (§3.4). Only bits set to 1 are incremented, so
+        // the reset value 0xFFFFFFFC is ordinary linear addressing. The low four
+        // bits are ignored by hardware, so a circular buffer is at least 16
+        // bytes deep. Requires ``caps.cbuf``.
+        rand bit[32]        src_mask;       // CHn_AM0
+        rand bit[32]        dst_mask;       // CHn_AM1
+
+        rand bit[12]        tot_sz;         // total transfer, WORDS (max 4095)
+        rand bit[9]         chk_sz;         // chunk, WORDS; 0 => whole transfer
+
+        rand wb_dma_if_e    src_if;         // CSR.SRC_SEL
+        rand wb_dma_if_e    dst_if;         // CSR.DST_SEL
+        rand bit            inc_src;        // CSR.INC_SRC
+        rand bit            inc_dst;        // CSR.INC_DST
+
+        rand wb_dma_mode_e  mode;           // CSR.MODE
+        rand bit[3]         prio;           // CSR[15:13], 0 = lowest
+
+        rand bit            auto_restart;   // CSR.ARS;     needs caps.ars
+        rand bit            hw_restart_en;  // CSR.REST_EN; needs caps.ars
+        rand bit            sz_wb;          // CSR.SZ_WB;   descriptor writeback
+
+        // Interrupt enables. At least one must be set for an end-to-end
+        // operation to complete -- completion IS the interrupt.
+        rand bit            int_on_done;    // CSR.INE_DONE
+        rand bit            int_on_err;     // CSR.INE_ERR
+        rand bit            int_on_chunk;   // CSR.INE_CHK_DONE
+
+        // A transfer of zero words is not a transfer.
+        constraint tot_sz > 0;
+
+        // Defaults chosen so an unconstrained cfg is a plain linear software
+        // copy that reports completion.
+        constraint default src_mask      == 0xfffffffc;
+        constraint default dst_mask      == 0xfffffffc;
+        constraint default inc_src       == 1;
+        constraint default inc_dst       == 1;
+        constraint default mode          == WB_DMA_SOFTWARE;
+        constraint default auto_restart  == 0;
+        constraint default hw_restart_en == 0;
+        constraint default sz_wb         == 0;
+        constraint default int_on_done   == 1;
+        constraint default int_on_err    == 1;
+        constraint default int_on_chunk  == 0;
+    }
+
+    // The control word of one external (linked-list) descriptor
+    // (§3.3 Figure 6 / Table 1).
+    //
+    // A packed struct whose declaration order IS the bit numbering,
+    // LITTLE_ENDIAN -- this is the MEMORY LAYOUT, not a decoded view, so
+    // ``write_descriptor()`` places fields rather than composing them.
+    //
+    // The interface selects are plain bits rather than
+    // :pss:enum:`wb_dma_if_e` because a packed struct may only hold an enum
+    // that has a base type, and the front end does not parse enum base types.
+    // 0 = IF0, 1 = IF1.
+    //
+    // :group: Structures
+    struct wb_dma_desc_csr_s : packed_s<> {
+        rand bit[12]  tot_sz;       // 11:0   total transfer size, WORDS
+        rand bit[4]   reserved0;    // 15:12
+        rand bit      dst_sel;      // 16     destination interface
+        rand bit      src_sel;      // 17     source interface
+        rand bit      inc_dst;      // 18
+        rand bit      inc_src;      // 19
+        rand bit      eol;          // 20     last descriptor in the list
+        rand bit[11]  reserved1;    // 31:21
+
+        // A transfer of zero words is not a transfer.
+        constraint tot_sz > 0;
+
+        constraint default inc_src == 1;
+        constraint default inc_dst == 1;
+        constraint default eol     == 0;
+    }
+
+    // One external (linked-list) descriptor, as it sits in memory.
+    //
+    // A descriptor carries a strict SUBSET of the channel CSR: mode, priority,
+    // ARS, the address masks and CHK_SZ are not in it and stay whatever the
+    // channel registers hold. That is why ``transfer_list()`` depends on a
+    // prior ``configure_channel()``.
+    //
+    // :group: Structures
+    struct wb_dma_desc_s : packed_s<> {
+        rand wb_dma_desc_csr_s  csr;    // +0x0  DESC_CSR
+        rand bit[32]            adr0;   // +0x4  DESC_ADR0, source
+        rand bit[32]            adr1;   // +0x8  DESC_ADR1, destination
+        rand bit[32]            next;   // +0xc  DESC_NEXT, next pointer
+    }
+
+    // Bytes per descriptor, for the code that writes one a word at a time.
+    //
+    // MEMORY layout, not register layout: a descriptor lives in the DMA's
+    // address space, so the RDL has nothing to say about it and there is
+    // nothing to generate these from. They sit here rather than with
+    // ``write_descriptor()`` because they describe
+    // :pss:struct:`wb_dma_desc_s`, and the two must move together.
+    //
+    // :group: Device parameters
+    static const bit[64]  WB_DMA_DESC_BYTES    = 16;
+
+    // Byte offset of ``next`` within a descriptor.
+    //
+    // :group: Device parameters
+    static const bit[64]  WB_DMA_DESC_NEXT_OFF = 12;
+}

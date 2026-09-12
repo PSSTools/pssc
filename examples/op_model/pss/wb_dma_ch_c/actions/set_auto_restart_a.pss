@@ -1,0 +1,20 @@
+extend component wb_dma_ch_c {
+
+    // Set or clear a channel's auto-restart bit.
+    //
+    // An action rather than a plain helper because clearing ARS is the
+    // TERMINATING EVENT for an auto-restarting ``transfer_single_a``. That
+    // transfer is deliberately non-terminating on its own, so a scenario
+    // containing one must contain a concurrent branch that traverses this (or
+    // ``stop_channel_a``).
+    //
+    // :realizes:  set_auto_restart()
+    // :exec body: writes the ARS field
+    action set_auto_restart_a {
+        rand bit enable;
+
+        exec body {
+            comp.set_auto_restart(enable);
+        }
+    }
+}

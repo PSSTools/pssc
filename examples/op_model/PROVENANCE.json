@@ -1,0 +1,33 @@
+{
+  "manifest": {
+    "README.md": "acd8e4272d88273ea9582f456f8d17ba24570378c8671891aa5ef2d68b77e2ea",
+    "files.f": "a5fd21ee06c3d7d87ac3b7ca4dc9f9380911484a3a0c949335ba9f15ce43e82a",
+    "wb_dma_c.pss": "4d0ff99ab20278972833bc93fbbf23eb655cf50f7c6610f780d877b633e0ddf5",
+    "wb_dma_c/actions/configure_interrupt_routing_a.pss": "d63a1c17a27b19c6ef1adc6365f5bc21bc1f6daf3b570d03fbb2dd6da913be9f",
+    "wb_dma_c/functions/configure_interrupt_routing.pss": "f18fd7cfd7617ce5b3b539d3e178c323e9c6cf2e251671ab4f5f27815c9ad086",
+    "wb_dma_c/functions/notify_irq.pss": "cbd016b2a62fd9728641f39741af024e8bbcba742994cd5b7bb412bf52b6e786",
+    "wb_dma_c/functions/pause_engine.pss": "4d81cae75ad5a1a78c0da4cbee1fd47703cd740302587efa0d8f8cdea2b2199b",
+    "wb_dma_c/functions/read_descriptor_residual.pss": "a0d9e4f037d102496f2c70bc49564844e82ba2cc63570aa5b3cd700d1efc98a0",
+    "wb_dma_c/functions/write_descriptor.pss": "5337e91dde582d413d2680c7dbf51b19ac6efd7c13f1eb782af233df07629b87",
+    "wb_dma_cfg_pkg.pss": "13c819a3d80a9ac609040cc5a4dc6682eaa21865b8f94621754cca43fb0d2cdf",
+    "wb_dma_ch_c.pss": "5e482f49a6bb4c04e674cd6ae8c84a68432e66c06be83c3f442e2104f1aa88f5",
+    "wb_dma_ch_c/actions/blocking_ops_a.pss": "9458846cbea345628e5c4c9e0756f8b8778368835ab8d529886f664d3f2e20ca",
+    "wb_dma_ch_c/actions/set_auto_restart_a.pss": "9d6ea2947d93b57052047670eb6862a7a3e08b289b4a0c28522496f419f298cf",
+    "wb_dma_ch_c/actions/set_software_pointer_a.pss": "8a925d4581b335c5dd7558d438f2d2df52bd4cabfdc1941ac5575bfa8cf92b60",
+    "wb_dma_ch_c/functions/blocking_ops.pss": "82bf9ec14cee0d70c26521561125c1d8f47a5bcfc27c634352e6263059e6b6f6",
+    "wb_dma_ch_c/functions/check_completion.pss": "b890701ba61d7c42b1c6369154ebf87a63fef0832f3b00e35dbf1b45407cc9b3",
+    "wb_dma_ch_c/functions/configure_channel.pss": "7484d2e5f62078377abe57475f9457c2b16d54fd48b076dccbc8b1dba7ec855e",
+    "wb_dma_ch_c/functions/probe_status.pss": "179c3b69854cf4fa02cea811fee3750c7487b764c926ab29b63a3c996b79abe6",
+    "wb_dma_ch_c/functions/set_auto_restart.pss": "9bd8dca4f3c61fd7fc63a24d8d83bc48b5ff03573a3ee5beb2985f92d6ff2694",
+    "wb_dma_ch_c/functions/set_software_pointer.pss": "757ee002af42ee0dc81b5f3099c6e75a8c0242eec91748ad45d8a69df46de061",
+    "wb_dma_ch_c/functions/stop_channel_start.pss": "03140212ed95ede9d826208139bb8ce47db58757b5700c938de0b1cf37dae309",
+    "wb_dma_ch_c/functions/transfer_list_start.pss": "fed34bffbdb6f8d2be24f1219544eee6f48bd725f32ef9e4d10f7603c3a0ff2a",
+    "wb_dma_ch_c/functions/transfer_single_start.pss": "f9cb64c701283506b1a0443539b56d4d10a232b822982573bd3d8daeae1c08bf",
+    "wb_dma_ch_c/functions/wait_hint.pss": "95008e82735c71e84c8636553ad7f0692e377db40c77dda3f55ba4b4030e3b04",
+    "wb_dma_regs_pkg.pss": "032bf182c49c3cad701f41862b7f44548abc4395352ddc2ce6f5fabe9aacee25",
+    "wb_dma_types_pkg.pss": "62fb5bd0e82723896ab2b7adbf7d469ea23c2f5bc3a32caa0dede9d7727138f0"
+  },
+  "regs_snapshot": "wb_dma_regs_pkg.pss",
+  "source": "fw-wb-dma:src/pss",
+  "source_commit": "f69b162"
+}

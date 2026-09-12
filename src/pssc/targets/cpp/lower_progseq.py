@@ -1304,7 +1304,7 @@ def _emit_initialize(comp, cls, names, ctor, groups, **be_kw) -> List[str]:
 
     The default register-group binding comes FIRST and the body may override it
     with its own `set_handle`. Both exist because models legitimately do it
-    both ways: `examples/export/programming_seqs` declares an EMPTY constructor
+    both ways: `src/pssc/testing/models` declares an EMPTY constructor
     and says the binding is the generator's job, while the WB DMA model states
     it. Emitting only one of the two breaks a working model either way.
     """

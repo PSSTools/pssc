@@ -1,0 +1,37 @@
+import wb_dma_regs_pkg::*;
+import wb_dma_types_pkg::*;
+
+extend component wb_dma_c {
+
+    // Route a set of channels to one of the two aggregate interrupt outputs.
+    //
+    // *§3.2 group 2, configuration.* Completes when INT_MSK_A/B has been
+    // updated; waits for nothing.
+    //
+    // The two banks are independent aggregate outputs, and a channel may be
+    // routed to both. ``channel_mask`` stays a bit vector rather than becoming
+    // a channel list because it genuinely is one: bit N routes channel N.
+    //
+    // **A hard prerequisite for every end-to-end operation, enforced by
+    // deadlock** on the event-wait profile. Completion IS the interrupt, so a
+    // test that routes nothing raises no interrupt, nothing calls
+    // ``notify_irq()``, and the first wait blocks forever. Routing at least one
+    // channel in a bank keeps the whole test alive, because ``notify_irq()``
+    // posts to every channel blind. That is intended: a hang is a more honest
+    // result than a green test whose completion path was never exercised.
+    //
+    // :param bank:         which aggregate output to program
+    // :param channel_mask: bit N routes channel N
+    target function void configure_interrupt_routing(
+            wb_dma_int_bank_e bank,
+            bit[31]           channel_mask) {
+        wb_dma_intmsk_s vec;
+
+        vec.ch = channel_mask;
+
+        match (bank) {
+            [WB_DMA_INT_A]: regs.int_msk_a.write(vec);
+            [WB_DMA_INT_B]: regs.int_msk_b.write(vec);
+        }
+    }
+}

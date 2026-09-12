@@ -1,9 +1,17 @@
-"""The checked-in copy of the real operation model, and how to read it.
+"""Where the two test models live, and how to read them.
 
 `examples/op_model/pss/` is a digest-checked copy of fw-wb-dma's `src/pss/`
 (scripts/sync_op_model.py). Its `files.f` is the statement of which files make
 up the model AND of the order they must be presented in -- see
 `op_model_rel_paths` for why the order is not negotiable.
+
+The OTHER model -- the narrow two-file one -- is `small_model_sources`, and it
+is NOT here in the test tree: it is package data under `src/pssc/testing/`,
+because plugin authors need it too. Reaching it through `pssc.testing` rather
+than by path is what keeps this working when the package data moves; the six
+test modules that each spelled out `examples/export/programming_seqs` went on
+pointing at a directory that no longer existed, and every one of them failed at
+file-open rather than saying the model was gone.
 
 A module rather than fixtures in conftest.py: several test modules need these
 as plain functions at import time, and a bare `conftest` import resolves to
@@ -43,3 +51,20 @@ def op_model_rel_paths():
 def op_model_sources():
     """`files.f` as absolute paths, in dependency order."""
     return [os.path.join(OP_MODEL, p) for p in op_model_rel_paths()]
+
+
+def small_model_dir():
+    """Directory of the narrow two-file model (`dma_regs` + `dma_engine`).
+
+    Shipped as package data, so ask the package where it is. Note the name
+    collision to watch for: `pssc.testing.op_model_sources()` returns THIS
+    model, not the WB DMA one that :func:`op_model_sources` above returns.
+    """
+    from pssc.testing import model_dir
+    return str(model_dir())
+
+
+def small_model_sources():
+    """The narrow model's two files, in dependency order."""
+    from pssc.testing import op_model_sources as _bundled
+    return list(_bundled())

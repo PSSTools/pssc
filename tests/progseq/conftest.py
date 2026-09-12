@@ -10,11 +10,12 @@ import shutil
 
 import pytest
 
+from .op_model import small_model_dir, small_model_sources
+
 _HERE = os.path.dirname(__file__)
 
-_EXAMPLE = os.path.join(_HERE, "..", "..", "examples", "export", "programming_seqs")
-_SRCS = [os.path.join(_EXAMPLE, "dma_regs.pss"),
-         os.path.join(_EXAMPLE, "dma_engine.pss")]
+_EXAMPLE = small_model_dir()
+_SRCS = small_model_sources()
 _TB = os.path.join(_HERE, "data", "wb_dma_tb.sv")
 
 

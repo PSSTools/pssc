@@ -7,9 +7,10 @@ import pytest
 from pssc import driver
 from pssc import targets as _targets
 
-_DATA = os.path.join(os.path.dirname(__file__), "..", "..",
-                     "examples", "export", "programming_seqs")
-_SRCS = [os.path.join(_DATA, "dma_regs.pss"), os.path.join(_DATA, "dma_engine.pss")]
+from .op_model import small_model_dir, small_model_sources
+
+_DATA = small_model_dir()
+_SRCS = small_model_sources()
 
 
 def _gen(out_dir, dispatch="virtual", namespace="wb_dma"):

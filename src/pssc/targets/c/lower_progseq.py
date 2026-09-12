@@ -1699,7 +1699,7 @@ def _lifecycle_impl(node, prefixes, link_style: str, qual: str,
     # own `regs.set_handle(...)`.
     #
     # Both exist because models legitimately do it both ways, and dropping
-    # either breaks a working model. `examples/export/programming_seqs` declares
+    # either breaks a working model. `src/pssc/testing/models` declares
     # `solve function void ctor(addr_handle_t base) { }` with an EMPTY body and
     # says so: "the binding is the generator's job, not the model's". The WB DMA
     # model states it instead. Emitting only the body's version left the example

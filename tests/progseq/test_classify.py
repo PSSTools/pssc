@@ -11,9 +11,10 @@ from pssc.targets.progseq_model import (
 )
 from pssc.targets.progseq_tgt import ProgSeqTarget
 
-_DATA = os.path.join(os.path.dirname(__file__), "..", "..",
-                     "examples", "export", "programming_seqs")
-_SRCS = [os.path.join(_DATA, "dma_regs.pss"), os.path.join(_DATA, "dma_engine.pss")]
+from .op_model import small_model_dir, small_model_sources
+
+_DATA = small_model_dir()
+_SRCS = small_model_sources()
 
 
 @pytest.fixture(scope="module")

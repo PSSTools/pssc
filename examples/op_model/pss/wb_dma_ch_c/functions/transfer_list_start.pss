@@ -1,0 +1,61 @@
+import addr_reg_pkg::*;
+import std_pkg::*;
+import wb_dma_regs_pkg::*;
+import wb_dma_types_pkg::*;
+
+extend component wb_dma_ch_c {
+
+    // Point a channel at a descriptor list and arm it, returning with the chain
+    // running.
+    //
+    // *§3.2 group 3.* The non-blocking half of ``transfer_list()``, present on
+    // every profile. Completes when the channel points at the list, external
+    // descriptors are enabled, and the channel is armed. Waits for nothing.
+    //
+    // §3.3's four-step arming procedure IS this function's body, except step 2
+    // (chunk size), which must come from a prior ``configure_channel()`` because
+    // it outlives any single descriptor. A descriptor carries only src, dst,
+    // tot_sz, the increment flags, the interface selects and EOL; mode,
+    // priority, ARS, the address masks and CHK_SZ stay whatever the channel
+    // registers hold.
+    //
+    // Unlike ``transfer_single_start()``, this one always has a completion: ARS
+    // is documented as meaningless and ignored with external descriptors (§3.3),
+    // so ``check_completion()`` is guaranteed to answer DONE or ERROR
+    // eventually. Two end-to-end operations differing only in completion
+    // contract is why neither subsumes the other -- and the difference was never
+    // in the wait.
+    //
+    // Requires ``caps.ed``. Unlike the other capability-gated operations this
+    // reports rather than returning quietly, because it has a completion
+    // contract: a silent return would leave the caller waiting for a chain that
+    // was never armed.
+    //
+    // :param head: head of the descriptor chain; must be reachable from
+    //              interface 0
+    target function void transfer_list_start(addr_handle_t head) {
+        // Checked before claiming, so a declined start leaves no token behind.
+        if (!caps.ed) {
+            message(NONE, "wb_dma: transfer_list_start() on a channel built without external-descriptor support (caps.ed)");
+            return;
+        }
+
+        if (!inflight.try_put(1)) {
+            message(NONE, "wb_dma: transfer_list_start() on a channel that already has an operation in progress");
+            return;
+        }
+
+        // Step 1: point the channel at the head of the list. The DMA fetches
+        // descriptors from interface 0 regardless of which interface the data
+        // moves on, so `head` must be IF0-reachable.
+        regs.desc.write_val((bit[32])addr_value(head));
+
+        // Steps 3 and 4, in that order and as TWO WRITES, deliberately: the
+        // device requires them separate, and write_fields({"use_ed","ch_en"},
+        // {1,1}) would coalesce them into one bus read-modify-write -- that is
+        // what the plural form is for. Each of these is still a
+        // read-modify-write in its own right (§21.14.1).
+        regs.csr.write_field("use_ed", 1);
+        regs.csr.write_field("ch_en", 1);
+    }
+}

@@ -26,19 +26,14 @@ def test_the_model_ships_and_is_in_dependency_order():
     # silently produce a different model with zero reported errors.
 
 
-def test_the_bundled_model_matches_the_example_it_came_from():
-    """The kit ships its own copy under package data (the example tree is not
-    inside the package, so setuptools cannot include it). One copy, one guard:
-    this is what catches the two drifting apart."""
-    example = (Path(__file__).resolve().parents[2] / "examples" / "export"
-               / "programming_seqs")
-    if not example.is_dir():
-        pytest.skip("example tree not present in this checkout")
-    for src in testing.op_model_sources():
-        name = Path(src).name
-        assert Path(src).read_bytes() == (example / name).read_bytes(), (
-            f"{name} has drifted from {example / name}; the bundled model is a "
-            f"copy of it and must stay identical")
+# There used to be a drift guard here, comparing the package copy against
+# `examples/export/programming_seqs`. There is nothing left to compare: the
+# example tree was untracked, never made it into the repository, and the model
+# now lives ONLY as package data under `src/pssc/testing/models/`. The guard
+# existed because there were two copies; the right way to keep two copies in
+# step turned out to be to stop having two. It skipped rather than failed when
+# the tree went missing, so it reported "guarded" for as long as the thing it
+# guarded did not exist -- which is why it is deleted rather than left skipping.
 
 
 def test_the_wb_dma_model_is_deliberately_not_shipped():
