@@ -29,6 +29,13 @@ test = [
   "zuspec-dataclasses",
   "pytest",
   "pytest-asyncio",
+  # The generated Python API's async form states its platform seam as a
+  # `typing.Protocol`, and the point of doing so is that a MIS-COLOURED
+  # implementation -- a sync bus handed to an async model -- is a static error.
+  # That claim needs a type checker to be a claim at all; the test that makes
+  # it skips if this is absent, so a developer without extras is not blocked
+  # and CI, which installs them, never silently skips it.
+  "mypy",
 ]
 
 [project.scripts]

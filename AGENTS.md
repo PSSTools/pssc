@@ -127,17 +127,31 @@ available here. If you need something the walk does not carry, add it to
 ## The Python backend
 
 `op-model-py` (`targets/py/`, `targets/py_progseq_tgt.py`) generates ONE module:
-component classes, folded register accessor methods, value classes with a bit
-layout, and the operations. `src/pssc/share/py/pssc_rt.py` is the runtime it
-copies out — a documented `Bus` protocol, a `MemoryBus` to bring a model up on,
-and a depth-1 `Chan1`.
+the platform-seam Protocol, component classes, folded register accessor methods,
+value classes with a bit layout, and the operations.
+`src/pssc/share/py/pssc_rt.py` is the runtime it copies out — a `MemoryBus` to
+bring a model up on, a depth-1 `Chan1`, and `check_import_api()`.
+`pssc_rt_async.py` joins it under `--py-await async`.
 
-Two properties are load-bearing and both are tested:
+`--py-await` is a TARGET OPTION, not a style: the async form publishes
+`HAVE_EVENT_WAIT=true`, so it compiles a different model rather than restyling
+the same one. It is the only place in the tree where `target_cfg` and the
+Tier-2 legality set depend on an option — `Target.resolved_target_cfg_for(opts)`
+and `PyProgSeqTarget._register_legality()` are the two hooks, and both are
+re-published per run.
 
-* **The generated module imports nothing** unless the model has channels. A
-  generated driver gets copied onto a lab machine; one file with no
-  dependencies still runs there. The bus is duck-typed, and the two base
-  classes (`_RegValue`, `_Struct`) are emitted into the module.
+Three properties are load-bearing and all three are tested:
+
+* **The generated module imports nothing outside the standard library** unless
+  the model has channels. A generated driver gets copied onto a lab machine;
+  one file needing no install still runs there. The seam is structural (the
+  module generates its own `Protocol` and requires nothing to inherit it), and
+  the two base classes (`_RegValue`, `_Struct`) are emitted into the module.
+* **An awaited call is never a subexpression.** `lower_progseq._awaited` hoists
+  it to a statement and yields the name of its result, because `await f() &
+  mask` parses and means `await (f() & mask)` — a wrong value, not an error. A
+  loop whose CONDITION crosses the seam becomes bottom-tested for the same
+  reason: a hoisted read in front of a `while` would be read once and spun on.
 * **It is imported and DRIVEN by its tests**, not grepped. That is the only
   place in this repo where "is the address right" and "does the completion poll
   terminate" are asked of a running generated model without a compiler or a

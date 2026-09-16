@@ -14,10 +14,62 @@ from __future__ import annotations
 
 from typing import List
 
+from ..progseq_model import _dt_name
 from ..sv.lower_api_types import collect_api_types
 from .naming import mangle
 
-__all__ = ["emit_enum", "emit_struct", "emit_struct_base", "lower_api_types"]
+__all__ = ["emit_enum", "emit_struct", "emit_struct_base", "lower_api_types",
+           "py_annotation"]
+
+_DT_INT = "DataTypeInt"
+_DT_BOOL = "DataTypeBool"
+_DT_ENUM = "DataTypeEnum"
+_DT_CHANDLE = "DataTypeChandle"
+_DT_STRUCT = "DataTypeStruct"
+_DT_STRING = "DataTypeString"
+
+
+def py_annotation(dtype) -> str:
+    """A PSS type as a Python annotation, or ``""`` where there is no answer.
+
+    `cpp_type`'s counterpart, and it is DELIBERATELY coarser. C++ needs a width
+    to allocate storage; a Python annotation exists to be read and to be checked,
+    and `int` is the whole truth about a `bit[32]` here -- the generated code
+    masks where the width matters (`expr_cast`), so annotating it `uint32` would
+    claim a guarantee the language does not make.
+
+    An empty string where the mapping has no answer, and the caller then emits no
+    annotation at all. `Any` would be the other option and is worse: an
+    unannotated parameter says "not stated", `Any` says "anything goes", and only
+    the first of those is true.
+    """
+    cn = _dt_name(dtype)
+    if cn == _DT_INT:
+        # A one-bit unsigned field is a flag in the model and reads as one at a
+        # call site; `int` would still accept it, but `bool` is what the
+        # signature means. Matches `cpp_type`'s same special case.
+        if not getattr(dtype, "signed", False) \
+                and int(getattr(dtype, "bits", 32) or 32) == 1:
+            return "bool"
+        return "int"
+    if cn == _DT_BOOL:
+        return "bool"
+    if cn == _DT_STRING:
+        return "str"
+    if cn == _DT_ENUM:
+        # An enum reaches Python as module-level `int` constants
+        # (`emit_enum`), so `int` is what a caller can actually pass.
+        return "int"
+    if cn == _DT_CHANDLE:
+        return "int"
+    if cn == _DT_STRUCT:
+        from .lower_reg_model import value_class_name
+
+        nm = (getattr(dtype, "name", "") or "").split("::")[-1]
+        if nm == "addr_handle_t":
+            return "int"
+        return value_class_name(dtype)
+    return ""
 
 #: The base of every plain struct class. Emitted once per module, for the same
 #: reason `_RegValue` is: repeating six lines per type buries what each type
@@ -32,9 +84,12 @@ class _Struct(object):
     values for everything else.
     """
 
-    __slots__ = ()
+    # Annotated for the reason `_RegValue`'s are: a subclass assigns a
+    # populated tuple, and an unannotated `()` is inferred as a type only `()`
+    # satisfies.
+    __slots__: tuple = ()
 
-    FIELDS = ()
+    FIELDS: tuple = ()
 
     def __init__(self, *args, **kwargs):
         if len(args) > len(self.FIELDS):

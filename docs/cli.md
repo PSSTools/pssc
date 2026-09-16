@@ -73,10 +73,18 @@ package target_cfg_pkg {
 
 `pssc targets` prints what each target publishes. `op-model-sv` claims both
 (generated operations are `task`s, and SV carries a solver); `op-model-c` and
-`op-model-cpp` and `op-model-py` claim neither (plain functions or methods, no
-coroutine runtime). A target
-that has not established its capabilities publishes nothing, and the model takes
-its own defaults.
+`op-model-cpp` claim neither (plain functions or methods, no coroutine runtime).
+A target that has not established its capabilities publishes nothing, and the
+model takes its own defaults.
+
+`op-model-py` answers **both ways**, and it is the only target that does. Its
+`--py-await` option chooses between plain methods and `async def` throughout,
+and only the second can suspend until another party posts an event — so
+`HAVE_EVENT_WAIT` is a property of the form, not of the target:
+`--py-await sync` (the default) publishes `false` and `--py-await async`
+publishes `true`. `pssc targets` shows the default form's answer. As everywhere
+else, `--target-cfg HAVE_EVENT_WAIT=false` overrides it; on the async form that
+gives a model that polls, which is a legitimate thing to ask for.
 
 `HAVE_EVENT_WAIT` asks exactly one thing: can a caller **suspend until another
 party posts an event** — concretely, is `channel_c`'s blocking `get`/`put`
@@ -139,6 +147,7 @@ Per-target options (contributed by each target's `add_args`):
 | `op-model-cpp` | `--namespace NAME` | namespace + class prefix (default root sans `_c`) |
 | `op-model-cpp` | `--dispatch {virtual,template}` | dispatch model (default `virtual`) |
 | `op-model-py` | `--py-module NAME` | generated module name (default root sans `_c`) |
+| `op-model-py` | `--py-await {sync,async}` | API form (default `sync`); `async` also publishes `HAVE_EVENT_WAIT=true` |
 
 ## `pssc parse`
 

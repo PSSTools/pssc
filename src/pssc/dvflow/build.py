@@ -107,6 +107,18 @@ def _cpp_progseq_overrides(p) -> Dict[str, Any]:
     return ov
 
 
+def _py_progseq_overrides(p) -> Dict[str, Any]:
+    ov: Dict[str, Any] = {"progseq_root": _get(p, "root", "")}
+    ov.update(_target_cfg_overrides(p))
+    if _get(p, "module", ""):
+        ov["py_module"] = _get(p, "module")
+    # `await_style`, not `await`: the latter is a Python keyword, and a task
+    # parameter named one is unreachable from any generated caller.
+    ov["py_await"] = _get(p, "await_style", "sync")
+    ov["progseq_core_copy"] = _get(p, "core_copy", True)
+    return ov
+
+
 #: Public mapping of task name -> (pssc target, override factory). Exposed so
 #: tests can assert the override keyword contract without DFM at runtime.
 TASKS = {
@@ -121,6 +133,7 @@ TASKS = {
     "OpModelSv": ("op-model-sv", _sv_progseq_overrides),
     "OpModelC": ("op-model-c", _c_progseq_overrides),
     "OpModelCpp": ("op-model-cpp", _cpp_progseq_overrides),
+    "OpModelPy": ("op-model-py", _py_progseq_overrides),
     # Deprecated aliases, kept so existing flows keep working.
     "SvProgSeq": ("op-model-sv", _sv_progseq_overrides),
     "CProgSeq": ("op-model-c", _c_progseq_overrides),
@@ -183,6 +196,11 @@ async def OpModelC(ctxt, input):
 async def OpModelCpp(ctxt, input):
     return await run_build(ctxt, input, target="op-model-cpp",
                            overrides_from_params=_cpp_progseq_overrides)
+
+
+async def OpModelPy(ctxt, input):
+    return await run_build(ctxt, input, target="op-model-py",
+                           overrides_from_params=_py_progseq_overrides)
 
 
 # --- deprecated task entry points --------------------------------------------
