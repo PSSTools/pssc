@@ -126,7 +126,12 @@ CONFIGS: Tuple[Config, ...] = (
     Config("cpp-virtual", "op-model-cpp", (),
            "C++ defaults: single header, virtual dispatch"),
     Config("py-default", "op-model-py", (),
-           "Python defaults: one module, duck-typed bus, folded accessors"),
+           "Python defaults: one module, generated import-API Protocol, "
+           "folded accessors"),
+    Config("py-async", "op-model-py", ("--py-await", "async"),
+           "the async form: async def throughout, awaited seam, yield_() and a "
+           "blocking channel -- and HAVE_EVENT_WAIT true, so this is a "
+           "different model, not a restyling of the one above"),
 )
 
 CONFIG_BY_NAME: Dict[str, Config] = {c.name: c for c in CONFIGS}

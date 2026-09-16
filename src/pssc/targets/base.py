@@ -67,6 +67,27 @@ class Target(abc.ABC):
         """
         return self.target_cfg
 
+    def resolved_target_cfg_for(
+            self, opts: argparse.Namespace) -> Optional[Dict[str, bool]]:
+        """The capabilities published for THIS RUN. :meth:`resolved_target_cfg`
+        by default, which is the answer for every target whose capabilities do
+        not depend on an option.
+
+        The hook exists because one of them does. `op-model-py` generates
+        either a synchronous or an `async`/`await` API (`--py-await`), and only
+        the second can suspend until another party posts an event -- so
+        `HAVE_EVENT_WAIT` is a property of the chosen form, not of the target.
+        A model reads that constant in a `compile if` and takes a different
+        branch, so answering it wrong does not produce different code around
+        the same behaviour: it compiles a DIFFERENT MODEL.
+
+        :meth:`resolved_target_cfg` stays the target's answer with no options in
+        hand, and `pssc targets` still reads it. That answer must be the DEFAULT
+        one -- what a bare command line gets -- so that the listing is truthful
+        rather than merely non-empty.
+        """
+        return self.resolved_target_cfg()
+
     def add_args(self, parser: argparse.ArgumentParser) -> None:  # noqa: B027
         """Contribute target-specific options to the ``compile`` parser.
 
@@ -142,7 +163,7 @@ class Target(abc.ABC):
         """
         overrides = _target_cfg.parse_overrides(
             getattr(opts, "target_cfg", None))
-        declared = self.resolved_target_cfg()
+        declared = self.resolved_target_cfg_for(opts)
         if declared is None and not overrides:
             return []
         cfg: Dict[str, bool] = dict(declared or {})

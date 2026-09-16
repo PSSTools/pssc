@@ -73,8 +73,9 @@ package:
           - `pssc.SvDpiBridge`-> C scenario DPI .so + SV trampoline
           - `pssc.CHost` / `pssc.CHostPresolved` -> host C
           - `pssc.CEmbedded` / `pssc.CEmbeddedPresolved` -> embedded C
-          - `pssc.OpModelSv` / `pssc.OpModelC` / `pssc.OpModelCpp` -> programming
-            APIs from a component tree (require `root:`)
+          - `pssc.OpModelSv` / `pssc.OpModelC` / `pssc.OpModelCpp` /
+            `pssc.OpModelPy` -> programming APIs from a component tree
+            (require `root:`)
           - `pssc.PySource`   -> live Python classes
 
           All build tasks accept `export_action` and `args`.
@@ -83,8 +84,10 @@ package:
           policy from the `pssc.styles` entry-point group -- a house style is a
           plugin, not a fork. See docs/custom-generator-styles.md.
 
-          The `op-model-py` target has no dv-flow task yet; drive it from the
-          CLI (`pssc compile -t op-model-py`) until one lands.
+          `pssc.OpModelPy` accepts `await_style: sync | async`. That one is NOT
+          a style: `async` changes what the generated model can do, and the
+          target says so by publishing `HAVE_EVENT_WAIT: true`, which a model
+          may branch on.
 
           ## Reference tasks (bundled core source)
 
@@ -427,6 +430,55 @@ package:
         value: "virtual"
       core_copy:
         doc: Copy the core seam header(s) into the output dir
+        type: bool
+        value: true
+
+  - name: OpModelPy
+    shell: pytask
+    run: pssc.dvflow.build.OpModelPy
+    consumes:
+    - filetype: pssSource
+    - type: pssc.PsscArgs
+    desc: Generate a Python operation-model API from a component tree (target op-model-py)
+    doc: |
+      One importable module, plus the runtime beside it. The generated module
+      declares its own platform seam as a `typing.Protocol`, so nothing has to
+      inherit anything: pass a cocotb driver, a socket client or the shipped
+      `MemoryBus`.
+
+      `await_style: async` generates `async def` throughout. It is NOT a
+      restyling of the sync form: the async form can suspend until another party
+      posts an event, so the target publishes `HAVE_EVENT_WAIT: true` and a
+      model that branches on it compiles a different body. Choose it for a
+      cocotb bring-up; leave it `sync` for a script or a socket-attached
+      debugger.
+    with:
+      target_cfg:
+        doc: |
+          Override what the target publishes as `target_cfg_pkg`, the PSS source
+          unit injected ahead of the sources. `NAME=VALUE` strings, e.g.
+          `["HAVE_EVENT_WAIT=false"]`. Empty means "use the target's own answer",
+          which for this task means "whatever `await_style` implies" -- normally
+          what you want.
+        type: list
+      export_action: { type: list }
+      args:          { type: list }
+      root:
+        doc: Root component type to generate the API for (required)
+        type: str
+        value: ""
+      module:
+        doc: "Generated module name (default: root name without trailing _c)"
+        type: str
+        value: ""
+      await_style:
+        doc: "API form: sync | async"
+        type: str
+        value: "sync"
+      core_copy:
+        doc: |
+          Copy the runtime beside the generated module. `pssc_rt.py` always,
+          plus `pssc_rt_async.py` when `await_style: async`.
         type: bool
         value: true
 

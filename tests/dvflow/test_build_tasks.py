@@ -50,6 +50,20 @@ def test_progseq_override_keywords():
     assert cov["c_reg_style"] == "bitfields"
 
 
+def test_py_progseq_override_keywords():
+    ov = build._py_progseq_overrides(_params(
+        root="pss_top", module="", await_style="async", core_copy=True))
+    assert ov["progseq_root"] == "pss_top"
+    assert "py_module" not in ov        # empty module omitted
+    assert ov["py_await"] == "async"
+    assert ov["progseq_core_copy"] is True
+
+    # The default is the sync form, matching the CLI's `--py-await` default.
+    assert build._py_progseq_overrides(_params(
+        root="pss_top", module="dma", await_style="sync",
+        core_copy=True))["py_await"] == "sync"
+
+
 def test_c_runtime_override_optionality():
     # Nothing set -> empty (each target keeps its own defaults)
     assert build._c_runtime_overrides(_params(
@@ -127,6 +141,23 @@ def test_cppprogseq_with_root(tmp_path):
         tmp_path, "pssc.CppProgSeq", pss_text=_MODEL, root="pss_top")
     assert status == 0, errors
     assert "cppSource" in filesets_by_type(output)
+
+
+@requires_dfm
+@pytest.mark.parametrize("await_style", ["sync", "async"])
+def test_opmodelpy_with_root(tmp_path, await_style):
+    status, output, errors = run_task(
+        tmp_path, "pssc.OpModelPy", pss_text=_MODEL, root="pss_top",
+        await_style=await_style)
+    assert status == 0, errors
+    by_ft = filesets_by_type(output)
+    assert "pythonSource" in by_ft, list(by_ft)
+    names = {os.path.basename(f) for f in by_ft["pythonSource"][0].files}
+    assert "pssc_rt.py" in names
+    # The async form ships the second runtime half; the sync one must not, or
+    # a reader is left wondering which of the two channel implementations the
+    # module is actually built on.
+    assert ("pssc_rt_async.py" in names) is (await_style == "async"), names
 
 
 @requires_dfm

@@ -8,10 +8,15 @@ inherit anything. `pssc_rt.py`, copied beside this file, ships a
 stub to bring the model up on and a `check_import_api()` that
 reports what an object is missing.
 
+    import asyncio
     from wb_dma import WbDma
-    from pssc_rt import MemoryBus
+    from pssc_rt_async import AsyncMemoryBus
 
-    dut = WbDma(MemoryBus(), 0x1000)
+    async def main():
+        dut = WbDma(AsyncMemoryBus(), 0x1000)
+        await dut.notify_irq()
+
+    asyncio.run(main())
 """
 
 
@@ -24,7 +29,7 @@ from typing import Protocol, runtime_checkable
 
 # This model declares channels, so it needs the shipped
 # depth-1 channel. Everything else in this module stands alone.
-from pssc_rt import Chan1
+from pssc_rt_async import Chan1
 
 
 # ----- Supplied by the PLATFORM. -----
@@ -42,11 +47,29 @@ class WbDmaImportApi(Protocol):
     reports what an object is missing, which `isinstance` cannot do.
     """
 
-    def read32(self, addr: int) -> int: ...
+    async def read32(self, addr: int) -> int: ...
 
-    def write32(self, addr: int, data: int) -> None: ...
+    async def write32(self, addr: int, data: int) -> None: ...
 
     def message(self, text: str) -> None: ...
+
+    async def yield_(self) -> None:
+        """What a PSS `yield` costs here: hand control back to the scheduler.
+
+        A HINT, not a wait for anything in particular -- the surrounding
+        poll decides when it is done. `await asyncio.sleep(0)` is a
+        correct implementation; so is one clock edge.
+        """
+        ...
+
+    def event(self):
+        """A fresh scheduler event: `await ev.wait()` / `ev.set()` / `ev.clear()`.
+
+        The TYPE is deliberately unnamed. `asyncio.Event` and
+        `cocotb.triggers.Event` both satisfy it, and naming either would
+        decide which scheduler a generated model can run under.
+        """
+        ...
 
 
 # ----- Data types used by the export API. -----
@@ -416,8 +439,8 @@ class WbDmaCh(object):
     def __init__(self, imports: WbDmaImportApi, id, bank):
         self._imports = imports
         self._base = bank
-        self.inflight = Chan1()
-        self.wake = Chan1()
+        self.inflight = Chan1(imports.event)
+        self.wake = Chan1(imports.event)
         self.chan = 0
         self.caps = wb_dma_ch_caps_s(present=True, ars=True, ed=True, cbuf=True)
         self.chan = id
@@ -427,125 +450,125 @@ class WbDmaCh(object):
     def regs_csr_addr(self):
         """Address of `regs.csr`."""
         return self._base + 0x0
-    def regs_csr_read_val(self):
-        return self._imports.read32(self.regs_csr_addr())
-    def regs_csr_write_val(self, value):
-        self._imports.write32(self.regs_csr_addr(), value)
-    def regs_csr_read(self):
-        raw = self.regs_csr_read_val()
+    async def regs_csr_read_val(self):
+        return await self._imports.read32(self.regs_csr_addr())
+    async def regs_csr_write_val(self, value):
+        await self._imports.write32(self.regs_csr_addr(), value)
+    async def regs_csr_read(self):
+        raw = await self.regs_csr_read_val()
         return wb_dma_csr_s.unpack(raw)
-    def regs_csr_write(self, value):
-        self.regs_csr_write_val(value.pack())
-    def regs_csr_write_val_masked(self, mask, val):
-        cur = self.regs_csr_read_val()
-        self.regs_csr_write_val((cur & ~mask) | (val & mask))
+    async def regs_csr_write(self, value):
+        await self.regs_csr_write_val(value.pack())
+    async def regs_csr_write_val_masked(self, mask, val):
+        cur = await self.regs_csr_read_val()
+        await self.regs_csr_write_val((cur & ~mask) | (val & mask))
     def regs_sz_addr(self):
         """Address of `regs.sz`."""
         return self._base + 0x4
-    def regs_sz_read_val(self):
-        return self._imports.read32(self.regs_sz_addr())
-    def regs_sz_write_val(self, value):
-        self._imports.write32(self.regs_sz_addr(), value)
-    def regs_sz_read(self):
-        raw = self.regs_sz_read_val()
+    async def regs_sz_read_val(self):
+        return await self._imports.read32(self.regs_sz_addr())
+    async def regs_sz_write_val(self, value):
+        await self._imports.write32(self.regs_sz_addr(), value)
+    async def regs_sz_read(self):
+        raw = await self.regs_sz_read_val()
         return wb_dma_sz_s.unpack(raw)
-    def regs_sz_write(self, value):
-        self.regs_sz_write_val(value.pack())
-    def regs_sz_write_val_masked(self, mask, val):
-        cur = self.regs_sz_read_val()
-        self.regs_sz_write_val((cur & ~mask) | (val & mask))
+    async def regs_sz_write(self, value):
+        await self.regs_sz_write_val(value.pack())
+    async def regs_sz_write_val_masked(self, mask, val):
+        cur = await self.regs_sz_read_val()
+        await self.regs_sz_write_val((cur & ~mask) | (val & mask))
     def regs_adr0_addr(self):
         """Address of `regs.adr0`."""
         return self._base + 0x8
-    def regs_adr0_read_val(self):
-        return self._imports.read32(self.regs_adr0_addr())
-    def regs_adr0_write_val(self, value):
-        self._imports.write32(self.regs_adr0_addr(), value)
-    def regs_adr0_read(self):
-        raw = self.regs_adr0_read_val()
+    async def regs_adr0_read_val(self):
+        return await self._imports.read32(self.regs_adr0_addr())
+    async def regs_adr0_write_val(self, value):
+        await self._imports.write32(self.regs_adr0_addr(), value)
+    async def regs_adr0_read(self):
+        raw = await self.regs_adr0_read_val()
         return wb_dma_addr_s.unpack(raw)
-    def regs_adr0_write(self, value):
-        self.regs_adr0_write_val(value.pack())
-    def regs_adr0_write_val_masked(self, mask, val):
-        cur = self.regs_adr0_read_val()
-        self.regs_adr0_write_val((cur & ~mask) | (val & mask))
+    async def regs_adr0_write(self, value):
+        await self.regs_adr0_write_val(value.pack())
+    async def regs_adr0_write_val_masked(self, mask, val):
+        cur = await self.regs_adr0_read_val()
+        await self.regs_adr0_write_val((cur & ~mask) | (val & mask))
     def regs_am0_addr(self):
         """Address of `regs.am0`."""
         return self._base + 0xc
-    def regs_am0_read_val(self):
-        return self._imports.read32(self.regs_am0_addr())
-    def regs_am0_write_val(self, value):
-        self._imports.write32(self.regs_am0_addr(), value)
-    def regs_am0_read(self):
-        raw = self.regs_am0_read_val()
+    async def regs_am0_read_val(self):
+        return await self._imports.read32(self.regs_am0_addr())
+    async def regs_am0_write_val(self, value):
+        await self._imports.write32(self.regs_am0_addr(), value)
+    async def regs_am0_read(self):
+        raw = await self.regs_am0_read_val()
         return wb_dma_amask_s.unpack(raw)
-    def regs_am0_write(self, value):
-        self.regs_am0_write_val(value.pack())
-    def regs_am0_write_val_masked(self, mask, val):
-        cur = self.regs_am0_read_val()
-        self.regs_am0_write_val((cur & ~mask) | (val & mask))
+    async def regs_am0_write(self, value):
+        await self.regs_am0_write_val(value.pack())
+    async def regs_am0_write_val_masked(self, mask, val):
+        cur = await self.regs_am0_read_val()
+        await self.regs_am0_write_val((cur & ~mask) | (val & mask))
     def regs_adr1_addr(self):
         """Address of `regs.adr1`."""
         return self._base + 0x10
-    def regs_adr1_read_val(self):
-        return self._imports.read32(self.regs_adr1_addr())
-    def regs_adr1_write_val(self, value):
-        self._imports.write32(self.regs_adr1_addr(), value)
-    def regs_adr1_read(self):
-        raw = self.regs_adr1_read_val()
+    async def regs_adr1_read_val(self):
+        return await self._imports.read32(self.regs_adr1_addr())
+    async def regs_adr1_write_val(self, value):
+        await self._imports.write32(self.regs_adr1_addr(), value)
+    async def regs_adr1_read(self):
+        raw = await self.regs_adr1_read_val()
         return wb_dma_addr_s.unpack(raw)
-    def regs_adr1_write(self, value):
-        self.regs_adr1_write_val(value.pack())
-    def regs_adr1_write_val_masked(self, mask, val):
-        cur = self.regs_adr1_read_val()
-        self.regs_adr1_write_val((cur & ~mask) | (val & mask))
+    async def regs_adr1_write(self, value):
+        await self.regs_adr1_write_val(value.pack())
+    async def regs_adr1_write_val_masked(self, mask, val):
+        cur = await self.regs_adr1_read_val()
+        await self.regs_adr1_write_val((cur & ~mask) | (val & mask))
     def regs_am1_addr(self):
         """Address of `regs.am1`."""
         return self._base + 0x14
-    def regs_am1_read_val(self):
-        return self._imports.read32(self.regs_am1_addr())
-    def regs_am1_write_val(self, value):
-        self._imports.write32(self.regs_am1_addr(), value)
-    def regs_am1_read(self):
-        raw = self.regs_am1_read_val()
+    async def regs_am1_read_val(self):
+        return await self._imports.read32(self.regs_am1_addr())
+    async def regs_am1_write_val(self, value):
+        await self._imports.write32(self.regs_am1_addr(), value)
+    async def regs_am1_read(self):
+        raw = await self.regs_am1_read_val()
         return wb_dma_amask_s.unpack(raw)
-    def regs_am1_write(self, value):
-        self.regs_am1_write_val(value.pack())
-    def regs_am1_write_val_masked(self, mask, val):
-        cur = self.regs_am1_read_val()
-        self.regs_am1_write_val((cur & ~mask) | (val & mask))
+    async def regs_am1_write(self, value):
+        await self.regs_am1_write_val(value.pack())
+    async def regs_am1_write_val_masked(self, mask, val):
+        cur = await self.regs_am1_read_val()
+        await self.regs_am1_write_val((cur & ~mask) | (val & mask))
     def regs_desc_addr(self):
         """Address of `regs.desc`."""
         return self._base + 0x18
-    def regs_desc_read_val(self):
-        return self._imports.read32(self.regs_desc_addr())
-    def regs_desc_write_val(self, value):
-        self._imports.write32(self.regs_desc_addr(), value)
-    def regs_desc_read(self):
-        raw = self.regs_desc_read_val()
+    async def regs_desc_read_val(self):
+        return await self._imports.read32(self.regs_desc_addr())
+    async def regs_desc_write_val(self, value):
+        await self._imports.write32(self.regs_desc_addr(), value)
+    async def regs_desc_read(self):
+        raw = await self.regs_desc_read_val()
         return wb_dma_descptr_s.unpack(raw)
-    def regs_desc_write(self, value):
-        self.regs_desc_write_val(value.pack())
-    def regs_desc_write_val_masked(self, mask, val):
-        cur = self.regs_desc_read_val()
-        self.regs_desc_write_val((cur & ~mask) | (val & mask))
+    async def regs_desc_write(self, value):
+        await self.regs_desc_write_val(value.pack())
+    async def regs_desc_write_val_masked(self, mask, val):
+        cur = await self.regs_desc_read_val()
+        await self.regs_desc_write_val((cur & ~mask) | (val & mask))
     def regs_swptr_addr(self):
         """Address of `regs.swptr`."""
         return self._base + 0x1c
-    def regs_swptr_read_val(self):
-        return self._imports.read32(self.regs_swptr_addr())
-    def regs_swptr_write_val(self, value):
-        self._imports.write32(self.regs_swptr_addr(), value)
-    def regs_swptr_read(self):
-        raw = self.regs_swptr_read_val()
+    async def regs_swptr_read_val(self):
+        return await self._imports.read32(self.regs_swptr_addr())
+    async def regs_swptr_write_val(self, value):
+        await self._imports.write32(self.regs_swptr_addr(), value)
+    async def regs_swptr_read(self):
+        raw = await self.regs_swptr_read_val()
         return wb_dma_swptr_s.unpack(raw)
-    def regs_swptr_write(self, value):
-        self.regs_swptr_write_val(value.pack())
-    def regs_swptr_write_val_masked(self, mask, val):
-        cur = self.regs_swptr_read_val()
-        self.regs_swptr_write_val((cur & ~mask) | (val & mask))
+    async def regs_swptr_write(self, value):
+        await self.regs_swptr_write_val(value.pack())
+    async def regs_swptr_write_val_masked(self, mask, val):
+        cur = await self.regs_swptr_read_val()
+        await self.regs_swptr_write_val((cur & ~mask) | (val & mask))
 
-    def wait_completion(self):
+    async def wait_completion(self):
         """Block until the operation running on this channel reaches a terminal state.
 
         *§3.1.* Not an operation in its own right: it is the ONE place in this tree
@@ -605,10 +628,10 @@ class WbDmaCh(object):
         status = 0
         tok = [0]   # PSS local, held in a cell: channel try_get output
         while True:
-            status = self.probe_status()
+            status = await self.probe_status()
             if status != 2:
                 break
-            self.wait_hint()
+            await self.wait_hint()
         # The operation is over: drop the claim its *_start() took. The result is
         # discarded because there is one case where the token is legitimately
         # absent -- a *_start() that reported a double-start and returned without
@@ -616,7 +639,7 @@ class WbDmaCh(object):
         self.inflight.try_get(tok)
         return status
 
-    def transfer_single(self, cfg):
+    async def transfer_single(self, cfg):
         """Run one transfer to completion and report how it ended.
 
         *§3.2 group 1, end-to-end.* Completes when the channel's DONE (or ERR)
@@ -642,10 +665,10 @@ class WbDmaCh(object):
 
         :param cfg: what to program before arming
         """
-        self.transfer_single_start(cfg)
-        return self.wait_completion()
+        await self.transfer_single_start(cfg)
+        return await self.wait_completion()
 
-    def transfer_list(self, head):
+    async def transfer_list(self, head):
         """Run a descriptor chain to completion and report how it ended.
 
         *§3.2 group 3, end-to-end.* Completes when a descriptor with EOL set has
@@ -667,10 +690,10 @@ class WbDmaCh(object):
         :param head: head of the descriptor chain, as returned when the list was
                      built; must be reachable from interface 0
         """
-        self.transfer_list_start(head)
-        return self.wait_completion()
+        await self.transfer_list_start(head)
+        return await self.wait_completion()
 
-    def stop_channel(self):
+    async def stop_channel(self):
         """Abort whatever is running on this channel and wait for the abort to land.
 
         *§3.2 group 1, end-to-end.* Completes when STOP has been written, the
@@ -696,16 +719,16 @@ class WbDmaCh(object):
         consumes the ERR is not determined by this model -- and for open item §6.5.
         """
         status = 0
-        self.stop_channel_start()
+        await self.stop_channel_start()
         # wait_completion()'s loop, minus the guard release. See above.
         while True:
-            status = self.probe_status()
+            status = await self.probe_status()
             if status != 2:
                 break
-            self.wait_hint()
+            await self.wait_hint()
         return status
 
-    def check_completion(self):
+    async def check_completion(self):
         """Poll whether the operation running on this channel has finished.
 
         The non-blocking half of every end-to-end operation, present on every
@@ -759,14 +782,14 @@ class WbDmaCh(object):
         if not (self.inflight.try_get(tok)):
             self._imports.message('wb_dma: check_completion() with no operation in progress on this channel -- either no *_start() was called, or a previous completion was already consumed')
             return 2
-        status = self.probe_status()
+        status = await self.probe_status()
         if status == 2:
             # Still running: hand the token back. try_put cannot fail -- this
             # is the only holder, and it was just emptied.
             self.inflight.try_put(tok[0])
         return status
 
-    def configure_channel(self, cfg):
+    async def configure_channel(self, cfg):
         """Program a channel's registers from a config, without arming it.
 
         *§3.2 group 1, configuration.* Completes when CHn_SZ / A0 / AM0 / A1 /
@@ -788,13 +811,13 @@ class WbDmaCh(object):
         """
         sz = wb_dma_sz_s()
         csr = wb_dma_csr_s()
-        self.regs_adr0_write_val(cfg.src)
-        self.regs_am0_write_val(cfg.src_mask)
-        self.regs_adr1_write_val(cfg.dst)
-        self.regs_am1_write_val(cfg.dst_mask)
+        await self.regs_adr0_write_val(cfg.src)
+        await self.regs_am0_write_val(cfg.src_mask)
+        await self.regs_adr1_write_val(cfg.dst)
+        await self.regs_am1_write_val(cfg.dst_mask)
         sz.tot_sz = cfg.tot_sz
         sz.chk_sz = cfg.chk_sz
-        self.regs_sz_write(sz)
+        await self.regs_sz_write(sz)
         # CH_EN is what arms the channel, so it must not ride along with the
         # configuration write.
         csr.ch_en = 0
@@ -813,9 +836,9 @@ class WbDmaCh(object):
         csr.ine_done = cfg.int_on_done
         csr.ine_err = cfg.int_on_err
         csr.ine_chk_done = cfg.int_on_chunk
-        self.regs_csr_write(csr)
+        await self.regs_csr_write(csr)
 
-    def probe_status(self):
+    async def probe_status(self):
         """Decode one read of CHn_CSR into a status. The unguarded primitive both
         layers are built from.
 
@@ -848,14 +871,14 @@ class WbDmaCh(object):
            hazard, and the read is a side effect every time.
         """
         csr = wb_dma_csr_s()
-        csr = self.regs_csr_read()
+        csr = await self.regs_csr_read()
         if csr.err == 1:
             return 1
         if csr.done == 1:
             return 0
         return 2
 
-    def set_auto_restart(self, enable):
+    async def set_auto_restart(self, enable):
         """Set or clear the channel's auto-restart bit.
 
         *§3.2 group 1, configuration.* Completes when ARS has been updated; waits
@@ -883,9 +906,9 @@ class WbDmaCh(object):
         # pretend.
         if not (self.caps.ars):
             return
-        self.regs_csr_write_val_masked(64, (((enable) & 0xffffffff) & 1) << 6)
+        await self.regs_csr_write_val_masked(64, (((enable) & 0xffffffff) & 1) << 6)
 
-    def set_software_pointer(self, ptr, enable):
+    async def set_software_pointer(self, ptr, enable):
         """Publish how far a software reader has drained a FIFO in memory.
 
         *§3.2 group 1, configuration.* Completes when CHn_SWPTR has been updated
@@ -916,9 +939,9 @@ class WbDmaCh(object):
         # this runs against a live channel.
         sw.ptr = ptr
         sw.en = enable
-        self.regs_swptr_write(sw)
+        await self.regs_swptr_write(sw)
 
-    def stop_channel_start(self):
+    async def stop_channel_start(self):
         """Write STOP to abort whatever is running on this channel, and return.
 
         *§3.2 group 1.* The non-blocking half of ``stop_channel()``, present on
@@ -960,9 +983,9 @@ class WbDmaCh(object):
            the current WISHBONE cycle retires? That decides whether an abort can
            be considered delivered on return, which matters post-silicon.
         """
-        self.regs_csr_write_val_masked(512, 512)
+        await self.regs_csr_write_val_masked(512, 512)
 
-    def transfer_list_start(self, head):
+    async def transfer_list_start(self, head):
         """Point a channel at a descriptor list and arm it, returning with the chain
         running.
 
@@ -1002,16 +1025,16 @@ class WbDmaCh(object):
         # Step 1: point the channel at the head of the list. The DMA fetches
         # descriptors from interface 0 regardless of which interface the data
         # moves on, so `head` must be IF0-reachable.
-        self.regs_desc_write_val(((head) & 0xffffffff))
+        await self.regs_desc_write_val(((head) & 0xffffffff))
         # Steps 3 and 4, in that order and as TWO WRITES, deliberately: the
         # device requires them separate, and write_fields({"use_ed","ch_en"},
         # {1,1}) would coalesce them into one bus read-modify-write -- that is
         # what the plural form is for. Each of these is still a
         # read-modify-write in its own right (§21.14.1).
-        self.regs_csr_write_val_masked(128, 128)
-        self.regs_csr_write_val_masked(1, 1)
+        await self.regs_csr_write_val_masked(128, 128)
+        await self.regs_csr_write_val_masked(1, 1)
 
-    def transfer_single_start(self, cfg):
+    async def transfer_single_start(self, cfg):
         """Program a channel and arm it, returning with the transfer running.
 
         *§3.2 group 1.* The non-blocking half of ``transfer_single()``, present on
@@ -1048,13 +1071,13 @@ class WbDmaCh(object):
         if not (self.inflight.try_put(1)):
             self._imports.message('wb_dma: transfer_single_start() on a channel that already has an operation in progress')
             return
-        self.configure_channel(cfg)
+        await self.configure_channel(cfg)
         # Arm. write_field is a read-modify-write (§21.14.1), so the
         # configuration just written survives; the read clears the read-to-clear
         # status bits, harmless here because the channel has not started yet.
-        self.regs_csr_write_val_masked(1, 1)
+        await self.regs_csr_write_val_masked(1, 1)
 
-    def wait_hint(self):
+    async def wait_hint(self):
         """Wait until the device may have progressed.
 
         The wait PRIMITIVE: the one function in this model whose body differs
@@ -1093,11 +1116,16 @@ class WbDmaCh(object):
            would deadlock the one caller that has no interrupt to wait for. The
            contract is stated in full in ``docs/op-model-export-design.md`` §4.4.
         """
-        # No event to wait on, so spin. The caller re-reads CHn_CSR on every
-        # iteration; this only decides what the gap between reads costs, and
-        # the target decides that.
-        # yield: nothing to yield to on this target
-        pass
+        # The token carries no information and is discarded: notify_irq()
+        # posts to EVERY channel regardless of which one raised the
+        # interrupt, and with CHUNK_DONE enabled the interrupt also fires on
+        # events that complete nothing, so most wakes are for someone else.
+        # That is precisely why every caller is a wake-and-recheck loop
+        # rather than a single suspend.
+        #
+        # A target exec blocked on a channel operation does not stall other
+        # execs on the same executor (§20.8).
+        await self.wake.get()
 
 
 class WbDma(object):
@@ -1140,184 +1168,184 @@ class WbDma(object):
     def regs_csr_addr(self):
         """Address of `regs.csr`."""
         return self._base + 0x0
-    def regs_csr_read_val(self):
-        return self._imports.read32(self.regs_csr_addr())
-    def regs_csr_write_val(self, value):
-        self._imports.write32(self.regs_csr_addr(), value)
-    def regs_csr_read(self):
-        raw = self.regs_csr_read_val()
+    async def regs_csr_read_val(self):
+        return await self._imports.read32(self.regs_csr_addr())
+    async def regs_csr_write_val(self, value):
+        await self._imports.write32(self.regs_csr_addr(), value)
+    async def regs_csr_read(self):
+        raw = await self.regs_csr_read_val()
         return wb_dma_gcsr_s.unpack(raw)
-    def regs_csr_write(self, value):
-        self.regs_csr_write_val(value.pack())
-    def regs_csr_write_val_masked(self, mask, val):
-        cur = self.regs_csr_read_val()
-        self.regs_csr_write_val((cur & ~mask) | (val & mask))
+    async def regs_csr_write(self, value):
+        await self.regs_csr_write_val(value.pack())
+    async def regs_csr_write_val_masked(self, mask, val):
+        cur = await self.regs_csr_read_val()
+        await self.regs_csr_write_val((cur & ~mask) | (val & mask))
     def regs_int_msk_a_addr(self):
         """Address of `regs.int_msk_a`."""
         return self._base + 0x4
-    def regs_int_msk_a_read_val(self):
-        return self._imports.read32(self.regs_int_msk_a_addr())
-    def regs_int_msk_a_write_val(self, value):
-        self._imports.write32(self.regs_int_msk_a_addr(), value)
-    def regs_int_msk_a_read(self):
-        raw = self.regs_int_msk_a_read_val()
+    async def regs_int_msk_a_read_val(self):
+        return await self._imports.read32(self.regs_int_msk_a_addr())
+    async def regs_int_msk_a_write_val(self, value):
+        await self._imports.write32(self.regs_int_msk_a_addr(), value)
+    async def regs_int_msk_a_read(self):
+        raw = await self.regs_int_msk_a_read_val()
         return wb_dma_intmsk_s.unpack(raw)
-    def regs_int_msk_a_write(self, value):
-        self.regs_int_msk_a_write_val(value.pack())
-    def regs_int_msk_a_write_val_masked(self, mask, val):
-        cur = self.regs_int_msk_a_read_val()
-        self.regs_int_msk_a_write_val((cur & ~mask) | (val & mask))
+    async def regs_int_msk_a_write(self, value):
+        await self.regs_int_msk_a_write_val(value.pack())
+    async def regs_int_msk_a_write_val_masked(self, mask, val):
+        cur = await self.regs_int_msk_a_read_val()
+        await self.regs_int_msk_a_write_val((cur & ~mask) | (val & mask))
     def regs_int_msk_b_addr(self):
         """Address of `regs.int_msk_b`."""
         return self._base + 0x8
-    def regs_int_msk_b_read_val(self):
-        return self._imports.read32(self.regs_int_msk_b_addr())
-    def regs_int_msk_b_write_val(self, value):
-        self._imports.write32(self.regs_int_msk_b_addr(), value)
-    def regs_int_msk_b_read(self):
-        raw = self.regs_int_msk_b_read_val()
+    async def regs_int_msk_b_read_val(self):
+        return await self._imports.read32(self.regs_int_msk_b_addr())
+    async def regs_int_msk_b_write_val(self, value):
+        await self._imports.write32(self.regs_int_msk_b_addr(), value)
+    async def regs_int_msk_b_read(self):
+        raw = await self.regs_int_msk_b_read_val()
         return wb_dma_intmsk_s.unpack(raw)
-    def regs_int_msk_b_write(self, value):
-        self.regs_int_msk_b_write_val(value.pack())
-    def regs_int_msk_b_write_val_masked(self, mask, val):
-        cur = self.regs_int_msk_b_read_val()
-        self.regs_int_msk_b_write_val((cur & ~mask) | (val & mask))
+    async def regs_int_msk_b_write(self, value):
+        await self.regs_int_msk_b_write_val(value.pack())
+    async def regs_int_msk_b_write_val_masked(self, mask, val):
+        cur = await self.regs_int_msk_b_read_val()
+        await self.regs_int_msk_b_write_val((cur & ~mask) | (val & mask))
     def regs_int_src_a_addr(self):
         """Address of `regs.int_src_a`."""
         return self._base + 0xc
-    def regs_int_src_a_read_val(self):
-        return self._imports.read32(self.regs_int_src_a_addr())
-    def regs_int_src_a_read(self):
-        raw = self.regs_int_src_a_read_val()
+    async def regs_int_src_a_read_val(self):
+        return await self._imports.read32(self.regs_int_src_a_addr())
+    async def regs_int_src_a_read(self):
+        raw = await self.regs_int_src_a_read_val()
         return wb_dma_intsrc_s.unpack(raw)
     def regs_int_src_b_addr(self):
         """Address of `regs.int_src_b`."""
         return self._base + 0x10
-    def regs_int_src_b_read_val(self):
-        return self._imports.read32(self.regs_int_src_b_addr())
-    def regs_int_src_b_read(self):
-        raw = self.regs_int_src_b_read_val()
+    async def regs_int_src_b_read_val(self):
+        return await self._imports.read32(self.regs_int_src_b_addr())
+    async def regs_int_src_b_read(self):
+        raw = await self.regs_int_src_b_read_val()
         return wb_dma_intsrc_s.unpack(raw)
     def regs_bank_csr_addr(self, i0):
         """Address of `regs.bank.csr`."""
         return self._base + 0x20 + i0 * 0x20
-    def regs_bank_csr_read_val(self, i0):
-        return self._imports.read32(self.regs_bank_csr_addr(i0))
-    def regs_bank_csr_write_val(self, i0, value):
-        self._imports.write32(self.regs_bank_csr_addr(i0), value)
-    def regs_bank_csr_read(self, i0):
-        raw = self.regs_bank_csr_read_val(i0)
+    async def regs_bank_csr_read_val(self, i0):
+        return await self._imports.read32(self.regs_bank_csr_addr(i0))
+    async def regs_bank_csr_write_val(self, i0, value):
+        await self._imports.write32(self.regs_bank_csr_addr(i0), value)
+    async def regs_bank_csr_read(self, i0):
+        raw = await self.regs_bank_csr_read_val(i0)
         return wb_dma_csr_s.unpack(raw)
-    def regs_bank_csr_write(self, i0, value):
-        self.regs_bank_csr_write_val(i0, value.pack())
-    def regs_bank_csr_write_val_masked(self, i0, mask, val):
-        cur = self.regs_bank_csr_read_val(i0)
-        self.regs_bank_csr_write_val(i0, (cur & ~mask) | (val & mask))
+    async def regs_bank_csr_write(self, i0, value):
+        await self.regs_bank_csr_write_val(i0, value.pack())
+    async def regs_bank_csr_write_val_masked(self, i0, mask, val):
+        cur = await self.regs_bank_csr_read_val(i0)
+        await self.regs_bank_csr_write_val(i0, (cur & ~mask) | (val & mask))
     def regs_bank_sz_addr(self, i0):
         """Address of `regs.bank.sz`."""
         return self._base + 0x24 + i0 * 0x20
-    def regs_bank_sz_read_val(self, i0):
-        return self._imports.read32(self.regs_bank_sz_addr(i0))
-    def regs_bank_sz_write_val(self, i0, value):
-        self._imports.write32(self.regs_bank_sz_addr(i0), value)
-    def regs_bank_sz_read(self, i0):
-        raw = self.regs_bank_sz_read_val(i0)
+    async def regs_bank_sz_read_val(self, i0):
+        return await self._imports.read32(self.regs_bank_sz_addr(i0))
+    async def regs_bank_sz_write_val(self, i0, value):
+        await self._imports.write32(self.regs_bank_sz_addr(i0), value)
+    async def regs_bank_sz_read(self, i0):
+        raw = await self.regs_bank_sz_read_val(i0)
         return wb_dma_sz_s.unpack(raw)
-    def regs_bank_sz_write(self, i0, value):
-        self.regs_bank_sz_write_val(i0, value.pack())
-    def regs_bank_sz_write_val_masked(self, i0, mask, val):
-        cur = self.regs_bank_sz_read_val(i0)
-        self.regs_bank_sz_write_val(i0, (cur & ~mask) | (val & mask))
+    async def regs_bank_sz_write(self, i0, value):
+        await self.regs_bank_sz_write_val(i0, value.pack())
+    async def regs_bank_sz_write_val_masked(self, i0, mask, val):
+        cur = await self.regs_bank_sz_read_val(i0)
+        await self.regs_bank_sz_write_val(i0, (cur & ~mask) | (val & mask))
     def regs_bank_adr0_addr(self, i0):
         """Address of `regs.bank.adr0`."""
         return self._base + 0x28 + i0 * 0x20
-    def regs_bank_adr0_read_val(self, i0):
-        return self._imports.read32(self.regs_bank_adr0_addr(i0))
-    def regs_bank_adr0_write_val(self, i0, value):
-        self._imports.write32(self.regs_bank_adr0_addr(i0), value)
-    def regs_bank_adr0_read(self, i0):
-        raw = self.regs_bank_adr0_read_val(i0)
+    async def regs_bank_adr0_read_val(self, i0):
+        return await self._imports.read32(self.regs_bank_adr0_addr(i0))
+    async def regs_bank_adr0_write_val(self, i0, value):
+        await self._imports.write32(self.regs_bank_adr0_addr(i0), value)
+    async def regs_bank_adr0_read(self, i0):
+        raw = await self.regs_bank_adr0_read_val(i0)
         return wb_dma_addr_s.unpack(raw)
-    def regs_bank_adr0_write(self, i0, value):
-        self.regs_bank_adr0_write_val(i0, value.pack())
-    def regs_bank_adr0_write_val_masked(self, i0, mask, val):
-        cur = self.regs_bank_adr0_read_val(i0)
-        self.regs_bank_adr0_write_val(i0, (cur & ~mask) | (val & mask))
+    async def regs_bank_adr0_write(self, i0, value):
+        await self.regs_bank_adr0_write_val(i0, value.pack())
+    async def regs_bank_adr0_write_val_masked(self, i0, mask, val):
+        cur = await self.regs_bank_adr0_read_val(i0)
+        await self.regs_bank_adr0_write_val(i0, (cur & ~mask) | (val & mask))
     def regs_bank_am0_addr(self, i0):
         """Address of `regs.bank.am0`."""
         return self._base + 0x2c + i0 * 0x20
-    def regs_bank_am0_read_val(self, i0):
-        return self._imports.read32(self.regs_bank_am0_addr(i0))
-    def regs_bank_am0_write_val(self, i0, value):
-        self._imports.write32(self.regs_bank_am0_addr(i0), value)
-    def regs_bank_am0_read(self, i0):
-        raw = self.regs_bank_am0_read_val(i0)
+    async def regs_bank_am0_read_val(self, i0):
+        return await self._imports.read32(self.regs_bank_am0_addr(i0))
+    async def regs_bank_am0_write_val(self, i0, value):
+        await self._imports.write32(self.regs_bank_am0_addr(i0), value)
+    async def regs_bank_am0_read(self, i0):
+        raw = await self.regs_bank_am0_read_val(i0)
         return wb_dma_amask_s.unpack(raw)
-    def regs_bank_am0_write(self, i0, value):
-        self.regs_bank_am0_write_val(i0, value.pack())
-    def regs_bank_am0_write_val_masked(self, i0, mask, val):
-        cur = self.regs_bank_am0_read_val(i0)
-        self.regs_bank_am0_write_val(i0, (cur & ~mask) | (val & mask))
+    async def regs_bank_am0_write(self, i0, value):
+        await self.regs_bank_am0_write_val(i0, value.pack())
+    async def regs_bank_am0_write_val_masked(self, i0, mask, val):
+        cur = await self.regs_bank_am0_read_val(i0)
+        await self.regs_bank_am0_write_val(i0, (cur & ~mask) | (val & mask))
     def regs_bank_adr1_addr(self, i0):
         """Address of `regs.bank.adr1`."""
         return self._base + 0x30 + i0 * 0x20
-    def regs_bank_adr1_read_val(self, i0):
-        return self._imports.read32(self.regs_bank_adr1_addr(i0))
-    def regs_bank_adr1_write_val(self, i0, value):
-        self._imports.write32(self.regs_bank_adr1_addr(i0), value)
-    def regs_bank_adr1_read(self, i0):
-        raw = self.regs_bank_adr1_read_val(i0)
+    async def regs_bank_adr1_read_val(self, i0):
+        return await self._imports.read32(self.regs_bank_adr1_addr(i0))
+    async def regs_bank_adr1_write_val(self, i0, value):
+        await self._imports.write32(self.regs_bank_adr1_addr(i0), value)
+    async def regs_bank_adr1_read(self, i0):
+        raw = await self.regs_bank_adr1_read_val(i0)
         return wb_dma_addr_s.unpack(raw)
-    def regs_bank_adr1_write(self, i0, value):
-        self.regs_bank_adr1_write_val(i0, value.pack())
-    def regs_bank_adr1_write_val_masked(self, i0, mask, val):
-        cur = self.regs_bank_adr1_read_val(i0)
-        self.regs_bank_adr1_write_val(i0, (cur & ~mask) | (val & mask))
+    async def regs_bank_adr1_write(self, i0, value):
+        await self.regs_bank_adr1_write_val(i0, value.pack())
+    async def regs_bank_adr1_write_val_masked(self, i0, mask, val):
+        cur = await self.regs_bank_adr1_read_val(i0)
+        await self.regs_bank_adr1_write_val(i0, (cur & ~mask) | (val & mask))
     def regs_bank_am1_addr(self, i0):
         """Address of `regs.bank.am1`."""
         return self._base + 0x34 + i0 * 0x20
-    def regs_bank_am1_read_val(self, i0):
-        return self._imports.read32(self.regs_bank_am1_addr(i0))
-    def regs_bank_am1_write_val(self, i0, value):
-        self._imports.write32(self.regs_bank_am1_addr(i0), value)
-    def regs_bank_am1_read(self, i0):
-        raw = self.regs_bank_am1_read_val(i0)
+    async def regs_bank_am1_read_val(self, i0):
+        return await self._imports.read32(self.regs_bank_am1_addr(i0))
+    async def regs_bank_am1_write_val(self, i0, value):
+        await self._imports.write32(self.regs_bank_am1_addr(i0), value)
+    async def regs_bank_am1_read(self, i0):
+        raw = await self.regs_bank_am1_read_val(i0)
         return wb_dma_amask_s.unpack(raw)
-    def regs_bank_am1_write(self, i0, value):
-        self.regs_bank_am1_write_val(i0, value.pack())
-    def regs_bank_am1_write_val_masked(self, i0, mask, val):
-        cur = self.regs_bank_am1_read_val(i0)
-        self.regs_bank_am1_write_val(i0, (cur & ~mask) | (val & mask))
+    async def regs_bank_am1_write(self, i0, value):
+        await self.regs_bank_am1_write_val(i0, value.pack())
+    async def regs_bank_am1_write_val_masked(self, i0, mask, val):
+        cur = await self.regs_bank_am1_read_val(i0)
+        await self.regs_bank_am1_write_val(i0, (cur & ~mask) | (val & mask))
     def regs_bank_desc_addr(self, i0):
         """Address of `regs.bank.desc`."""
         return self._base + 0x38 + i0 * 0x20
-    def regs_bank_desc_read_val(self, i0):
-        return self._imports.read32(self.regs_bank_desc_addr(i0))
-    def regs_bank_desc_write_val(self, i0, value):
-        self._imports.write32(self.regs_bank_desc_addr(i0), value)
-    def regs_bank_desc_read(self, i0):
-        raw = self.regs_bank_desc_read_val(i0)
+    async def regs_bank_desc_read_val(self, i0):
+        return await self._imports.read32(self.regs_bank_desc_addr(i0))
+    async def regs_bank_desc_write_val(self, i0, value):
+        await self._imports.write32(self.regs_bank_desc_addr(i0), value)
+    async def regs_bank_desc_read(self, i0):
+        raw = await self.regs_bank_desc_read_val(i0)
         return wb_dma_descptr_s.unpack(raw)
-    def regs_bank_desc_write(self, i0, value):
-        self.regs_bank_desc_write_val(i0, value.pack())
-    def regs_bank_desc_write_val_masked(self, i0, mask, val):
-        cur = self.regs_bank_desc_read_val(i0)
-        self.regs_bank_desc_write_val(i0, (cur & ~mask) | (val & mask))
+    async def regs_bank_desc_write(self, i0, value):
+        await self.regs_bank_desc_write_val(i0, value.pack())
+    async def regs_bank_desc_write_val_masked(self, i0, mask, val):
+        cur = await self.regs_bank_desc_read_val(i0)
+        await self.regs_bank_desc_write_val(i0, (cur & ~mask) | (val & mask))
     def regs_bank_swptr_addr(self, i0):
         """Address of `regs.bank.swptr`."""
         return self._base + 0x3c + i0 * 0x20
-    def regs_bank_swptr_read_val(self, i0):
-        return self._imports.read32(self.regs_bank_swptr_addr(i0))
-    def regs_bank_swptr_write_val(self, i0, value):
-        self._imports.write32(self.regs_bank_swptr_addr(i0), value)
-    def regs_bank_swptr_read(self, i0):
-        raw = self.regs_bank_swptr_read_val(i0)
+    async def regs_bank_swptr_read_val(self, i0):
+        return await self._imports.read32(self.regs_bank_swptr_addr(i0))
+    async def regs_bank_swptr_write_val(self, i0, value):
+        await self._imports.write32(self.regs_bank_swptr_addr(i0), value)
+    async def regs_bank_swptr_read(self, i0):
+        raw = await self.regs_bank_swptr_read_val(i0)
         return wb_dma_swptr_s.unpack(raw)
-    def regs_bank_swptr_write(self, i0, value):
-        self.regs_bank_swptr_write_val(i0, value.pack())
-    def regs_bank_swptr_write_val_masked(self, i0, mask, val):
-        cur = self.regs_bank_swptr_read_val(i0)
-        self.regs_bank_swptr_write_val(i0, (cur & ~mask) | (val & mask))
+    async def regs_bank_swptr_write(self, i0, value):
+        await self.regs_bank_swptr_write_val(i0, value.pack())
+    async def regs_bank_swptr_write_val_masked(self, i0, mask, val):
+        cur = await self.regs_bank_swptr_read_val(i0)
+        await self.regs_bank_swptr_write_val(i0, (cur & ~mask) | (val & mask))
 
     # ----- Sub-component access. -----
     def ch_size(self):
@@ -1325,7 +1353,7 @@ class WbDma(object):
     def ch_at(self, i):
         return self.ch[i]
 
-    def configure_interrupt_routing(self, bank, channel_mask):
+    async def configure_interrupt_routing(self, bank, channel_mask):
         """Route a set of channels to one of the two aggregate interrupt outputs.
 
         *§3.2 group 2, configuration.* Completes when INT_MSK_A/B has been
@@ -1350,13 +1378,17 @@ class WbDma(object):
         vec.ch = channel_mask
         _subject = bank
         if _subject == 0:
-            self.regs_int_msk_a_write(vec)
+            await self.regs_int_msk_a_write(vec)
         elif _subject == 1:
-            self.regs_int_msk_b_write(vec)
+            await self.regs_int_msk_b_write(vec)
         else:
             raise ValueError('configure_interrupt_routing: unmatched match subject' + " (%r)" % (_subject,))
 
-    def pause_engine(self, pause):
+    async def notify_irq(self):
+        for i in range(4):
+            self.ch[i].wake.try_put(1)
+
+    async def pause_engine(self, pause):
         """Pause or un-pause the whole engine, and wait until it has taken effect.
 
         *§3.2 group 2, configuration.* Global, not per-channel.
@@ -1378,14 +1410,14 @@ class WbDma(object):
         """
         gcsr = wb_dma_gcsr_s()
         gcsr.pause = pause
-        self.regs_csr_write(gcsr)
+        await self.regs_csr_write(gcsr)
         while True:
-            gcsr = self.regs_csr_read()
+            gcsr = await self.regs_csr_read()
             if gcsr.pause == pause:
                 break
-            # yield: nothing to yield to on this target
+            await self._imports.yield_()
 
-    def read_descriptor_residual(self, desc_ptr):
+    async def read_descriptor_residual(self, desc_ptr):
         """Read back how much of a descriptor's transfer actually moved.
 
         *§3.2 group 3, configuration.* Completes when DESC_CSR has been loaded
@@ -1405,10 +1437,10 @@ class WbDma(object):
         :param desc_ptr: the descriptor whose control word is read back
         """
         desc_csr = 0
-        desc_csr = self._imports.read32(desc_ptr)
+        desc_csr = await self._imports.read32(desc_ptr)
         return ((desc_csr) & 0xfff)
 
-    def write_descriptor(self, at, prev, desc):
+    async def write_descriptor(self, at, prev, desc):
         """Write one external descriptor into memory and link it to its predecessor.
 
         *§3.2 group 3, configuration.* Completes when the descriptor is in memory
@@ -1446,13 +1478,13 @@ class WbDma(object):
         csr_word |= ((d.csr.inc_dst) & 0xffffffff) << 18
         csr_word |= ((d.csr.inc_src) & 0xffffffff) << 19
         csr_word |= ((d.csr.eol) & 0xffffffff) << 20
-        self._imports.write32(at, csr_word)
-        self._imports.write32((at + 4), d.adr0)
-        self._imports.write32((at + 8), d.adr1)
-        self._imports.write32((at + 12), d.next)
+        await self._imports.write32(at, csr_word)
+        await self._imports.write32((at + 4), d.adr0)
+        await self._imports.write32((at + 8), d.adr1)
+        await self._imports.write32((at + 12), d.next)
         # Extend the list. The check is on the resolved address rather than a
         # handle comparison, because an address handle is opaque and not
         # usefully comparable.
         if prev != 0:
-            self._imports.write32((prev + 12), ((at) & 0xffffffff))
+            await self._imports.write32((prev + 12), ((at) & 0xffffffff))
         return (at + 16)

@@ -7,6 +7,7 @@ EXPECTED_TASKS = {
     "pssc.CHost", "pssc.CHostPresolved", "pssc.CEmbedded",
     "pssc.CEmbeddedPresolved", "pssc.SvProgSeq", "pssc.CProgSeq",
     "pssc.CppProgSeq",
+    "pssc.OpModelSv", "pssc.OpModelC", "pssc.OpModelCpp", "pssc.OpModelPy",
 }
 
 

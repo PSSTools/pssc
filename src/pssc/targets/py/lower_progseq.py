@@ -22,9 +22,16 @@ commented where it happens:
   one-element cell and read as `tok[0]` -- and WHICH locals those are is the
   shared `scan_output_locals`, the same analysis that widens them to
   `uint64_t` in C.
+
+AND, in the async form, a fifth: **an awaited call is HOISTED to a statement of
+its own** unless it already is one. `await` is legal in an arbitrary expression
+position, and putting it there is how this backend would get a subtly wrong
+program rather than a broken one -- see `_awaited` for the three ways, each of
+which is a wrong VALUE and not a syntax error.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import List, Optional, Set
 
 from ..body_walker import BodyWalker, CallDispatch, scan_output_locals
@@ -33,7 +40,7 @@ from ..comments import HASH
 from ..progseq_model import (_dt_name, array_base_stride, channel_fields,
                              field_is_reg_group, scalar_offset, sub_components)
 from .lower_reg_model import accessor_map, value_class_name
-from .naming import class_name, mangle, reg_symbol
+from .naming import IMPORTS_ATTR, class_name, mangle, reg_symbol
 
 _DT_STRUCT = "DataTypeStruct"
 _DT_INT = "DataTypeInt"
@@ -107,6 +114,12 @@ def py_string_literal(s: str) -> str:
     return repr(s)
 
 
+@contextmanager
+def _nullctx():
+    """Does nothing. For the `with A if c else _nullctx()` forms below."""
+    yield
+
+
 class _BodyEmitter(CallDispatch, BodyWalker):
     """Translate one operation body to Python lines.
 
@@ -122,11 +135,34 @@ class _BodyEmitter(CallDispatch, BodyWalker):
     legality_target = "op-model-py"
     call_context = Ctx.TARGET
 
-    def __init__(self, fn, comp, model, *, imports=None, ctor_names=None):
+    #: Does this emitter colour the calls it renders? A constructor body does
+    #: not: it is a SOLVE context, `__init__` cannot be `async def`, and a
+    #: target-only call there is already a diagnostic. Stated as a flag rather
+    #: than inferred from `call_context` so that the two facts -- "runs at solve
+    #: time" and "emits no awaits" -- are separately visible.
+    awaits = True
+
+    def __init__(self, fn, comp, model, *, imports=None, ctor_names=None,
+                 await_style: str = "sync"):
         self.fn = fn
         self.comp = comp
         self.model = model
+        self.await_style = await_style
         self.ctor_names = ctor_names
+        #: Statements that must be emitted BEFORE the one being rendered:
+        #: the hoisted awaited calls. Managed by `render_stmt`, which is the
+        #: single dispatch point every statement passes through.
+        self._pending: List[str] = []
+        #: The indent of the statement being rendered, so a hoisted line lands
+        #: at the same level as the statement it feeds.
+        self._ind = 0
+        #: Names for hoisted values. Per FUNCTION, so they are stable and short;
+        #: the leading underscore keeps them clear of PSS locals, whose names
+        #: come from the model and do not start with one.
+        self._tmp_n = 0
+        #: The one call node that must NOT be hoisted, because the statement
+        #: being rendered already is that call. See `_no_hoist_for`.
+        self._no_hoist: Optional[int] = None
         self.imports = dict(imports or {})
         self.accs = accessor_map(comp)
         self.arg_rename = {a.arg: mangle(a.arg) for a in fn.args.args}
@@ -170,6 +206,97 @@ class _BodyEmitter(CallDispatch, BodyWalker):
 
     def emit(self, body, ind: int = 1) -> List[str]:
         return self.block(body, ind)
+
+    # -- awaiting, and where the awaited value goes ---------------------------
+
+    def _awaited(self, text: str, node=None) -> str:
+        """*text* is a call that crosses the seam. Render it for this form.
+
+        Sync: unchanged, and nothing else here runs -- the sync output is
+        byte-for-byte what it was before this backend had a second form.
+
+        Async: `await` is legal in an arbitrary expression position, and this
+        backend does not put it in one. The call becomes a statement of its
+        own and what is returned is the NAME OF ITS RESULT:
+
+            csr = await self.regs_CSR_read()
+            if csr.ERR == 1:
+
+        rather than `if (await self.regs_CSR_read()).ERR == 1`. Three reasons,
+        and the first is the one that makes it not a matter of taste:
+
+        * **`await` binds loosely.** `await self.f() & mask` is legal Python and
+          means `await (self.f() & mask)`. The failure is a WRONG VALUE, not a
+          syntax error: nothing raises, no golden diff looks odd, and the model
+          programs a register with something that is not what it computed.
+          Parenthesising at every site would fix it and would depend on getting
+          every site right forever; hoisting removes the position where the
+          question can be asked.
+        * **Evaluation order becomes visible.** A body that reads two registers
+          in one expression states an order, and the generated code should show
+          the same order a trace will.
+        * **It is what the generated code should read like.** A suspension point
+          is a real event in an async program, and one per line is how Python
+          programmers write them.
+
+        A call that ALREADY is a whole statement (`plat_delay_us(n)`) or is the
+        whole right-hand side of one (`t = plat_ticks()`) is not hoisted --
+        there is nowhere for it to go and `t = await ...` is already the form
+        this produces. `_no_hoist_for` marks that node.
+        """
+        if not (self.awaits and self.await_style == "async"):
+            return text
+        if node is not None and self._no_hoist == id(node):
+            return f"await {text}"
+        name = f"_v{self._tmp_n}"
+        self._tmp_n += 1
+        self._pending.append(f"{self.pad(self._ind)}{name} = await {text}")
+        return name
+
+    def _no_hoist_for(self, e):
+        """Mark *e* as the call this statement already is, if it is a call.
+
+        Used by the four statement forms whose whole value is one call. Returns
+        a context manager so the marking cannot outlive the statement -- an
+        exemption that leaked would put a bare `await` back into a subexpression,
+        which is precisely what this machinery exists to prevent.
+        """
+        @contextmanager
+        def _mark():
+            prev = self._no_hoist
+            self._no_hoist = id(e) if _dt_name(e) == "ExprCall" else None
+            try:
+                yield
+            finally:
+                self._no_hoist = prev
+        return _mark()
+
+    def _take_pending(self) -> List[str]:
+        """The hoisted statements so far, removed from the buffer.
+
+        For the two hooks that must place them somewhere other than "just before
+        this statement": a loop whose CONDITION crosses the seam has to
+        re-evaluate it every iteration, so its hoisted reads belong inside the
+        loop. `render_stmt` emits whatever is left.
+        """
+        out, self._pending = self._pending, []
+        return out
+
+    def render_stmt(self, s, ind: int) -> List[str]:
+        """The dispatch point, plus the hoisted statements the hook produced.
+
+        EVERY statement passes through here, including nested ones, and each
+        gets its own buffer -- so a hoisted read inside an `if` body lands
+        inside that body rather than in front of the `if`.
+        """
+        outer, self._pending = self._pending, []
+        outer_ind, self._ind = self._ind, ind
+        try:
+            lines = super().render_stmt(s, ind)
+            return self._pending + lines
+        finally:
+            self._pending = outer
+            self._ind = outer_ind
 
     # -- expressions ---------------------------------------------------------
 
@@ -225,7 +352,35 @@ class _BodyEmitter(CallDispatch, BodyWalker):
         op = _BINOP.get(e.op.name)
         if op is None:
             raise ValueError(f"unsupported binop {e.op.name}")
-        return f"{self._operand(e.lhs)} {op} {self._operand(e.rhs)}"
+        lhs = self._operand(e.lhs)
+        mark = len(self._pending)
+        rhs = self._operand(e.rhs)
+        if op in ("and", "or") and len(self._pending) > mark:
+            # REFUSED rather than lowered, and this is the one place this
+            # backend gives up something the sync form can do.
+            #
+            # `&&` and `||` SHORT-CIRCUIT: the right operand runs only if the
+            # left did not settle the answer. Hoisting the right operand's
+            # awaited call to a statement in front of the expression would run
+            # it unconditionally -- and on a status register whose read clears
+            # bits, an access that should not have happened is not a
+            # performance note. The alternatives are both worse: an inline
+            # `(await ...)` puts the precedence hazard back, and rewriting the
+            # operator into nested `if`s changes a condition into control flow
+            # that no longer resembles the model.
+            #
+            # Splitting the condition in the PSS is a one-line change and says
+            # what the author means about the order.
+            raise ValueError(
+                f"in '{getattr(self.fn, 'name', '?')}': the right-hand side of "
+                f"'{e.op.name}' crosses the platform seam, and '{op}' "
+                f"short-circuits -- so the async form cannot render it without "
+                f"either performing an access the model says is conditional, or "
+                f"placing an `await` inside an expression, where it binds "
+                f"loosely enough to change the value. Split the condition: "
+                f"evaluate the right-hand side into a local first, or use "
+                f"nested `if`s.")
+        return f"{lhs} {op} {rhs}"
 
     def expr_unary(self, e) -> str:
         op = _UNOP.get(e.op.name)
@@ -354,23 +509,56 @@ class _BodyEmitter(CallDispatch, BodyWalker):
                 f"'{getattr(self.comp, 'name', '?')}' emits no accessor for it. "
                 f"Reachable: {', '.join('.'.join(p) for p in sorted(self.accs))}")
         name = reg_symbol(acc.segs, acc.name, method)
-        return f"self.{name}(" + ", ".join(idx + args) + ")"
+        # AWAITED: every register accessor except `_addr` crosses the seam, and
+        # `_addr` is never called from here -- a body says `regs.CSR.read()`,
+        # never `regs.CSR.addr()`.
+        return self._awaited(
+            f"self.{name}(" + ", ".join(idx + args) + ")", call)
 
     # -- channels ------------------------------------------------------------
 
-    def _chan_name(self, call) -> Optional[str]:
+    def _chan_ref(self, call) -> Optional[str]:
+        """`wake.try_put(1)` -> `self.wake`; `ch[i].wake...` -> `self.ch[i].wake`.
+
+        NOT just this component's own channels. A channel reached THROUGH a
+        sub-component is how a model fans an event out -- `notify_irq()` posts
+        to every channel's `wake` -- and a sub-component is a real object here,
+        so the reference is simply longer. The walk descends the declared field
+        types rather than assuming the chain is well-formed: a name that is not
+        a sub-component, or a final segment that is not a channel, returns
+        ``None`` and falls through to the generic paths, which is what makes an
+        unrelated method call on an unrelated object still lower.
+        """
         func = getattr(call, "func", None)
         if _dt_name(func) != "ExprAttribute":
             return None
         chain = self._chain(func.value)
-        if not chain or len(chain) != 1 or chain[0][0] not in self.chan_fields:
+        if not chain:
             return None
-        return chain[0][0]
+        comp = self.comp
+        parts: List[str] = []
+        for k, (name, idx) in enumerate(chain):
+            if k == len(chain) - 1:
+                if name not in {f.name for f in channel_fields(comp)}:
+                    return None
+                if idx is not None:
+                    # A channel ARRAY. Nothing in scope declares one, and
+                    # inventing an indexing rule for it here would be a guess.
+                    return None
+                parts.append(mangle(name))
+                return "self." + ".".join(parts)
+            sub = {s.name: s for s in sub_components(comp)}.get(name)
+            if sub is None:
+                return None
+            parts.append(mangle(name) + (f"[{self.expr(idx)}]"
+                                         if idx is not None else ""))
+            comp = sub.dtype
+        return None
 
     def _is_chan_method(self, call, method: str) -> bool:
         return (_dt_name(getattr(call, "func", None)) == "ExprAttribute"
                 and call.func.attr == method
-                and self._chan_name(call) is not None)
+                and self._chan_ref(call) is not None)
 
     def _chan_call(self, call) -> Optional[str]:
         """`wake.try_put(1)` -> `self.wake.try_put(1)`, on the shipped `Chan1`.
@@ -381,14 +569,15 @@ class _BodyEmitter(CallDispatch, BodyWalker):
         Blocking `get()`/`put()` are refused by the registry before they get
         here; `Chan1` also raises, for the model that reached it another way.
         """
-        name = self._chan_name(call)
-        if name is None:
+        ref = self._chan_ref(call)
+        if ref is None:
             return None
         m = call.func.attr
-        ref = f"self.{mangle(name)}"
         if m == "try_put":
             if len(call.args) != 1:
                 raise ValueError("channel try_put() takes one argument")
+            # NOT awaited, in either form: `try_put` is the non-blocking one and
+            # its whole purpose is to answer immediately.
             return f"{ref}.try_put({self.expr(call.args[0])})"
         if m == "try_get":
             if len(call.args) != 1:
@@ -397,9 +586,17 @@ class _BodyEmitter(CallDispatch, BodyWalker):
             out = call.args[0]
             cell = self.arg_rename.get(out.name, mangle(out.name))
             return f"{ref}.try_get({cell})"
+        if m in ("get", "put") and self.await_style == "async":
+            # Blocking, which is what these MEAN, and which the async form can
+            # finally render: `pssc_rt_async.Chan1` suspends on an event. The
+            # sync form never reaches here -- the legality registry refuses the
+            # call before lowering.
+            args = ", ".join(self.expr(a) for a in call.args)
+            return self._awaited(f"{ref}.{m}({args})", call)
         raise ValueError(
-            f"unsupported channel method '{m}' on '{name}'. The Python channel "
-            f"runtime implements try_put/try_get (share/py/pssc_rt.py).")
+            f"unsupported channel method '{m}' on '{ref}'. This form of the "
+            f"Python channel runtime implements try_put/try_get "
+            f"(share/py/pssc_rt.py); get/put need --py-await async.")
 
     # -- built-ins and model calls -------------------------------------------
 
@@ -428,38 +625,41 @@ class _BodyEmitter(CallDispatch, BodyWalker):
         if name == "addr_value":
             return self.expr(args[0])
         if name in _MEM_PRIMS:
-            return self._mem_call(name, args)
+            return self._mem_call(name, args, call)
         if name in ("message", "print"):
             return self._message_call(name, args)
         raise ValueError(
             f"built-in '{name}' is claimed by the Python target but has no "
             f"rendering; see targets/py/lower_progseq.py")
 
-    def _mem_call(self, name: str, args) -> str:
-        """`read32(h)` / `write32(h, v)` -> the bus protocol.
+    def _mem_call(self, name: str, args, call=None) -> str:
+        """`read32(h)` / `write32(h, v)` -> the import API.
 
         NOT register accesses -- a model uses these to put a descriptor into
         system RAM -- but they cross the same seam and are rendered against the
-        same object, so a bus implementation serves both.
+        same object, so one import-API implementation serves both. Awaited for
+        the same reason: crossing the seam is what can consume time.
         """
         direction, width = _MEM_PRIMS[name]
         want = 1 if direction == "read" else 2
         if len(args) != want:
             raise ValueError(f"'{name}' takes {want} argument(s), got {len(args)}")
         rendered = [self.expr(a) for a in args]
-        return f"self._bus.{name}(" + ", ".join(rendered) + ")"
+        return self._awaited(
+            f"self.{IMPORTS_ATTR}.{name}(" + ", ".join(rendered) + ")", call)
 
     def _message_call(self, name: str, args) -> str:
-        """`message(verbosity, text)` -> `self._bus.message(text)`.
+        """`message(verbosity, text)` -> `self._imports.message(text)`.
 
-        Routed through the bus rather than to `print` so that a harness driving
-        several models can collect their output; `Bus.message` defaults to
-        printing, which is what a bare script wants. The verbosity has no
-        analogue and is dropped, exactly as the SV and C projections drop it.
+        Routed through the import API rather than to `print` so that a harness
+        driving several models can collect their output; `MemoryBus.message`
+        defaults to printing, which is what a bare script wants. The verbosity
+        has no analogue and is dropped, exactly as the SV and C projections drop
+        it.
         """
         rest = args[1:] if (name == "message" and len(args) >= 2) else args
         rendered = ", ".join(self.expr(a) for a in rest)
-        return f"self._bus.message({rendered})"
+        return f"self.{IMPORTS_ATTR}.message({rendered})"
 
     def _model_call(self, call) -> str:
         """Another operation of this component, or a declared import."""
@@ -472,14 +672,28 @@ class _BodyEmitter(CallDispatch, BodyWalker):
                 and _dt_name(func.value) == "TypeExprRefSelf"):
             name = func.attr
         if name is not None and name in self.model_ops:
-            return f"self.{mangle(name)}(" + ", ".join(args) + ")"
+            # Another operation of this component is a PSS target function and
+            # is generated `async def` in this form, so calling it is an await.
+            return self._awaited(
+                f"self.{mangle(name)}(" + ", ".join(args) + ")", call)
         if name is not None and name in self.imports:
             # An `import target/solve function` is a PLATFORM function, not a
-            # method of this component: it is called on the bus object, which is
-            # the one thing the environment supplies. `lower_imports` documents
-            # the required signature from the same declaration, so the two
-            # cannot disagree about it.
-            return f"self._bus.{mangle(name)}(" + ", ".join(args) + ")"
+            # method of this component: it is called on the import-API object,
+            # which is the one thing the environment supplies. The generated
+            # Protocol declares it from the same declaration, so the two cannot
+            # disagree about its signature.
+            #
+            # An `import SOLVE function` is NOT awaited, in either form. The
+            # distinction is about when a function runs relative to solving, and
+            # a solve function cannot consume time -- so colouring it would put
+            # a suspension point where the model says there is none, and would
+            # demand an `async def` the platform has no reason to write.
+            rendered = f"self.{IMPORTS_ATTR}.{mangle(name)}(" \
+                       + ", ".join(args) + ")"
+            fn = self.imports[name]
+            if getattr(fn, "is_solve", False):
+                return rendered
+            return self._awaited(rendered, call)
         raise ValueError(
             f"call to '{name or _dt_name(func)}' has no lowering in the Python "
             f"target. It is not a register access, not a PSS built-in this "
@@ -500,8 +714,9 @@ class _BodyEmitter(CallDispatch, BodyWalker):
         pad = self.pad(ind)
         name = self.expr(s.target)
         value = getattr(s, "value", None)
-        init = (self.expr(value) if value is not None
-                else self._zero(s.annotation))
+        with self._no_hoist_for(value) if value is not None else _nullctx():
+            init = (self.expr(value) if value is not None
+                    else self._zero(s.annotation))
         if getattr(s.target, "name", None) in self.chan_out_locals:
             # A CELL, deliberately, and stated in the output because `bit tok`
             # becoming `[0]` is otherwise an unexplained discrepancy with the
@@ -528,7 +743,11 @@ class _BodyEmitter(CallDispatch, BodyWalker):
     def stmt_assign(self, s, ind: int) -> List[str]:
         pad = self.pad(ind)
         tgt = s.targets[0]
-        return [f"{pad}{self.expr(tgt)} = {self.expr(s.value)}"]
+        # `x = await f()` is already the shape `_awaited` produces, so the
+        # right-hand side does not need a temporary of its own.
+        with self._no_hoist_for(s.value):
+            value = self.expr(s.value)
+        return [f"{pad}{self.expr(tgt)} = {value}"]
 
     def stmt_aug_assign(self, s, ind: int) -> List[str]:
         op = _BINOP.get(s.op.name)
@@ -541,15 +760,21 @@ class _BodyEmitter(CallDispatch, BodyWalker):
                 f"{self.expr(s.value)}"]
 
     def stmt_expr(self, s, ind: int) -> List[str]:
-        return [f"{self.pad(ind)}{self.expr(s.expr)}"]
+        # The statement IS the call. `await self.f(x)` on its own line is what a
+        # hoist would produce anyway, minus a temporary nothing reads.
+        with self._no_hoist_for(s.expr):
+            return [f"{self.pad(ind)}{self.expr(s.expr)}"]
 
     def stmt_return(self, s, ind: int) -> List[str]:
         pad = self.pad(ind)
         if s.value is not None:
-            return [f"{pad}return {self.expr(s.value)}"]
+            with self._no_hoist_for(s.value):
+                return [f"{pad}return {self.expr(s.value)}"]
         return [f"{pad}return"]
 
     def stmt_if(self, s, ind: int) -> List[str]:
+        # A hoisted read in the TEST belongs in front of the `if`, which is
+        # where `render_stmt` puts it: the test is evaluated once.
         pad = self.pad(ind)
         lines = [f"{pad}if {self.expr(s.test)}:"]
         lines += self.block(s.body, ind + 1)
@@ -559,8 +784,37 @@ class _BodyEmitter(CallDispatch, BodyWalker):
         return lines
 
     def stmt_while(self, s, ind: int) -> List[str]:
+        """`while (c) { ... }`.
+
+        A test that crosses the seam turns this into a bottom-tested loop, and
+        the reason is not style. The test is re-evaluated EVERY ITERATION, and a
+        hoisted read placed in front of the `while` would be evaluated once --
+        so a completion poll would read the status register a single time and
+        then spin on that value forever. The transform below keeps the read
+        where the model put it:
+
+            while True:
+                _v0 = await self.regs_STATUS_read()
+                if not (_v0 != DONE):
+                    break
+                <body>
+
+        Same loop, same number of reads, and the `while (c)` form is still
+        emitted whenever the test hoists nothing -- which is every sync
+        generation and most async ones.
+        """
         pad = self.pad(ind)
-        return [f"{pad}while {self.expr(s.test)}:"] + self.block(s.body, ind + 1)
+        test = self.expr(s.test)
+        hoisted = self._take_pending()
+        if not hoisted:
+            return [f"{pad}while {test}:"] + self.block(s.body, ind + 1)
+        inner = self.pad(ind + 1)
+        lines = [f"{pad}while True:"]
+        lines += [f"{self.indent}{h}" for h in hoisted]
+        lines.append(f"{inner}if not ({test}):")
+        lines.append(f"{inner}{self.indent}break")
+        lines += self.block(s.body, ind + 1)
+        return lines
 
     def stmt_repeat_while(self, s, ind: int) -> List[str]:
         """`repeat { ... } while (c)` -- a do-while, which Python does not have.
@@ -573,7 +827,13 @@ class _BodyEmitter(CallDispatch, BodyWalker):
         inner = self.pad(ind + 1)
         lines = [f"{pad}while True:"]
         lines += self.block(s.body, ind + 1)
-        lines.append(f"{inner}if not ({self.expr(s.condition)}):")
+        cond = self.expr(s.condition)
+        # The condition's own hoisted reads belong INSIDE the loop, immediately
+        # before the test they feed -- the test runs once per iteration, and
+        # `render_stmt` would otherwise put them in front of the whole loop,
+        # where they would be read once and then spun on.
+        lines += [f"{self.indent}{h}" for h in self._take_pending()]
+        lines.append(f"{inner}if not ({cond}):")
         lines.append(f"{inner}{self.indent}break")
         return lines
 
@@ -669,15 +929,27 @@ class _BodyEmitter(CallDispatch, BodyWalker):
         raise ValueError(f"unsupported match pattern {cn}")
 
     def stmt_yield(self, s, ind: int) -> List[str]:
-        """`yield` -- the polling wait primitive.
+        """`yield` -- the wait primitive, whose cost is the form's to say.
 
-        LOWERED, NOT REJECTED, and the rendering is a comment. `yield` is a hint
-        to a scheduler and this target has none, so the honest cost of "let
-        something else run" is zero and the surrounding loop becomes a poll --
-        which is what a model reaching `yield` asked for. `block()` supplies the
-        `pass` when this is a body's only statement.
+        LOWERED, NOT REJECTED, in both forms.
+
+        Sync: a comment. `yield` is a hint to a scheduler and this form has
+        none, so the honest cost of "let something else run" is zero and the
+        surrounding loop becomes a poll -- which is what a model reaching
+        `yield` asked for. `block()` supplies the `pass` when this is a body's
+        only statement.
+
+        Async: a call on the platform, because now there IS something to yield
+        to and only the platform knows what that costs -- `asyncio.sleep(0)`, a
+        clock edge, a watchdog kick. Still a HINT and never an interrupt wait:
+        the surrounding poll decides when it is done
+        (`docs/op-model-export-design.md` §4.4). The C and C++ targets spell the
+        same seam `--yield import` and call the same `yield_()`.
         """
-        return [f"{self.pad(ind)}# yield: nothing to yield to on this target"]
+        pad = self.pad(ind)
+        if self.awaits and self.await_style == "async":
+            return [f"{pad}await self.{IMPORTS_ATTR}.yield_()"]
+        return [f"{pad}# yield: nothing to yield to on this target"]
 
 
 class _CtorMixin:
@@ -692,8 +964,16 @@ class _CtorMixin:
 
     #: A constructor body is a SOLVE context. The registry refuses a target-only
     #: call there, which is how `write32(...)` in a constructor becomes a
-    #: diagnostic rather than code that runs before the bus exists.
+    #: diagnostic rather than code that runs before the platform exists.
     call_context = Ctx.SOLVE
+
+    #: And therefore nothing here is awaited, in either form. `__init__` cannot
+    #: be `async def` -- Python constructs before it can await -- and it does
+    #: not need to be: the registry has already refused every call that could
+    #: consume time. The design's claim that constructors stay synchronous is
+    #: not a rule this backend enforces separately; it is a consequence of
+    #: where a constructor body runs.
+    awaits = False
 
     def call_structural(self, call) -> Optional[str]:
         return self._group_call(call)
@@ -750,7 +1030,7 @@ class _CtorMixin:
                 f"'{sub.name}.{func.attr}()' is called during construction, but "
                 f"only a sub-component's constructor may be. An operation is a "
                 f"target function and cannot run in a solve exec.")
-        args = ["self._bus"] + [self.expr(a) for a in call.args]
+        args = [f"self.{IMPORTS_ATTR}"] + [self.expr(a) for a in call.args]
         ctor = f"{class_name(getattr(sub.dtype, 'name', ''))}(" + \
                ", ".join(args) + ")"
         idx = chain[0][1]

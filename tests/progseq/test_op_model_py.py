@@ -11,11 +11,19 @@ That is also why this file matters beyond its own target: the addresses it
 checks come from `targets/reg_layout.py`, which is the same walk the C backend
 folds its accessors from. An offset wrong here is wrong in three languages.
 
-Plan: P8.T1.
+WHAT IS DELIBERATELY NOT HERE: a cocotb-in-simulator run of the async form. It
+is the obvious next thing, it needs a simulator in the loop, and none of the
+design decisions depend on it -- the duck-typed event (`pssc_rt_async.Chan1`
+takes the platform's `event()` and never names a scheduler) is what keeps it
+reachable later without regenerating anything. Its absence is a decision, not an
+oversight.
+
+Plan: P8.T1; `docs/op-model-py-async-plan.md`.
 """
 from __future__ import annotations
 
 import importlib
+import re
 import subprocess
 import sys
 import textwrap
@@ -71,18 +79,176 @@ def test_it_produces_a_module_and_the_runtime(bundled):
     assert outcome.names == ["dma_engine.py", "pssc_rt.py"]
 
 
-def test_the_generated_module_imports_nothing_when_the_model_has_no_channels(
-        bundled):
-    """The zero-dependency property, asserted rather than hoped for.
+#: What a generated module is allowed to import. Everything here ships with the
+#: interpreter; `pssc_rt` deliberately does not appear, which is the whole
+#: content of the assertion below.
+_STDLIB_ONLY = {"__future__", "typing"}
 
-    A generated driver gets copied onto a lab machine. A single file that
-    imports nothing still runs there, and that is worth a test because it is
-    the kind of property one convenience import silently ends.
+
+def test_the_generated_module_imports_only_the_standard_library(bundled):
+    """The zero-install property, asserted rather than hoped for.
+
+    A generated driver gets copied onto a lab machine. A single file that needs
+    no install still runs there, and that is worth a test because it is the kind
+    of property one convenience import silently ends.
+
+    NOT "imports nothing", which is what this asserted before the generated
+    import API landed: `typing.Protocol` is how the seam states its own
+    requirement, and `from __future__ import annotations` is what lets it name
+    classes defined further down. Both ship with Python. The line that would
+    break the property is one naming a package that does not -- `pssc_rt`
+    included, which a model without channels must not need.
     """
     _, _, outcome = bundled
-    statements = [l for l in outcome.read("dma_engine.py").splitlines()
-                  if l.startswith(("import ", "from "))]
-    assert statements == [], statements
+    modules = [l.split()[1] for l in outcome.read("dma_engine.py").splitlines()
+               if l.startswith(("import ", "from "))]
+    assert set(modules) <= _STDLIB_ONLY, modules
+
+
+# --- the generated import API ------------------------------------------------
+
+def test_the_protocol_declares_exactly_what_the_bodies_call(wb_dma):
+    """T5.1. Both directions, and they are deliberately not symmetric.
+
+    Anything a body calls on the seam MUST be a member -- a Protocol that omits
+    one is a lie, and a platform satisfying it still gets an AttributeError.
+    A member that nothing calls is allowed only if the model DECLARED it as an
+    import: that set is the platform's contract, exactly as the C++ target
+    treats it (`cpp/lower_progseq.emit_import_api`).
+    """
+    from pssc.targets.py.lower_import_api import imports_used
+
+    _, _, outcome = wb_dma
+    text = outcome.read("wb_dma.py")
+    proto = text.split("class WbDmaImportApi(Protocol):", 1)[1]
+    proto = proto.split("\n# -----", 1)[0]
+    declared = set(re.findall(r"def (\w+)\(self", proto))
+
+    called = imports_used(text)
+    assert called <= declared, sorted(called - declared)
+
+    # The model declares one import (`message` is a built-in, `notify_irq` is
+    # the declared one), so the only slack allowed is the declared set.
+    model_imports = {"notify_irq"}
+    assert declared - called <= model_imports, sorted(declared - called)
+
+
+def test_a_width_the_model_never_uses_is_not_demanded_of_the_platform(wb_dma):
+    """The Protocol is per-model, which is the whole reason it beats a base
+    class: WB DMA is a 32-bit device, so nothing should be asked to implement
+    `read8` or `read64`."""
+    _, _, outcome = wb_dma
+    proto = outcome.read("wb_dma.py").split(
+        "class WbDmaImportApi(Protocol):", 1)[1].split("\n# -----", 1)[0]
+    assert "read32" in proto
+    for absent in ("read8", "read16", "read64", "write8", "write16", "write64"):
+        assert absent not in proto, absent
+
+
+def test_the_protocol_is_runtime_checkable_and_the_stub_satisfies_it(wb_dma):
+    """T5.7. `@runtime_checkable` is emitted, and `MemoryBus` really does meet
+    the seam -- a check that fails only at a user's `isinstance` otherwise."""
+    mod, rt, _ = wb_dma
+    assert isinstance(rt.MemoryBus(), mod.WbDmaImportApi)
+
+
+def test_check_import_api_names_what_is_missing(wb_dma):
+    """T5.6. The half `isinstance` cannot do: WHICH member, not just no."""
+    mod, rt, _ = wb_dma
+    assert rt.check_import_api(rt.MemoryBus(), mod.WbDmaImportApi) == []
+
+    class Partial:
+        def read32(self, addr): return 0
+
+    problems = rt.check_import_api(Partial(), mod.WbDmaImportApi)
+    assert any("write32" in p and "missing" in p for p in problems), problems
+    assert any("message" in p for p in problems), problems
+
+
+def test_check_import_api_catches_a_mis_coloured_method(wb_dma):
+    """T5.6, the half that is the reason this function exists at all.
+
+    An `async def` where the sync form wants a plain one passes `isinstance`
+    and then hands the model a coroutine object where it expects an integer --
+    a register value of the wrong type, arbitrarily far from its cause.
+    """
+    mod, rt, _ = wb_dma
+
+    class Coloured(rt.MemoryBus):
+        async def read32(self, addr): return 0
+
+    problems = rt.check_import_api(Coloured(), mod.WbDmaImportApi)
+    assert any("read32" in p and "async" in p for p in problems), problems
+
+
+def test_check_import_api_reports_a_wrong_arity(wb_dma):
+    mod, rt, _ = wb_dma
+
+    class Narrow(rt.MemoryBus):
+        def write32(self, addr): pass
+
+    problems = rt.check_import_api(Narrow(), mod.WbDmaImportApi)
+    assert any("write32" in p for p in problems), problems
+
+
+#: A model whose imports are the platform's, not pssc's: neither name is known
+#: to the generator, one is a target function and one is a solve function, and
+#: `plat_reset` is DECLARED AND NEVER CALLED -- which is the case that separates
+#: "what the bodies need" from "what the platform is contracted to supply".
+_IMPORTS_MODEL = """
+package plat_pkg {
+    import target function void plat_delay_us(int us);
+    import solve  function int  plat_ticks();
+    import target function void plat_reset();
+}
+
+component imp_c {
+    import plat_pkg::*;
+
+    target function int spin(int n) {
+        int t;
+        plat_delay_us(n);
+        t = plat_ticks();
+        return t;
+    }
+}
+"""
+
+
+@pytest.fixture(scope="module")
+def imports_model(tmp_path_factory):
+    src = tmp_path_factory.mktemp("imp") / "imp.pss"
+    src.write_text(_IMPORTS_MODEL)
+    with compile_op_model("op-model-py", sources=[str(src)],
+                          root="imp_c") as outcome:
+        yield outcome
+
+
+def test_every_declared_import_reaches_the_protocol_called_or_not(imports_model):
+    """The C++ target's rule, and the reason for it is unchanged: the declared
+    set is the platform's CONTRACT. A platform implementing one function too
+    many pays nothing; one discovering a requirement later pays a rebuild."""
+    text = imports_model.read("imp.py")
+    proto = text.split("class ImpImportApi(Protocol):", 1)[1].split(
+        "\n# -----", 1)[0]
+    assert "def plat_delay_us(self, us: int) -> None:" in proto
+    assert "def plat_ticks(self) -> int:" in proto
+    # Never called by any body, and required anyway.
+    assert "def plat_reset(self) -> None:" in proto
+    assert "self._imports.plat_reset(" not in text
+
+
+def test_a_call_on_the_seam_the_protocol_cannot_describe_is_refused():
+    """The Protocol is generated from the output, so a member the bodies call
+    and nothing declares would leave a platform meeting the Protocol and still
+    failing at the call. That is a generator defect, and it raises."""
+    from pssc.targets.py.lower_import_api import lower_import_api
+
+    model = type("M", (), {"root": type("R", (), {"name": "imp_c"}),
+                           "imports": {}, "components": (),
+                           "channels": staticmethod(lambda d: ())})()
+    with pytest.raises(ValueError, match="plat_delay_us"):
+        lower_import_api(model, used={"plat_delay_us"})
 
 
 def test_a_model_with_channels_imports_the_channel_and_says_why(wb_dma):
@@ -317,12 +483,378 @@ def test_yield_lowers_to_a_comment_and_the_suite_still_parses(wb_dma):
     assert "\n            pass\n" in text or "\n        pass\n" in text
 
 
-def test_an_import_function_is_called_on_the_bus(wb_dma):
+def test_an_import_function_is_called_on_the_import_api(wb_dma):
     """A declared `import` is a PLATFORM function, so it is not a method of the
     component and is not invented as one."""
     _, _, outcome = wb_dma
     text = outcome.read("wb_dma.py")
-    assert "self._bus.message(" in text
+    assert "self._imports.message(" in text
+
+
+# --- the form knob -----------------------------------------------------------
+
+#: Members the async form adds to the import API and the sync form has no use
+#: for. Not drift: `yield_` is what a PSS `yield` lowers to when there IS a
+#: scheduler, and `event` is what a blocking channel needs. Excluded here so
+#: the comparison is about everything else.
+_ASYNC_ONLY_MEMBERS = {"yield_", "event"}
+
+
+def _uncoloured(text: str):
+    """*text* as a syntax tree with the colouring removed.
+
+    A TREE rather than the text, and the difference matters. Stripping `async `
+    and `await ` from the source and comparing strings would be a comparison of
+    LAYOUT: it fails on a wrapped line and it cannot see that `await f() & mask`
+    and `(await f()) & mask` are different programs. Parsing both and erasing
+    the colour compares what the two modules MEAN, which is the claim -- the
+    async form is the sync form, coloured.
+
+    Comments do not survive, deliberately. The one comment that legitimately
+    differs is the sync form's `# yield: ...`, whose async counterpart is a call.
+    """
+    import ast
+
+    class _Erase(ast.NodeTransformer):
+        def visit_AsyncFunctionDef(self, node):
+            self.generic_visit(node)
+            return ast.FunctionDef(
+                name=node.name, args=node.args, body=node.body,
+                decorator_list=node.decorator_list, returns=node.returns,
+                type_comment=None, type_params=[])
+
+        def visit_Await(self, node):
+            self.generic_visit(node)
+            return node.value
+
+        def visit_ClassDef(self, node):
+            node.body = [b for b in node.body
+                         if getattr(b, "name", None) not in _ASYNC_ONLY_MEMBERS]
+            self.generic_visit(node)
+            return node
+
+    tree = _Erase().visit(ast.parse(text))
+    # The MODULE docstring is dropped: it is the banner, whose usage snippet
+    # names a different runtime and wraps the call in an event loop. That
+    # difference is prose about how to drive the module, not a difference in
+    # what the module does -- and it has its own test, which runs it.
+    if (tree.body and isinstance(tree.body[0], ast.Expr)
+            and isinstance(tree.body[0].value, ast.Constant)):
+        tree.body = tree.body[1:]
+    return ast.dump(ast.fix_missing_locations(tree), indent=1)
+
+
+def _gen_both(tmp_path, order=("sync", "async"), **kw):
+    """Both forms, generated IN ONE INTERPRETER, in the order given.
+
+    The order is a parameter because the per-run legality registration
+    (`PyProgSeqTarget._register_legality`) is process-global: it is re-published
+    per generation, and a registration left where it cannot see the form would
+    hand the second generation the first one's answer. Running both orders is
+    what fails if that hook moves.
+    """
+    out = {}
+    for style in order:
+        with compile_op_model(
+                "op-model-py", output_dir=str(tmp_path / f"{style}-{order[0]}"),
+                py_await=style, **kw) as o:
+            out[style] = o.read("dma_engine.py")
+    return out
+
+
+@pytest.mark.parametrize("order", [("sync", "async"), ("async", "sync")])
+def test_the_async_form_is_the_sync_form_with_a_colour_on_it(tmp_path, order):
+    """T5.2. Token equivalence, in both generation orders.
+
+    `HAVE_EVENT_WAIT` is pinned FALSE, and that pin is the whole reason this
+    test says something. Left true, the async form would compile a DIFFERENT
+    MODEL -- the `compile if` branches the model guards with it -- and the
+    comparison would be vacuous. The true case is covered separately, where the
+    difference is the point rather than the noise.
+    """
+    both = _gen_both(tmp_path, order=order,
+                     target_cfg=["HAVE_EVENT_WAIT=false"])
+    assert _uncoloured(both["async"]) == _uncoloured(both["sync"])
+
+
+def test_the_form_decides_what_the_model_is_told_it_can_do():
+    """`HAVE_EVENT_WAIT` is a property of the FORM. Not a cosmetic difference:
+    the model reads it in a `compile if` and takes a different branch."""
+    import argparse
+
+    from pssc.targets import get as get_target
+
+    tgt = get_target("op-model-py")
+    sync = argparse.Namespace(py_await="sync", target_cfg=None)
+    aio = argparse.Namespace(py_await="async", target_cfg=None)
+    assert tgt.resolved_target_cfg_for(sync)["HAVE_EVENT_WAIT"] is False
+    assert tgt.resolved_target_cfg_for(aio)["HAVE_EVENT_WAIT"] is True
+    # The no-options answer -- what `pssc targets` prints -- is the DEFAULT
+    # form's, which is what makes the listing truthful rather than merely
+    # non-empty.
+    assert tgt.resolved_target_cfg()["HAVE_EVENT_WAIT"] is False
+
+
+# --- driving the async form --------------------------------------------------
+
+@pytest.fixture(scope="module")
+def wb_dma_async(tmp_path_factory):
+    """The WB DMA model in its async form -- with `HAVE_EVENT_WAIT` TRUE.
+
+    Which is the point of the fixture: the async form publishes that capability,
+    so `wait_hint()` compiles to `wake.get()` rather than to a `yield`, and
+    `notify_irq()` exists to release it. That is a different model, deliberately,
+    and it is where the blocking channel gets exercised at all.
+    """
+    out = tmp_path_factory.mktemp("wb-async")
+    with compile_op_model("op-model-py", sources=wb_dma_sources(),
+                          root=WB_DMA_ROOT, output_dir=str(out),
+                          py_await="async") as outcome:
+        sys.path.insert(0, str(outcome.out_dir))
+        try:
+            for name in ("wb_dma", "pssc_rt", "pssc_rt_async"):
+                sys.modules.pop(name, None)
+            rt = importlib.import_module("pssc_rt_async")
+            mod = importlib.import_module("wb_dma")
+        finally:
+            sys.path.remove(str(outcome.out_dir))
+        yield mod, rt, outcome
+
+
+@pytest.fixture(scope="module")
+def bundled_async(tmp_path_factory):
+    """The bundled model in its async form, imported and ready to await."""
+    out = tmp_path_factory.mktemp("async")
+    with compile_op_model("op-model-py", output_dir=str(out),
+                          py_await="async") as outcome:
+        sys.path.insert(0, str(outcome.out_dir))
+        try:
+            for name in ("dma_engine", "pssc_rt", "pssc_rt_async"):
+                sys.modules.pop(name, None)
+            rt = importlib.import_module("pssc_rt_async")
+            mod = importlib.import_module("dma_engine")
+        finally:
+            sys.path.remove(str(outcome.out_dir))
+        yield mod, rt, outcome
+
+
+def test_the_async_form_ships_both_runtime_halves(bundled_async):
+    _, _, outcome = bundled_async
+    assert outcome.names == ["dma_engine.py", "pssc_rt.py", "pssc_rt_async.py"]
+
+
+@pytest.mark.asyncio
+async def test_the_two_forms_issue_the_same_accesses(bundled, bundled_async):
+    """T5.3. The test the parenthesisation hazard cannot survive.
+
+    Both forms run the same operation against the same starting memory, and the
+    two access logs must be IDENTICAL -- width, address, data, and order. That
+    is a claim no golden snapshot can make: `await self.f() & mask` parses,
+    means `await (self.f() & mask)`, raises nothing, and writes a value that is
+    simply wrong. It shows up here as a different `data` on one entry.
+
+    The order matters as much as the values. An `await` moved across an
+    assignment does not change what is computed but does change WHEN, and on a
+    register whose read clears bits that is a different program.
+    """
+    sync_mod, sync_rt, _ = bundled
+    aio_mod, aio_rt, _ = bundled_async
+
+    sync_bus = _completing_bus(sync_rt, channel_base=0x1000 + 0x20 + 2 * 0x20)
+    aio_bus = _completing_async_bus(
+        aio_rt, channel_base=0x1000 + 0x20 + 2 * 0x20)
+
+    sync_dut = sync_mod.DmaEngine(sync_bus, 0x1000)
+    aio_dut = aio_mod.DmaEngine(aio_bus, 0x1000)
+
+    sync_dut.configure_channel(2, 3, 1, 0, 1)
+    await aio_dut.configure_channel(2, 3, 1, 0, 1)
+    assert sync_dut.mem_to_mem_copy(2, 0xdead0000, 0xbeef0000, 64) == \
+        await aio_dut.mem_to_mem_copy(2, 0xdead0000, 0xbeef0000, 64)
+
+    assert aio_bus.log == sync_bus.log
+
+
+def _completing_async_bus(rt, *, channel_base: int):
+    """`_completing_bus`, coloured. Same device, same DONE rule."""
+    class Device(rt.AsyncMemoryBus):
+        async def read32(self, addr):
+            v = await super().read32(addr)
+            return (v | (1 << 11)) if (addr == channel_base and v & 1) else v
+
+    return Device()
+
+
+@pytest.mark.asyncio
+async def test_a_blocking_channel_receive_really_suspends(wb_dma_async):
+    """T5.4. The whole payoff of the async form, and the one thing a token
+    comparison cannot check.
+
+    `wait_completion()` polls the CSR and then waits on `wake`. In the async
+    form that wait is a real suspension: nothing else in this test can run until
+    it yields, and it is a concurrent `notify_irq()` that releases it. If
+    `wake.get()` had been lowered to a spin, the CSR read count would climb with
+    the sleep below instead of staying at its minimum.
+    """
+    import asyncio
+
+    mod, rt, _ = wb_dma_async
+    bus = rt.AsyncMemoryBus()
+    dut = mod.WbDma(bus, 0x2000)
+    ch = dut.ch_at(0)
+    bus.mem[ch._base] = 1 << 10          # BUSY: the poll will not terminate
+
+    async def complete():
+        # Let the waiter reach its suspension, then post -- via the model's own
+        # event producer, which is what a platform's ISR would call.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        bus.mem[ch._base] = 1 << 11      # DONE
+        await dut.notify_irq()
+
+    ch.inflight.try_put(1)
+    status, _ = await asyncio.wait_for(
+        asyncio.gather(ch.wait_completion(), complete()), timeout=2.0)
+    assert status == mod.WB_DMA_DONE
+
+    reads = [e for e in bus.log if e[0] == "read" and e[2] == ch._base]
+    # Two probes: the one that found it BUSY and the one after the wake. A spin
+    # would have made this grow with the sleeps above.
+    assert len(reads) == 2, bus.log
+
+
+def test_a_blocking_channel_call_is_refused_in_sync_and_rendered_in_async():
+    """T5.5. The one call whose legality depends on the form.
+
+    `get()`/`put()` suspend. Sync has nowhere to suspend to, so the registry
+    refuses them -- and the diagnostic must name the form and the way out,
+    because "this backend cannot" stopped being true of one of the two forms.
+    """
+    from pssc.targets import get as get_target
+    from pssc.targets.call_legality import Ctx, classify
+
+    tgt = get_target("op-model-py")
+    ask = lambda n: classify(n, context=Ctx.TARGET,   # noqa: E731
+                             target="op-model-py")
+
+    tgt._register_legality("sync")
+    res = ask("get")
+    assert not res.ok
+    assert "--py-await async" in res.message, res.message
+
+    tgt._register_legality("async")
+    assert ask("get").ok
+    assert ask("put").ok
+
+    # Left as the default, so nothing later in this process inherits the async
+    # answer from a test.
+    tgt._register_legality("sync")
+
+
+def test_the_async_module_still_imports_only_the_standard_library(
+        bundled_async):
+    """T5.10. The zero-install property survives the second form.
+
+    A model with no channels must reach nothing outside the interpreter in
+    EITHER form -- the async lowering adds `await`, which is syntax, not a
+    dependency. `pssc_rt_async` appears only where a channel does.
+    """
+    _, _, outcome = bundled_async
+    modules = [l.split()[1] for l in outcome.read("dma_engine.py").splitlines()
+               if l.startswith(("import ", "from "))]
+    assert set(modules) <= _STDLIB_ONLY, modules
+
+
+def test_an_async_model_with_channels_takes_the_async_channel(wb_dma_async):
+    """And the platform's event with it: a channel built on `asyncio.Event`
+    would not be driven by a cocotb scheduler, which is the run this form
+    exists to make possible."""
+    _, _, outcome = wb_dma_async
+    text = outcome.read("wb_dma.py")
+    assert "from pssc_rt_async import Chan1" in text
+    assert "Chan1(imports.event)" in text
+
+
+#: T5.8's fixtures. Each pairs a generated module with a platform object and
+#: states whether a type checker should accept it. The interesting row is the
+#: third: a synchronous bus handed to an async model type-checks as `read32`
+#: returning `int` only if the Protocol's colour is real.
+_TYPECHECK_CASES = (
+    ("sync", ("def read32(self, addr: int) -> int: return 0",
+              "def write32(self, addr: int, data: int) -> None: pass",
+              "def message(self, text: str) -> None: pass"), True),
+    ("async", ("async def read32(self, addr: int) -> int: return 0",
+               "async def write32(self, addr: int, data: int) -> None: pass",
+               "def message(self, text: str) -> None: pass",
+               "async def yield_(self) -> None: pass"), True),
+    ("async", ("def read32(self, addr: int) -> int: return 0",
+               "def write32(self, addr: int, data: int) -> None: pass",
+               "def message(self, text: str) -> None: pass",
+               "def yield_(self) -> None: pass"), False),
+)
+
+
+@pytest.mark.parametrize("form,body,should_pass", _TYPECHECK_CASES)
+def test_a_mis_coloured_platform_is_a_static_error(tmp_path, form, body,
+                                                   should_pass):
+    """T5.8. The static half of the guarantee.
+
+    `check_import_api` catches a mis-coloured platform at run time and names it.
+    This is the same question asked before anything runs, and it is the reason
+    the generated seam is a `Protocol` rather than prose: a synchronous
+    `read32` handed to a model generated with `--py-await async` must not
+    type-check, because at run time it hands the model a coroutine object where
+    a register value belongs.
+    """
+    mypy = pytest.importorskip("mypy.api",
+                               reason="mypy is a `test` extra; CI installs it")
+    out = tmp_path / form
+    with compile_op_model("op-model-py", output_dir=str(out),
+                          py_await=form) as outcome:
+        cls = "DmaEngine"
+        (out / "_check.py").write_text("\n".join(
+            [f"from dma_engine import {cls}, DmaEngineImportApi",
+             "",
+             "class Plat:"]
+            + [f"    {m}" for m in body]
+            + ["",
+               "def use(p: DmaEngineImportApi) -> None: ...",
+               "use(Plat())",
+               f"{cls}(Plat(), 0x1000)",
+               ""]))
+        stdout, _, status = mypy.run(
+            ["--no-error-summary", "--no-incremental", str(out / "_check.py")])
+    assert (status == 0) is should_pass, stdout
+
+
+def _banner_snippet(text: str) -> str:
+    """The indented code block out of the generated module's docstring."""
+    doc = text.split('"""')[1]
+    lines = [l[4:] for l in doc.splitlines() if l.startswith("    ") or not l.strip()]
+    # Everything from the first import to the end of the block.
+    start = next(i for i, l in enumerate(lines) if l.startswith(("import ", "from ")))
+    return textwrap.dedent("\n".join(lines[start:])).strip() + "\n"
+
+
+@pytest.mark.parametrize("form", ["sync", "async"])
+def test_the_banner_snippet_runs(tmp_path, form):
+    """T5.9. Documentation that is still true.
+
+    The snippet in a generated module's docstring is the first thing anyone
+    reads and the thing most likely to rot: it names a runtime module, a stub
+    class and -- in the async form -- an event loop, and each of those is a
+    thing this work moved. Executing it as a SUBPROCESS, against the files this
+    generation actually copied, is what makes the claim checkable rather than
+    aspirational.
+    """
+    out = tmp_path / form
+    with compile_op_model("op-model-py", output_dir=str(out),
+                          py_await=form) as outcome:
+        snippet = _banner_snippet(outcome.read("dma_engine.py"))
+        (out / "_snippet.py").write_text(snippet)
+        res = subprocess.run([sys.executable, "_snippet.py"], cwd=str(out),
+                             capture_output=True, text=True)
+    assert res.returncode == 0, f"{snippet}\n---\n{res.stderr}"
 
 
 # --- the contracts every target is held to ----------------------------------

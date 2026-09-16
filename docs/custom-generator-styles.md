@@ -387,7 +387,7 @@ the defect the legality work exists to eliminate.
 the table that *decides* a call is legal and the table that *renders* it are the
 same table and cannot fall out of step.
 
-Two things worth copying from `op-model-py` rather than rediscovering:
+Three things worth copying from `op-model-py` rather than rediscovering:
 
 * **Choose your comment style** (`comments.HASH` for `#`, `LINE` for `//`,
   `BLOCK` for `/* */`) and the walk carries a model's prose into the output,
@@ -396,6 +396,13 @@ Two things worth copying from `op-model-py` rather than rediscovering:
   `urandom` unsupported with a sentence each explaining that the obstacle is a
   deliberate choice, not a missing feature. A model author reading a refusal
   needs to know which it is.
+* **Know when something is an option and not a style.** `--py-await
+  {sync,async}` looks like a style — it changes how every method is spelled —
+  and is deliberately a target OPTION. A style may not change meaning, and this
+  does: the async form publishes `HAVE_EVENT_WAIT=true`, so a model with a
+  `compile if` on it compiles a different body, and blocking `channel_c.get()`
+  moves from refused to rendered. Anything that moves a capability, an address
+  or a signature is an option. A style renames and re-lays-out.
 
 ---
 

@@ -418,13 +418,33 @@ Backend           Typical use
 ``op-model-sv``    SystemVerilog/UVM testbenches; front-door BFM or backdoor poke
 ``op-model-c``     firmware/drivers (``mmio``/``direct``) or host C models (``vtable``)
 ``op-model-cpp``   host C++ models and reference drivers; template-rich, type-safe
-``op-model-py``    cocotb bring-up, debuggers, pure-Python device models
+``op-model-py``    cocotb bring-up (``--py-await async``), debuggers, scripts
 ================  ================================================================
 
-``op-model-py`` generates one plain module driving a duck-typed bus object. It
-imports nothing unless the model has channels, so a generated driver runs
-wherever it is copied. Options: ``--py-module NAME`` (default: the root name
-without a trailing ``_c``).
+``op-model-py`` generates one module. The platform seam is a ``typing.Protocol``
+the module GENERATES for itself -- ``<Root>ImportApi``, listing exactly what its
+bodies call plus every import the model declares -- so nothing has to inherit
+anything and a type checker can still see the requirement. Outside the standard
+library the module imports nothing unless the model has channels, so a generated
+driver runs wherever it is copied.
+
+``--py-await async`` generates ``async def`` throughout: every operation, every
+register accessor except ``_addr``, and a matching async import API. It is the
+form for a cocotb bring-up, and it is **not** a restyling of the sync one --
+only an async model can suspend until another party posts an event, so the
+target publishes ``HAVE_EVENT_WAIT: true`` and a model that branches on that
+compiles a different body. In that form a PSS ``yield`` becomes
+``await imports.yield_()`` and a blocking ``channel_c.get()`` becomes a real
+suspension on ``pssc_rt_async.Chan1``; in the sync form ``yield`` is a comment
+and ``get()`` is refused with a diagnostic naming this option.
+
+Awaited calls are **hoisted to statements of their own** rather than placed
+inside expressions -- ``val = await regs.CSR.read()`` and then ``val & mask``,
+never ``await regs.CSR.read() & mask``. That second form is legal Python and
+means ``await (read() & mask)``: a wrong VALUE, not a syntax error.
+
+Options: ``--py-module NAME`` (default: the root name without a trailing ``_c``)
+and ``--py-await {sync,async}`` (default ``sync``).
 
 Limitations (this phase)
 ------------------------

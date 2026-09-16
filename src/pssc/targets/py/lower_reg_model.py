@@ -20,7 +20,7 @@ from typing import List
 from ...reg_field_resolve import struct_layout
 from ..comments import HASH, append_trailing, comment_lines
 from ..reg_layout import RegAccessor, collect_accessors
-from .naming import mangle, reg_symbol
+from .naming import IMPORTS_ATTR, def_kw, is_async, mangle, reg_symbol
 
 __all__ = ["emit_value_base", "emit_value_class", "lower_value_classes",
            "lower_accessors", "value_class_name", "accessor_map",
@@ -41,10 +41,15 @@ class _RegValue(object):
     into an AttributeError instead of a silently ignored assignment.
     """
 
-    __slots__ = ()
+    # Annotated because a subclass narrows them and an unannotated `()` is
+    # inferred as the empty-tuple TYPE, which nothing can override. The
+    # generated module states its platform seam as a Protocol; a type checker
+    # that has to be told to ignore the rest of the file would make that claim
+    # worth less.
+    __slots__: tuple = ()
 
-    LAYOUT = ()
-    BITS = 0
+    LAYOUT: tuple = ()
+    BITS: int = 0
 
     def __init__(self, **fields):
         for name, _, _ in self.LAYOUT:
@@ -169,12 +174,15 @@ def _addr_expr(acc: RegAccessor) -> str:
     return " + ".join(terms)
 
 
-def emit_accessor(acc: RegAccessor) -> List[str]:
+def emit_accessor(acc: RegAccessor, await_style: str = "sync") -> List[str]:
     """The methods for one register.
 
     `_addr` is emitted for every register regardless of direction, because the
     folded offset is the model's statement about the device and a caller
-    reaching past the accessors still needs it.
+    reaching past the accessors still needs it. It is also the one accessor
+    that is NEVER coloured: it is arithmetic on the component's base and reaches
+    nothing, so making it `async def` would put a suspension point where there
+    is no access and force every caller to await an addition.
 
     BOTH pairs are emitted for every register: `read`/`write` are typed, and
     `read_val`/`write_val` work in raw bits, which is what the masked forms
@@ -190,6 +198,8 @@ def emit_accessor(acc: RegAccessor) -> List[str]:
     sep = ", " if args else ""
     addr_call = f"self.{stem('addr')}({args})"
     width = acc.prim_bits
+    d = def_kw(await_style)
+    aw = "await " if is_async(await_style) else ""
     out: List[str] = [
         f"    def {stem('addr')}(self{idx}):",
         f'        """Address of `{".".join(acc.path)}`."""',
@@ -197,28 +207,35 @@ def emit_accessor(acc: RegAccessor) -> List[str]:
     ]
     if acc.readable:
         out += [
-            f"    def {stem('read_val')}(self{idx}):",
-            f"        return self._bus.read{width}({addr_call})",
+            f"    {d} {stem('read_val')}(self{idx}):",
+            f"        return {aw}self.{IMPORTS_ATTR}.read{width}({addr_call})",
         ]
     if acc.writable:
         out += [
-            f"    def {stem('write_val')}(self{idx}, value):",
-            f"        self._bus.write{width}({addr_call}, value)",
+            f"    {d} {stem('write_val')}(self{idx}, value):",
+            f"        {aw}self.{IMPORTS_ATTR}.write{width}({addr_call}, value)",
         ]
-    read_expr = f"self.{stem('read_val')}({args})"
     write_arg = "value"
     if acc.is_struct:
-        read_expr = f"{value_class_name(acc.value_struct)}.unpack({read_expr})"
         write_arg = "value.pack()"
     if acc.readable:
-        out += [
-            f"    def {stem('read')}(self{idx}):",
-            f"        return {read_expr}",
-        ]
+        # The raw read is HOISTED before it is unpacked, for the same reason
+        # every awaited call in a body is: `return cls.unpack(await self.x())`
+        # would put an `await` inside an argument list, and this backend does
+        # not put one there. See `lower_progseq._awaited`.
+        out.append(f"    {d} {stem('read')}(self{idx}):")
+        if acc.is_struct:
+            out += [
+                f"        raw = {aw}self.{stem('read_val')}({args})",
+                f"        return {value_class_name(acc.value_struct)}"
+                f".unpack(raw)",
+            ]
+        else:
+            out.append(f"        return {aw}self.{stem('read_val')}({args})")
     if acc.writable:
         out += [
-            f"    def {stem('write')}(self{idx}, value):",
-            f"        self.{stem('write_val')}({args}{sep}{write_arg})",
+            f"    {d} {stem('write')}(self{idx}, value):",
+            f"        {aw}self.{stem('write_val')}({args}{sep}{write_arg})",
         ]
 
     # The masked write -- PSS 3.1 §21.14.1:
@@ -231,15 +248,15 @@ def emit_accessor(acc: RegAccessor) -> List[str]:
     # directions, and why a one-directional register does not get one.
     if acc.readable and acc.writable:
         out += [
-            f"    def {stem('write_val_masked')}(self{idx}, mask, val):",
-            f"        cur = self.{stem('read_val')}({args})",
-            f"        self.{stem('write_val')}({args}{sep}"
+            f"    {d} {stem('write_val_masked')}(self{idx}, mask, val):",
+            f"        cur = {aw}self.{stem('read_val')}({args})",
+            f"        {aw}self.{stem('write_val')}({args}{sep}"
             f"(cur & ~mask) | (val & mask))",
         ]
     return out
 
 
-def lower_accessors(comp_dtype) -> List[str]:
+def lower_accessors(comp_dtype, await_style: str = "sync") -> List[str]:
     """Every register accessor for one component, keyed to ITS base.
 
     Per component rather than per model, because the address a register lives at
@@ -250,7 +267,7 @@ def lower_accessors(comp_dtype) -> List[str]:
     """
     out: List[str] = []
     for acc in collect_accessors(comp_dtype):
-        out += emit_accessor(acc)
+        out += emit_accessor(acc, await_style)
     return out
 
 

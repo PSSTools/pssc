@@ -129,11 +129,28 @@ The Python backend
 ------------------
 
 ``op-model-py`` (``pssc.targets.py_progseq_tgt``, emitters in
-``pssc.targets.py``) generates a plain Python module driving a duck-typed bus —
-what a cocotb bring-up, a socket-attached debugger or a pure-Python device model
-already has. Its seam is the ``bus`` object passed to the constructor; the
-generated module imports nothing unless the model has channels, in which case it
-imports the bundled ``share/py/pssc_rt.py``.
+``pssc.targets.py``) generates a Python module driving a structurally-typed
+platform object — what a cocotb bring-up, a socket-attached debugger or a
+pure-Python device model already has. Its seam is the ``imports`` object passed
+to the constructor, and the module GENERATES the declaration of that seam:
+``lower_import_api.py`` emits a ``@runtime_checkable`` ``Protocol`` listing
+exactly what the bodies call plus every declared import, the same rule the C++
+target's ``<ns>_import_if`` follows. Deriving the member list from the emitted
+TEXT rather than from a second walk of the model is deliberate — a Protocol
+computed independently can disagree with the accessors, and the failure mode of
+that disagreement is a platform that implements the declared set and still gets
+an ``AttributeError``.
+
+Outside the standard library the module imports nothing unless the model has
+channels, in which case it imports the bundled ``share/py/pssc_rt.py`` — or
+``share/py/pssc_rt_async.py``, whose ``Chan1`` actually suspends.
+
+``--py-await`` chooses the form. Three things it changes that are not local to
+``targets/py/``: the target publishes ``HAVE_EVENT_WAIT`` accordingly
+(``Target.resolved_target_cfg_for``), the Tier-2 legality set is re-published
+per run so ``get``/``put`` are refused in one form and rendered in the other
+(``PyProgSeqTarget._register_legality``), and the copied runtime gains a second
+file. Everything else is inside ``targets/py/``.
 
 It was written *after* the shared layer below existed, and is the evidence that
 the layer is sufficient: everything except ``targets/py/`` is consumed rather

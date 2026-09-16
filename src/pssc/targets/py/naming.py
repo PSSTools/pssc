@@ -18,7 +18,18 @@ from __future__ import annotations
 import keyword
 from typing import Sequence
 
-__all__ = ["mangle", "class_name", "module_name", "reg_symbol", "strip_suffix"]
+__all__ = ["mangle", "class_name", "module_name", "reg_symbol", "strip_suffix",
+           "IMPORTS_ATTR", "IMPORTS_PARAM", "def_kw", "is_async"]
+
+#: The constructor parameter carrying the import API, and the attribute it is
+#: stored in. TWO names for one thing, and they are here rather than as literals
+#: because the seam is spelled in four modules -- the constructor that binds it,
+#: the register accessors, the body emitter's call sites, and the sub-component
+#: construction that passes it down. Renaming it was a three-file sweep once;
+#: the async work edits every one of those same call sites again, and a sweep
+#: that half-lands leaves a model whose accessors call an attribute nothing set.
+IMPORTS_PARAM = "imports"
+IMPORTS_ATTR = "_imports"
 
 
 def mangle(name: str) -> str:
@@ -51,6 +62,24 @@ def class_name(comp_name: str) -> str:
 def module_name(root_name: str) -> str:
     """The generated module's name, without `.py`: `wb_dma_c` -> `wb_dma`."""
     return mangle(strip_suffix(root_name))
+
+
+def is_async(await_style: str) -> bool:
+    """Is *await_style* the coloured form? `--py-await` has exactly two values."""
+    return await_style == "async"
+
+
+def def_kw(await_style: str, coloured: bool = True) -> str:
+    """`def` or `async def`.
+
+    Every coloured definition goes through here rather than testing the mode
+    inline, and the reason is auditability: `def_kw(` is greppable, so the list
+    of things this backend colours can be read off the code and checked against
+    the design's table. *coloured* is the second argument so a site that is
+    deliberately NEVER async -- `__init__`, a register's `_addr`, a
+    sub-component accessor -- can say so at the call rather than by omission.
+    """
+    return "async def" if (coloured and is_async(await_style)) else "def"
 
 
 def reg_symbol(path: Sequence[str], reg: str, kind: str) -> str:
