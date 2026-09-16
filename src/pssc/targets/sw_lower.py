@@ -153,6 +153,23 @@ def _resolve_sub_action(action, handle, type_m, scope):
     return None, None
 
 
+def _resolve_action_type(ref, type_m, scope):
+    """Resolve an action *type name* to ``(qualified_key, action)``.
+
+    Same fallback chain as :func:`_resolve_sub_action` -- exact key, then
+    scope-qualified, then a unique simple-name match -- but keyed off a type
+    name rather than a field handle, because an anonymous traversal (``do A;``)
+    names its action type directly and owns no field to look through.
+    """
+    if ref is None:
+        return None, None
+    for cand in (ref, f"{scope}::{ref}" if scope else None):
+        if cand and cand in type_m:
+            return cand, type_m[cand]
+    matches = [(k, v) for k, v in type_m.items() if k.split("::")[-1] == ref]
+    return matches[0] if len(matches) == 1 else (None, None)
+
+
 def _subscript_index(node, bindings):
     """Constant index of a subscript slice: a literal or a bound loop var."""
     if isinstance(node, ir.ExprConstant):
@@ -323,21 +340,26 @@ def _inline_activity(qual_name, action, type_m, seen, prefix, solve_plan):
     return _lower_activity_node(act_ir, qual_name, action, type_m, seen, prefix, solve_plan)
 
 
-def _lower_activity_node(node, qual_name, action, type_m, seen, prefix, solve_plan):
+def _lower_activity_node(node, qual_name, action, type_m, seen, prefix, solve_plan, idx=0):
     """Lower one activity node to coroutine statements.
 
     First slice: ``parallel`` runs its branches in order (observationally
     equivalent for atomic, non-timed actions; true fork/join is future work);
     ``select`` takes the first branch (deterministic; weighted/guarded selection
     needs the solver). Repeat/schedule are not yet handled.
+
+    ``idx`` is the node's position among its siblings. It is used only to name
+    anonymous traversals, which -- unlike named ones -- have no handle to
+    prefix their hoisted locals with, so two sibling ``do A;`` statements would
+    otherwise collide on identical local names.
     """
     scope = _scope_of(qual_name)
     # sequence / parallel / schedule all run their children; for atomic, non-timed
     # actions a sequential order is a valid schedule (true concurrency is future work).
     if isinstance(node, (ir.ActivitySequenceBlock, ir.ActivityParallel, ir.ActivitySchedule)):
         out = []
-        for s in node.stmts:
-            out.extend(_lower_activity_node(s, qual_name, action, type_m, seen, prefix, solve_plan))
+        for i, s in enumerate(node.stmts):
+            out.extend(_lower_activity_node(s, qual_name, action, type_m, seen, prefix, solve_plan, i))
         return out
     if isinstance(node, ir.ActivityRepeat):
         # repeat (N) { body } — unroll a constant count; each iteration gets its own
@@ -347,15 +369,15 @@ def _lower_activity_node(node, qual_name, action, type_m, seen, prefix, solve_pl
             return []  # non-constant repeat count not yet supported
         out = []
         for i in range(max(0, count.value)):
-            for s in node.body:
+            for j, s in enumerate(node.body):
                 out.extend(_lower_activity_node(
-                    s, qual_name, action, type_m, seen, prefix + f"r{i}__", solve_plan))
+                    s, qual_name, action, type_m, seen, prefix + f"r{i}__", solve_plan, j))
         return out
     if isinstance(node, ir.ActivitySelect):
         if node.branches:
             out = []
-            for s in node.branches[0].body:
-                out.extend(_lower_activity_node(s, qual_name, action, type_m, seen, prefix, solve_plan))
+            for i, s in enumerate(node.branches[0].body):
+                out.extend(_lower_activity_node(s, qual_name, action, type_m, seen, prefix, solve_plan, i))
             return out
         return []
     if isinstance(node, ir.ActivityTraversal):
@@ -364,6 +386,24 @@ def _lower_activity_node(node, qual_name, action, type_m, seen, prefix, solve_pl
             return []
         return _inline_sub_action(
             sub_key, sub, type_m, seen | {sub_key}, prefix + node.handle + "__", solve_plan)
+    if isinstance(node, ir.ActivityAnonTraversal):
+        # ``do A;`` -- names its action type directly and declares no field, so
+        # resolve the type rather than a handle. Without this case the node fell
+        # through to "unsupported" below and lowered to nothing, which meant an
+        # activity built entirely from ``do`` statements produced an EMPTY body;
+        # _synthesize_activity_body then declined to synthesize one at all while
+        # the generated main.c still called it, so the C failed to link on an
+        # undefined ``<Root>_body``.
+        sub_key, sub = _resolve_action_type(node.action_type, type_m, scope)
+        if sub is None or sub_key in seen:
+            return []
+        # Named traversals prefix hoisted locals with the handle. An anonymous
+        # one has no handle: use its label if it was given one, else the simple
+        # type name plus the sibling index, so `do A; do A;` gets two distinct
+        # sets of locals rather than one silently shared set.
+        tag = node.label or f"{sub_key.split('::')[-1].lower()}{idx}"
+        return _inline_sub_action(
+            sub_key, sub, type_m, seen | {sub_key}, prefix + tag + "__", solve_plan)
     return []  # unsupported activity node
 
 

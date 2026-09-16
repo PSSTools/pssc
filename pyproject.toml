@@ -9,7 +9,11 @@ description = "PSSC — the PSS compiler: PSS source to SystemVerilog, C, and Py
 authors = [
   { name = "Matthew Ballance", email = "matt.ballance@gmail.com" },
 ]
-requires-python = ">=3.10"
+# 3.12 because zuspec-be-py is a hard runtime dependency and it uses PEP 695
+# type-parameter syntax, which is a SyntaxError before 3.12. Leaving this at
+# >=3.10 would let `uvx pssc` install on 3.10/3.11 and then fail at import --
+# an honest resolution error is the better outcome.
+requires-python = ">=3.12"
 dependencies = [
   "pssparser",
   "zuspec-ir-core",
@@ -17,16 +21,24 @@ dependencies = [
   "zuspec-be-sv",
   "zuspec-be-sw",
   "dv-solve",
-  "dv-flow-mgr",
 ]
 
 # zuspec-dataclasses is the Python authoring frontend (``@zdc``); pssc's
 # IR-driven runtime and all codegen targets are free of it (guarded by
 # tests/unit/test_package_layout.py::test_import_pssc_does_not_pull_in_dataclasses).
 # It is required only to run the test suite, which exercises @zdc runtime APIs.
+#
+# dv-flow-mgr is likewise development-only. It was a runtime dependency, but
+# nothing in src/pssc imports dv_flow.mgr at module scope -- every reference is
+# inside a function body, and dvflow/__ext__.py (the entry point target) is
+# deliberately import-free. The `dv_flow.mgr` entry point below is CONSUMED BY
+# dv-flow-mgr, so anyone exercising the DFM integration necessarily already has
+# it installed; pssc pulling it in would only weigh down `uvx pssc` for the
+# majority who never touch DFM.
 [project.optional-dependencies]
 test = [
   "zuspec-dataclasses",
+  "dv-flow-mgr",
   "pytest",
   "pytest-asyncio",
   # The generated Python API's async form states its platform seam as a

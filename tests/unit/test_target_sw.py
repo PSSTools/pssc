@@ -301,6 +301,67 @@ def test_sequential_activity_inlined(tmp_path):
     assert root_c.count('fprintf(stdout, "leaf\\n")') == 4
 
 
+ANON_ACTIVITY_SRC = """
+component pss_top {
+    action Leaf { rand bit[8] v; constraint { v > 10; v < 20; } exec body { print("leaf"); } }
+    action Root {
+        activity { do Leaf; do Leaf; }
+    }
+}
+"""
+
+
+def test_anonymous_traversal_inlined(tmp_path):
+    # `do Leaf;` -- an ANONYMOUS traversal, which names its action type instead
+    # of declaring a field. Every other activity test here uses the named form
+    # (`Leaf a; activity { a; }`), and that gap is why this shipped broken:
+    # ActivityAnonTraversal had no case in _lower_activity_node, so it lowered
+    # to nothing, Root got no synthesized body at all, and the generated main.c
+    # still called pss_top__Root_body -- an undefined symbol at link time.
+    p = tmp_path / "m.pss"
+    p.write_text(ANON_ACTIVITY_SRC)
+    out = tmp_path / "c"
+    pssc.compile(str(p), target="c-host", output_dir=str(out))
+    root_c = (out / "pss_top__root.c").read_text()
+    assert "pss_top__Root_body" in root_c, "no body synthesized for a `do`-only activity"
+    # 2 traversals x 2 emitted variants (sync + coroutine) = 4 inlined prints
+    assert root_c.count('fprintf(stdout, "leaf\\n")') == 4
+
+
+def test_anonymous_traversal_siblings_get_distinct_locals(tmp_path):
+    # Two `do Leaf;` in sequence are two separate action instances, so their
+    # hoisted `v` locals must not alias. A named traversal prefixes locals with
+    # its handle; an anonymous one has no handle, so it falls back to the type
+    # name plus sibling index -- without that, both traversals would share one
+    # local and one solver slot.
+    p = tmp_path / "m.pss"
+    p.write_text(ANON_ACTIVITY_SRC)
+    out = tmp_path / "c"
+    pssc.compile(str(p), target="c-host", output_dir=str(out), runtime_solve=True)
+    solve_c = (out / "pssc_solve.c").read_text()
+    assert "g_leaf0__v" in solve_c and "g_leaf1__v" in solve_c, solve_c[:400]
+
+
+@pytest.mark.c_toolchain
+def test_chost_anonymous_traversal_links_and_runs(tmp_path):
+    # The end-to-end case the missing ActivityAnonTraversal broke: the program
+    # used to fail at LINK on an undefined pss_top__Root_body.
+    #
+    # _build_runtime_and_run rather than _link_and_run because Leaf has rand
+    # fields, so c-host emits a pssc_solve.c that needs dv-solve's headers --
+    # and those must stay in their own include set, away from be-sw's
+    # conflicting zsp_alloc.h.
+    if shutil.which("gcc") is None:
+        pytest.skip("gcc not available")
+    p = tmp_path / "m.pss"
+    p.write_text(ANON_ACTIVITY_SRC)
+    out = tmp_path / "c"
+    res = pssc.compile(str(p), target="c-host", output_dir=str(out), runtime_solve=True)
+    run = _build_runtime_and_run(out, res.outputs, seed=1)
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.count("leaf") == 2, run.stdout
+
+
 def test_nested_activity_inlined(tmp_path):
     # Root -> Mid -> Leaf : nested activities inline transitively
     p = tmp_path / "m.pss"
@@ -330,9 +391,21 @@ def _link_and_run(out_dir, sources) -> subprocess.CompletedProcess:
 
 
 def _dv_dirs():
+    """dv-solve's include dirs and lib dir, via its own API.
+
+    This used to derive both from ``dv_solve.__file__``'s grandparent, which
+    assumes an editable checkout (``.../dv-solve/src/c`` and
+    ``.../dv-solve/build``). Against an INSTALLED WHEEL that grandparent is
+    ``site-packages``, so the paths pointed at nothing and every runtime-solve
+    test failed with
+
+        fatal error: zsp_block_alloc.h: No such file or directory
+
+    ``get_incdirs()``/``get_libdirs()`` answer correctly for both layouts, which
+    is what they exist for.
+    """
     import dv_solve
-    src = Path(dv_solve.__file__).parent.parent       # .../dv-solve/src
-    return src / "c", src.parent / "build"            # include dir, lib dir
+    return [Path(d) for d in dv_solve.get_incdirs()], Path(dv_solve.get_libdirs()[0])
 
 
 def _build_runtime_and_run(out, sources, seed) -> subprocess.CompletedProcess:
@@ -343,9 +416,14 @@ def _build_runtime_and_run(out, sources, seed) -> subprocess.CompletedProcess:
     dvinc, dvlib = _dv_dirs()
     objs = []
 
-    def cc(src, inc):
+    def cc(src, incs):
+        # incs is a LIST: dv-solve reports more than one include dir for a wheel
+        # (base plus the namespaced dv_solve/ subdir). Still one include set per
+        # TU, which is what keeps the two conflicting zsp_alloc.h files apart.
+        if isinstance(incs, (str, Path)):
+            incs = [incs]
         obj = str(out / (Path(src).name + ".o"))
-        r = subprocess.run(["gcc", "-c", "-w", f"-I{inc}", str(src), "-o", obj],
+        r = subprocess.run(["gcc", "-c", "-w", *[f"-I{i}" for i in incs], str(src), "-o", obj],
                            capture_output=True, text=True)
         assert r.returncode == 0, f"cc {Path(src).name}:\n{r.stderr}"
         objs.append(obj)

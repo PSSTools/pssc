@@ -271,10 +271,29 @@ def _besw_share() -> tuple:
 
 
 def _dvsolve_share() -> tuple:
-    """(include_dir, lib_dir) for dv-solve (runtime constraint solving)."""
+    """(include_dirs, lib_dir) for dv-solve (runtime constraint solving).
+
+    Derived from dv-solve's own ``get_incdirs()``/``get_libdirs()``, which
+    answer for both an editable checkout and an installed wheel.
+
+    This previously walked ``Path(_dv.__file__).parents[2]`` to
+    ``<root>/src/c`` and ``<root>/build`` -- the SOURCE-TREE layout. Against an
+    installed wheel those parents land in site-packages and neither path
+    exists, so building the solver TU failed with
+
+        fatal error: zsp_block_alloc.h: No such file or directory
+
+    i.e. the runtime-solve bridge could not be built by anyone using released
+    wheels, only from a checkout. ``_besw_share()`` above was already written
+    the portable way; this was the odd one out.
+
+    Returns a LIST of include dirs (a wheel reports the base plus the
+    namespaced ``dv_solve/`` subdir). These stay the include set for the SOLVER
+    translation unit ONLY -- dv-solve and be-sw ship conflicting ``zsp_alloc.h``
+    definitions, so the two include sets must not be merged.
+    """
     import dv_solve as _dv  # the installed package, if present
-    root = Path(_dv.__file__).resolve().parents[2]
-    return root / "src" / "c", root / "build"
+    return [Path(d) for d in _dv.get_incdirs()], Path(_dv.get_libdirs()[0])
 
 
 def _resolve_actions(core, opts) -> List[dict]:
@@ -936,10 +955,10 @@ class SvDpiBridgeTarget(Target):
             link_extra: List[str] = []
             # Separate TU for the dv-solve solver (own include path).
             if runtime and (out / "pssc_solve.c").exists():
-                dv_inc, dv_lib = _dvsolve_share()
+                dv_incs, dv_lib = _dvsolve_share()
                 solve_o = out / "pssc_solve.o"
                 rs = subprocess.run(
-                    ["gcc", "-w", "-c", "-fPIC", f"-I{dv_inc}",
+                    ["gcc", "-w", "-c", "-fPIC", *[f"-I{i}" for i in dv_incs],
                      str(out / "pssc_solve.c"), "-o", str(solve_o)],
                     capture_output=True, text=True)
                 if rs.returncode != 0:
