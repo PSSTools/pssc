@@ -25,7 +25,7 @@ methods were designed to be wrapped from which merely happen to be callable.
 | The testing kit | `pssc.testing` | used by pssc's own suite |
 | Entry-point groups | `pssc.targets`, `pssc.styles` | `tests/unit/test_plugin_integration.py`, against a really-installed plugin |
 | CLI options | `pssc compile`, `pssc targets` | [`cli.md`](cli.md) |
-| The manifest schema | `--emit-manifest` | [`op-model-manifest.md`](op-model-manifest.md), versioned in the document |
+| The manifest schema | `--emit-manifest` | `pssc.targets.manifest.SCHEMA`, versioned in the emitted document |
 
 Everything else — every underscore-prefixed name, every module not listed above,
 the internal shape of the IR, and the *bytes* of generated output — is private

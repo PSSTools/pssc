@@ -117,10 +117,11 @@ class TestStringMethods(unittest.TestCase):
         self.assertEqual(call.func.attr, "upper")
 
     def test_string_substring_slice(self):
-        """s[1..3] parses as a subscript expression (PSS frontend limitation:
-        ExprSubstring is not generated for the range syntax in current parser version;
-        instead s[1..3] is treated as a subscript with the lower-bound index only).
-        We verify the expression does translate (not crash) and produces a subscript."""
+        """s[1..3] translates to ExprSubscript(s, ExprSlice(1, 3)).
+
+        The parser models a range subscript as an ``ExprSliceRange`` hanging off
+        the hier-id element, so both endpoints must survive into the IR.
+        """
         ctx = self.parse_and_translate("""
             component C {
                 action a {
@@ -134,8 +135,13 @@ class TestStringMethods(unittest.TestCase):
         stmts = self._get_body_stmts(ctx)
         assign = stmts[1]
         self.assertIsInstance(assign, ir.StmtAnnAssign)
-        # PSS frontend generates ExprSubscript (not ExprSubstring) for s[1..3]
-        self.assertIsNotNone(assign.value)
+        sub = assign.value
+        self.assertIsInstance(sub, ir.ExprSubscript)
+        self.assertIsInstance(sub.value, ir.ExprRefLocal)
+        self.assertEqual(sub.value.name, "s")
+        self.assertIsInstance(sub.slice, ir.ExprSlice)
+        self.assertEqual(sub.slice.lower.value, 1)
+        self.assertEqual(sub.slice.upper.value, 3)
 
 
 class TestBuiltinFunctions(unittest.TestCase):

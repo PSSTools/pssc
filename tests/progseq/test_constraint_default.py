@@ -1,15 +1,17 @@
-"""pssparser drops `constraint default` bodies before they reach the AST.
+"""`constraint default` bodies reach the AST, and stop at the IR.
 
-A front-end observation, recorded here because it is invisible from the outside:
-`constraint default X == V;` parses without error into a `ConstraintBlock`
-carrying **zero** statements, so `ast2ir` has nothing to translate. Measured (see
-`test_the_parser_drops_the_default_constraint_body`):
+pssparser used to drop them: `constraint default X == V;` parsed without error
+into a `ConstraintBlock` carrying **zero** statements, so `ast2ir` had nothing to
+translate. That is fixed -- a default now costs exactly what a plain constraint
+costs (see `test_a_default_constraint_carries_its_body`):
 
-    two plain constraints    -> 3 blocks, 2 statements
-    one plain + one default  -> 3 blocks, 1 statement
-    only a default           -> 2 blocks, 0 statements
+    two plain constraints    -> 2 blocks, 2 statements
+    one plain + one default  -> 2 blocks, 2 statements
+    only a default           -> 1 block,  1 statement
 
-The relational constraint survives; the default does not.
+What remains open is downstream: no target yet distinguishes a default from a
+hard constraint, which is what `test_the_models_defaults_should_be_visible_in_the_ir`
+still records (C6.5).
 
 SCOPE -- this does NOT affect either shipping op-model API. Constraints and
 actions are deliberately excluded from an operation model: there is no solver in
@@ -21,9 +23,9 @@ defect, and a C-side `_DEFAULT` macro knob (plan C6.5) is out of scope rather
 than blocked.
 
 Where it WOULD matter is a solver-capable target, which is the only kind that
-consumes constraints at all. The `xfail(strict=True)` markers below describe the
-behaviour that should hold at the AST/IR level for such a target, and will start
-failing loudly -- as XPASS -- the day pssparser carries the body.
+consumes constraints at all. The remaining `xfail(strict=True)` marker below
+describes the behaviour that should hold at the IR level for such a target, and
+will start failing loudly -- as XPASS -- the day the value is carried through.
 """
 import os
 
@@ -48,10 +50,17 @@ package p {
 
 
 def _blocks_and_stmts(body):
-    """(ConstraintBlock count, total constraint-statement count) in the AST."""
+    """(ConstraintBlock count, total constraint-statement count) in the AST.
+
+    Counts only blocks that came from the probe source. The parser prepends a
+    builtin prelude, and that prelude carries a constraint of its own, so an
+    unfiltered walk reports one extra block *and* one extra statement -- which
+    is what made these counts wrong when the prelude grew that constraint.
+    """
     p = Parser()
     p.parses([("t.pss", _PROBE % body)])
     root = p.link()
+    probe_fileids = set(p.file_map.keys())
     n = [0, 0]
 
     def walk(x):
@@ -63,8 +72,10 @@ def _blocks_and_stmts(body):
             if c is None:
                 continue
             if type(c).__name__ == "ConstraintBlock":
-                n[0] += 1
-                n[1] += len(c.getConstraints() or [])
+                loc = c.getLocation()
+                if loc is not None and loc.fileid in probe_fileids:
+                    n[0] += 1
+                    n[1] += len(c.getConstraints() or [])
             walk(c)
 
     walk(root)
@@ -77,43 +88,41 @@ def test_a_plain_constraint_reaches_the_ast():
     assert _blocks_and_stmts("        constraint b > 0;")[1] == 1
 
 
-def test_the_parser_drops_the_default_constraint_body():
-    """The measurement, as behaviour rather than prose. This test passes TODAY
-    and documents the defect; the two below are the ones that should pass.
+def test_a_default_constraint_carries_its_body():
+    """`constraint default X == V;` costs the same as a plain constraint.
 
-    Kept separate so that when pssparser is fixed exactly one thing breaks here
-    and its name says what changed.
+    This measured the defect for as long as it existed. It now measures the fix:
+    a default carries its body, so a mixed pair counts the same as a plain pair.
+    If a regression drops the body again, `mixed` falls to 1 and this fails with
+    both counts in hand.
     """
-    # NOTE: this is a front-end fact only. No op-model backend reads constraints,
-    # so nothing downstream of here changes when it is fixed -- see module docstring.
+    # NOTE: this is a front-end fact only. No op-model backend reads constraints
+    # -- see the module docstring for what does and does not follow from it.
     plain = _blocks_and_stmts("        constraint b > 0;\n"
                               "        constraint a == 7;")
     mixed = _blocks_and_stmts("        constraint b > 0;\n"
                               "        constraint default a == 7;")
     assert plain[1] == 2, plain
-    assert mixed[1] == 1, (
-        f"a default constraint now carries a body ({mixed}); pssparser was "
-        f"fixed -- remove the xfail markers below and implement C6.5")
+    assert mixed[1] == 2, (
+        f"a default constraint lost its body again ({mixed}); it used to be "
+        f"dropped before reaching the AST")
 
 
-@pytest.mark.xfail(strict=True,
-                   reason="pssparser drops `constraint default` bodies before "
-                          "they reach the AST")
 def test_a_default_constraint_should_reach_the_ast():
     assert _blocks_and_stmts("        constraint default a == 7;")[1] == 1
 
 
 @pytest.mark.xfail(strict=True,
-                   reason="pssparser drops `constraint default` bodies, so the "
-                          "value never reaches the IR for a solver target")
+                   reason="nothing in the IR distinguishes a default constraint's "
+                          "value, so a solver target cannot reach it (C6.5)")
 def test_the_models_defaults_should_be_visible_in_the_ir():
-    """The same loss, stated against the REAL model rather than a probe.
+    """The same question, stated against the REAL model rather than a probe.
 
     `wb_dma_ch_cfg_s` documents `src_mask == 0xfffffffc`; nothing in the IR says
-    so. No op-model backend would read it if it did -- but a solver-capable
-    target has no other source for the value, so this is where the defect would
-    first become visible. Asserting it here means the fix is detected against the
-    real model, not just a two-field probe.
+    so. The body now survives the parser (see above), so what is missing is an IR
+    representation a solver-capable target can read -- and that target has no
+    other source for the value. Asserting it here means the fix is detected
+    against the real model, not just a two-field probe.
     """
     ctx = driver.translate(op_model_sources()).ir_context
     cfg = ctx.type_m["wb_dma_ch_cfg_s"]

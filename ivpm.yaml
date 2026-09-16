@@ -4,10 +4,17 @@ package:
   version: 0.0.1
 
   dep-sets:
-  - name: default-dev
+  - name: use
+    deps: 
+    - name: python
+      src: pyproject.toml
+
+
+  - name: dev
+    uses: [use, dev-tools]
+    default-dep-set: default-dev
     deps: 
     - name: pssparser
-#      src: pypi
       url: https://github.com/psstools/pssparser.git
     - name: zuspec-ir-core
       url: https://github.com/zuspec/zuspec-ir-core.git
@@ -27,10 +34,6 @@ package:
       url: https://github.com/zuspec/zuspec-solver.git
     - name: dv-solve
       url: https://github.com/fvutils/dv-solve.git
-    - name: verilator
-      url: https://github.com/edapack/verilator-bin
-      src: gh-rls
-      cache: true
     - name: pytest
       src: pypi
     - name: sphinx
@@ -38,11 +41,10 @@ package:
     - name: sphinx-rtd-theme
       src: pypi
 
-  - name: default
-    deps:
-    - name: zuspec-dataclasses
-      url: https://github.com/zuspec/zuspec-dataclasses.git
-    - name: zuspec-ir-core
-      url: https://github.com/zuspec/zuspec-ir-core.git
-    - name: pssparser
-      url: https://github.com/PSSTools/pssparser.git
+  - name: dev-tools
+    deps: 
+    - name: verilator
+      url: https://github.com/edapack/verilator-bin
+      src: gh-rls
+      cache: true
+

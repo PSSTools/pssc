@@ -65,4 +65,5 @@ src/.antlr
 .agents/
 .claude/
 .codex/
+.cursor/
 

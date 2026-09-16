@@ -27,10 +27,9 @@ import pytest
 _ROOT = Path(__file__).resolve().parents[2]
 _DOCS = _ROOT / "docs"
 
-#: The guide, plus the two references it hands off to. All three quote code.
+#: The guide, plus the reference it hands off to. Both quote code.
 _GUIDE = _DOCS / "custom-generator-styles.md"
-_PAGES = (_GUIDE, _DOCS / "extension-stability.md",
-          _DOCS / "op-model-manifest.md")
+_PAGES = (_GUIDE, _DOCS / "extension-stability.md")
 
 _FENCE = re.compile(r"^```(\w*)\n(.*?)^```$", re.MULTILINE | re.DOTALL)
 

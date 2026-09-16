@@ -4,6 +4,8 @@ AST to IR Translation Module
 Translates PSS AST nodes to Zuspec IR (Intermediate Representation).
 """
 from __future__ import annotations
+import copy
+import dataclasses
 import enum
 import logging
 from typing import Dict, List, Optional, Any, Set, Tuple, TYPE_CHECKING
@@ -52,6 +54,23 @@ def ast_doc(node: Any) -> Optional[str]:
     return leading if leading is not None else trailing
 
 
+@dataclasses.dataclass(frozen=True)
+class _GenericRef:
+    """A generic constraint declaration visible from some referencing type.
+
+    ``foreign`` marks a declaration whose ``self`` is not the referencing type's
+    -- a component- or package-scope one. ``scope`` is the declaring scope's
+    name, carried only so a diagnostic can say where the declaration was.
+    ``is_value`` distinguishes the value-yielding form (§13.1.2 b), which
+    contributes a value to the expression around it, from the boolean form,
+    which is a constraint in its own right.
+    """
+    fn: 'ir.Function'
+    foreign: bool
+    scope: str
+    is_value: bool = False
+
+
 class _Phase(enum.Enum):
     """The elaboration passes over the unit list.
 
@@ -98,6 +117,22 @@ class AstToIrContext:
         # name. Consumed where a compile-time constant must become a number --
         # array sizes, today.
         self.const_map: Dict[str, int] = {}
+        # Package- and global-scope generic constraints, by qualified name
+        # (`p::lt`). A package is only a namespace prefix in this translator --
+        # it has no IR type -- so a generic constraint declared in one has
+        # nowhere else to live, and without this it was dropped outright.
+        self.generic_constraints: Dict[str, ir.Function] = {}
+        # The generic constraint whose body is being translated, or None. Set
+        # only so a body item that is illegal *inside* a generic constraint can
+        # be reported by name -- §13.3 g forbids `default` there, and nowhere
+        # else.
+        self.generic_constraint_name: Optional[str] = None
+        # How many generic constraint references have been instantiated so far.
+        # Each reference gets the next number, which is what makes two
+        # references to one declaration distinguishable after their bodies have
+        # been spliced into the same constraint -- see
+        # AstToIrTranslator._generic_provenance.
+        self.generic_ref_sites: int = 0
 
     def push_scope(self, scope: ir.DataType):
         """Push a new scope (component, struct, etc.)"""
@@ -113,8 +148,20 @@ class AstToIrContext:
         """Get the current scope"""
         return self.scope_stack[-1] if self.scope_stack else None
 
+    #: Scalar names this translator owns outright.  The parser's builtin prelude
+    #: declares `string` as a type scope (it carries the string methods), and
+    #: translating that scope would otherwise displace the scalar IR type every
+    #: backend expects under this name.
+    _BUILTIN_SCALARS = frozenset({"bool", "int", "string"})
+
     def add_type(self, name: str, dtype: ir.DataType):
-        """Register a type in the type map"""
+        """Register a type in the type map.
+
+        Re-registering one of the builtin scalar names is ignored: the mapping
+        installed by ``_init_builtin_types`` wins.
+        """
+        if name in self._BUILTIN_SCALARS and name in self.type_map:
+            return
         self.type_map[name] = dtype
 
     def get_type(self, name: str) -> Optional[ir.DataType]:
@@ -169,6 +216,15 @@ class AstToIrTranslator:
 
         # Translate global scope
         self._translate_global_scope(ctx, ast_root)
+
+        # Instantiate generic constraint references (PSS 3.1 §13.1.2). Done over
+        # the whole context rather than per type as each finished translating,
+        # because a reference may name a declaration in a scope this type does
+        # not contain -- a base type, the enclosing component, a package -- and
+        # that scope is only guaranteed to be translated once everything is.
+        # Per-type expansion silently left `action A : Base { constraint c {
+        # g(); } }` unexpanded whenever Base was declared later in the file.
+        self._inline_all_generic_constraints(ctx)
 
         # Reduce the masked / field-wise register writes (PSS 3.1 §21.14.1) to
         # the single `write_val_masked` primitive. Here rather than in the
@@ -321,6 +377,19 @@ class AstToIrTranslator:
                 self._translate_package(ctx, child, namespace_prefix, phase=phase)
                 continue
 
+            # A package-scope generic constraint is recorded in the CONST pass,
+            # before anything that could reference it is translated. Unlike a
+            # type it has no IR home of its own to be found in later: a
+            # reference is resolved against ctx.generic_constraints at the point
+            # the referencing expression is translated, so the registry has to
+            # be complete first, regardless of the order the files were given in.
+            if isinstance(child, (pss_ast.GenericConstraintDeclBool,
+                                  pss_ast.GenericConstraintDeclValue)):
+                if phase is _Phase.CONST:
+                    self._record_scope_generic_constraint(
+                        ctx, child, namespace_prefix)
+                continue
+
             kind = self._decl_phase(child)
             if kind is not phase:
                 continue
@@ -402,6 +471,43 @@ class AstToIrTranslator:
         ctx.const_map[name] = value
         if namespace_prefix:
             ctx.const_map[f"{namespace_prefix}{name}"] = value
+
+    def _record_scope_generic_constraint(self, ctx: AstToIrContext, decl,
+                                         namespace_prefix: str = "") -> None:
+        """Record a package- or global-scope generic constraint (§13.1.2).
+
+        Registered under its qualified name only (`p::lt`), because that is the
+        only way PSS lets one be referenced from outside its package -- and a
+        bare-name entry would let a reference resolve to a package the referencing
+        scope never imported.
+
+        Package-scope generic constraints "are always static" (§13.1.2), so the
+        body may use nothing but its parameters. That is not checked here: it is
+        checked where it matters, at each reference, so the diagnostic can name
+        the referencing site -- see :meth:`_expand_generic_refs`.
+        """
+        # The two forms spell their name differently: the boolean form inherits
+        # `ConstraintBlock`'s plain-string name, the value form carries an ExprId.
+        name_node = decl.getName() if hasattr(decl, 'getName') else None
+        if isinstance(name_node, pss_ast.ExprId):
+            name = name_node.getId()
+        elif isinstance(name_node, str):
+            name = name_node
+        else:
+            return
+        if not name:
+            return
+        if isinstance(decl, pss_ast.GenericConstraintDeclValue):
+            fn = self._translate_generic_value_constraint(ctx, decl)
+        else:
+            # `owner` is only consulted to auto-name an anonymous block, and a
+            # generic constraint is never anonymous.
+            fn = self._translate_constraint_block(
+                ctx, decl,
+                ir.DataTypeStruct(name=f"{namespace_prefix}{name}", super=None))
+        if fn is None:
+            return
+        ctx.generic_constraints[f"{namespace_prefix}{name}"] = fn
 
     def _translate_import_proto(self, ctx: AstToIrContext, node) -> None:
         """Capture a package-scope ``import target/solve function`` declaration.
@@ -510,6 +616,10 @@ class AstToIrTranslator:
                 constraint_func = self._translate_constraint_block(ctx, child, target_ir)
                 if constraint_func:
                     target_ir.functions.append(constraint_func)
+            elif isinstance(child, pss_ast.GenericConstraintDeclValue):
+                value_func = self._translate_generic_value_constraint(ctx, child)
+                if value_func:
+                    target_ir.functions.append(value_func)
             elif self.debug:
                 # The silent-drop class this method exists to prevent. Anything
                 # reaching here is a body element no backend will ever see.
@@ -883,9 +993,36 @@ class AstToIrTranslator:
             pool_name = pool_path.split(".")[-1] if pool_path else pool_path
             comp.pool_binds.append(ir.PoolBind(
                 pool_name=pool_name,
-                field_paths=list(child.getTargets()),
+                field_paths=[
+                    p for p in (self._bind_target_path(t) for t in child.getTargets())
+                    if p is not None
+                ],
                 is_wildcard=child.getIs_wildcard(),
             ))
+
+    @staticmethod
+    def _bind_target_path(target) -> Optional[str]:
+        """Flatten a ``ComponentBindTarget`` to its dotted path, or ``None``.
+
+        The parser splits ``producer.out`` across two accessors: everything up to
+        the last dot arrives as ``getType_id()`` (it is resolved as a type
+        reference), and the trailing member as ``getField()``.  A wildcard target
+        (``bind dpool *;``) names no path at all -- the wildcard is already
+        recorded on the enclosing ``PoolBind``.
+        """
+        if target.getIs_wildcard():
+            return None
+        parts: List[str] = []
+        type_id = target.getType_id()
+        if type_id is not None:
+            for i in range(type_id.numElems()):
+                elem_id = type_id.getElem(i).getId()
+                if elem_id is not None:
+                    parts.append(elem_id.getId())
+        field = target.getField()
+        if field is not None:
+            parts.append(field.getId())
+        return ".".join(parts) if parts else None
 
     def _pool_elem_type_name(self, type_node) -> Optional[str]:
         """Best-effort element-type name from a pool's DataTypeUserDefined node."""
@@ -1035,6 +1172,10 @@ class AstToIrTranslator:
                 constraint_func = self._translate_constraint_block(ctx, child, action_ir)
                 if constraint_func:
                     action_ir.functions.append(constraint_func)
+            elif isinstance(child, pss_ast.GenericConstraintDeclValue):
+                value_func = self._translate_generic_value_constraint(ctx, child)
+                if value_func:
+                    action_ir.functions.append(value_func)
             elif isinstance(child, pss_ast.Covergroup):
                 cg = self._translate_covergroup(ctx, child)
                 if cg is not None:
@@ -1180,8 +1321,11 @@ class AstToIrTranslator:
 
         if isinstance(node, pss_ast.ActivityReplicate):
             count_expr = self._translate_expression(ctx, node.getCount())
-            loop_var = node.getLoop_var()
-            index_var = loop_var.getId() if loop_var and hasattr(loop_var, 'getId') else None
+            # ``replicate (i : count)`` -- the optional index identifier.  Unlike
+            # ActivityRepeatCount (which still spells it ``getLoop_var``),
+            # ActivityReplicate names this accessor ``getIdx_id``.
+            idx_id = node.getIdx_id()
+            index_var = idx_id.getId() if idx_id is not None and hasattr(idx_id, 'getId') else None
             body_stmts = self._translate_activity_stmts(ctx, _activity_body_children(node.getBody()))
             return ir.ActivityReplicate(count=count_expr, index_var=index_var, body=body_stmts)
 
@@ -1422,6 +1566,677 @@ class AstToIrTranslator:
             except AttributeError:
                 pass
 
+    #: How deep a chain of generic constraints may reference one another before
+    #: the translator gives up. Recursion is legal (§13.1.2 d) as long as it
+    #: terminates; this bound is what turns a non-terminating one into a
+    #: diagnostic rather than a stack overflow.
+    _MAX_GENERIC_CONSTRAINT_DEPTH = 32
+
+    #: How far up a `super` chain to look for an inherited generic constraint
+    #: before assuming the chain is circular.
+    _MAX_SUPER_DEPTH = 32
+
+    def _inline_all_generic_constraints(self, ctx: AstToIrContext) -> None:
+        """Expand generic constraint references across the whole translated model.
+
+        Each type is visited once. ``ctx.type_map`` registers many types under
+        more than one key (bare and qualified), and expanding twice would double
+        every instantiated constraint -- harmless for a range, wrong for anything
+        counted.
+
+        The key a type is visited under matters: the enclosing component of an
+        action is recorded in ``ctx.parent_comp_names`` against its *qualified*
+        name, so a type reached by its bare name would not find its component's
+        declarations. Hence the ranking below rather than "whichever key came
+        first".
+        """
+        best_key: Dict[int, str] = {}
+        for key, dt in ctx.type_map.items():
+            if not getattr(dt, 'functions', None):
+                continue
+            rank = (key in ctx.parent_comp_names, "::" in key)
+            prev = best_key.get(id(dt))
+            if prev is None or rank > (prev in ctx.parent_comp_names, "::" in prev):
+                best_key[id(dt)] = key
+
+        seen: Set[int] = set()
+        for key, dt in ctx.type_map.items():
+            if id(dt) in seen or best_key.get(id(dt)) != key:
+                continue
+            seen.add(id(dt))
+            self._inline_generic_constraints(ctx, dt, key)
+
+    def _inline_generic_constraints(self, ctx: AstToIrContext,
+                                    type_ir: ir.DataTypeStruct,
+                                    type_key: Optional[str] = None) -> None:
+        """Replace each reference to a generic constraint with its body (§13.1.2).
+
+        A generic constraint is inert until referenced, and a reference
+        instantiates the body with the given arguments. Both halves are done here,
+        after the whole model is translated, so that a reference may precede the
+        declaration it names -- which PSS permits and which a single forward pass
+        could not resolve.
+
+        A reference is handled wherever it appears in a boolean context -- as a
+        statement of its own, nested in an if/else arm or a ``foreach`` body, or as
+        an operand of ``&&``/``||``/``!`` or an implication. A reference to the
+        value-yielding form (§13.1.2 b) is handled in any expression position:
+        its expression is substituted at the use site, so the reference is typed
+        by its own arguments and context rather than once for all references.
+        """
+        generics = self._visible_generics(ctx, type_ir, type_key)
+        if not generics:
+            return
+        for fn in type_ir.functions:
+            if not fn.metadata.get('_is_constraint'):
+                continue
+            fn.body = self._expand_generic_refs(ctx, fn.body, generics, ())
+
+    def _visible_generics(
+        self,
+        ctx: AstToIrContext,
+        type_ir: ir.DataTypeStruct,
+        type_key: Optional[str],
+    ) -> Dict[str, '_GenericRef']:
+        """Every generic constraint a constraint on *type_ir* may reference.
+
+        §13.1.2 allows a declaration in struct, action and component scope, and in
+        package scope where it is always static. The layers below are added
+        innermost first and the first entry for a name wins, which is what makes a
+        derived declaration shadow a base one (§13.1.2 c).
+
+        Each entry records whether the declaration is *foreign* -- declared in a
+        scope whose ``self`` is not this type's. That distinction is not
+        cosmetic: expanding a foreign body that touches its own scope's fields
+        would rebind those fields to same-named ones on the referencing type, so
+        the flag is what lets :meth:`_expand_generic_refs` report it instead.
+        """
+        out: Dict[str, _GenericRef] = {}
+
+        def add(name: str, fn: ir.Function, foreign: bool, scope: str) -> None:
+            if name not in out:
+                out[name] = _GenericRef(
+                    fn=fn, foreign=foreign, scope=scope,
+                    is_value=bool(fn.metadata.get('_is_generic_value')))
+
+        # 1. The type itself, then its base types. `self` is the same object all
+        #    the way up, so none of these are foreign. This is also the only layer
+        #    where shadowing happens, so it is where §13.1.2 c is checked.
+        for dt in self._type_and_bases(ctx, type_ir):
+            for f in getattr(dt, 'functions', []) or []:
+                if not f.metadata.get('_is_generic_constraint'):
+                    continue
+                scope = getattr(dt, 'name', '?')
+                self._check_shadow_signature(ctx, out.get(f.name), f, scope)
+                add(f.name, f, False, scope)
+
+        # 2. The enclosing component of an action. `self` there is the component.
+        comp_name = ctx.parent_comp_names.get(type_key) if type_key else None
+        comp = self._lookup_type(ctx, comp_name) if comp_name else None
+        if comp is not None and comp is not type_ir:
+            for f in getattr(comp, 'functions', []) or []:
+                if f.metadata.get('_is_generic_constraint'):
+                    add(f.name, f, True, comp_name)
+
+        # 3. Package scope, reachable only by qualified name (`p::lt`), so these
+        #    cannot shadow anything above and are added unconditionally.
+        for qname, f in ctx.generic_constraints.items():
+            add(qname, f, True, qname.rsplit("::", 1)[0])
+
+        return out
+
+    def _check_shadow_signature(self, ctx: AstToIrContext,
+                                nearer: Optional['_GenericRef'],
+                                base_fn: ir.Function, base_scope: str) -> None:
+        """§13.1.2 c: a shadowing declaration's return and parameter types must match.
+
+        *nearer* is the declaration already found on a derived type, *base_fn* the
+        same name reappearing further up the chain. Only the first such pair is
+        reported per name, because the walk stops adding after the nearest entry
+        and a three-deep chain of mismatches is one mistake, not two.
+
+        The signatures are compared as recorded text, so the message can show both
+        -- a mismatch the user cannot see spelled out is a message they have to
+        go and reconstruct by hand.
+        """
+        if nearer is None or nearer.fn is base_fn:
+            return
+        derived_sig = nearer.fn.metadata.get('_generic_signature')
+        base_sig = base_fn.metadata.get('_generic_signature')
+        if derived_sig is None or base_sig is None or derived_sig == base_sig:
+            return
+
+        def text(sig) -> str:
+            ret, ptypes = sig
+            params = ", ".join(ptypes)
+            return f"({params}) -> {ret}"
+
+        ctx.errors.append(
+            f"generic constraint '{base_fn.name}' in '{nearer.scope}' shadows the "
+            f"one in '{base_scope}', but their signatures differ: "
+            f"{text(derived_sig)} vs {text(base_sig)}; the return and parameter "
+            f"types shall match (PSS 3.1 §13.1.2 c)")
+
+    def _type_and_bases(self, ctx: AstToIrContext, type_ir) -> List[Any]:
+        """*type_ir* followed by its base types, nearest first."""
+        chain = [type_ir]
+        seen = {id(type_ir)}
+        current = type_ir
+        for _ in range(self._MAX_SUPER_DEPTH):
+            super_ref = getattr(current, 'super', None)
+            ref_name = getattr(super_ref, 'ref_name', None)
+            if not ref_name:
+                break
+            current = self._lookup_type(ctx, ref_name)
+            if current is None or id(current) in seen:
+                break
+            seen.add(id(current))
+            chain.append(current)
+        return chain
+
+    @staticmethod
+    def _lookup_type(ctx: AstToIrContext, name: Optional[str]):
+        """Resolve a type name the way the backends do: exact key, then last segment.
+
+        A `super` is recorded as the name as written (`Base`), while the type is
+        registered under its qualified name (`pss_top::Base`), so an exact-key
+        lookup alone finds nothing for the common case.
+        """
+        if not name:
+            return None
+        if name in ctx.type_map:
+            return ctx.type_map[name]
+        for key, dt in ctx.type_map.items():
+            if key.endswith("::" + name):
+                return dt
+        return None
+
+    def _expand_generic_refs(self, ctx: AstToIrContext, body: List[ir.Stmt],
+                             generics: Dict[str, '_GenericRef'],
+                             active: tuple) -> List[ir.Stmt]:
+        """Expand generic constraint references in *body*, one statement at a time.
+
+        A statement that is *exactly* a reference is replaced by the instantiated
+        body -- a splice, so the body may itself hold a ``foreach`` or a `unique`.
+        Any other statement is descended into: its nested statement lists (if/else
+        arms, a ``foreach`` body) are expanded the same way, and its expressions are
+        handed to :meth:`_expand_generic_expr`, which is the only path that can
+        reach a reference used as an operand.
+
+        *active* is the chain of generic constraints currently being expanded; a
+        name that reappears in it is a cycle rather than terminating recursion.
+        """
+        out: List[ir.Stmt] = []
+        for stmt in body:
+            name = self._generic_ref_name(stmt, generics)
+            if name is None:
+                out.append(self._expand_generic_in_stmt(
+                    ctx, stmt, generics, active))
+                continue
+            if generics[name].is_value:
+                # A value-yielding generic constraint contributes a value to the
+                # expression around it (§13.1.2 b); on its own it constrains
+                # nothing. Splicing it in as a statement would hand the solver a
+                # bare number where it expects a condition, so say so instead.
+                ctx.errors.append(
+                    f"generic constraint '{name}' yields a value, not a "
+                    f"constraint, so it cannot stand alone as a constraint "
+                    f"statement; use it in an expression, as in "
+                    f"'x == {name}(...)'")
+                continue
+            expanded = self._instantiate_generic(
+                ctx, name, stmt.expr, generics, active)
+            if expanded is not None:
+                out.extend(expanded)
+        return out
+
+    def _expand_generic_in_stmt(self, ctx: AstToIrContext, stmt: ir.Stmt,
+                                generics: Dict[str, '_GenericRef'],
+                                active: tuple) -> ir.Stmt:
+        """Expand references nested inside *stmt*, returning a rewritten copy.
+
+        The walk is over dataclass fields rather than a branch per statement type,
+        so a statement kind added later is descended into without another edit
+        here. A field holding statements is expanded statement-wise (and so may
+        grow, which is why only list-valued statement slots are followed); a field
+        holding an expression goes to :meth:`_expand_generic_expr`.
+        """
+        if not dataclasses.is_dataclass(stmt):
+            return stmt
+        replacements: Dict[str, Any] = {}
+        for field in dataclasses.fields(stmt):
+            value = getattr(stmt, field.name)
+            if isinstance(value, list) and value and \
+                    all(isinstance(v, ir.Stmt) for v in value):
+                new_value = self._expand_generic_refs(
+                    ctx, value, generics, active)
+            elif isinstance(value, ir.Expr):
+                new_value = self._expand_generic_expr(
+                    ctx, value, generics, active)
+            else:
+                continue
+            if new_value is not value:
+                replacements[field.name] = new_value
+        if not replacements:
+            return stmt
+        return dataclasses.replace(stmt, **replacements)
+
+    def _expand_generic_expr(self, ctx: AstToIrContext, expr: ir.Expr,
+                             generics: Dict[str, '_GenericRef'],
+                             active: tuple) -> ir.Expr:
+        """Expand generic constraint references appearing inside *expr*.
+
+        A reference in an operand position has to become a single expression, so
+        the instantiated body is folded into a conjunction -- which is what the
+        body of a constraint means. This is what lets ``g(x) || y > 5``,
+        ``!g(x)`` and the consequent of an implication work; without it the
+        reference reached the solver as an `ExprCall` and was rejected there.
+
+        The value-yielding form needs no special case here: its body is a single
+        expression, so the same fold returns exactly that expression, and
+        ``j == max(k, l)`` falls out of the operand path.
+        """
+        if isinstance(expr, ir.ExprCall):
+            name = self._generic_call_name(expr, generics)
+            if name is not None:
+                folded = self._instantiate_generic_as_expr(
+                    ctx, name, expr, generics, active)
+                # On error `folded` is None and the call is left in place; the
+                # diagnostic is already recorded, and replacing it with a
+                # constant would change what the model means.
+                return folded if folded is not None else expr
+        if isinstance(expr, list):
+            return [self._expand_generic_expr(ctx, e, generics, active)
+                    for e in expr]
+        if not dataclasses.is_dataclass(expr):
+            return expr
+        replacements: Dict[str, Any] = {}
+        for field in dataclasses.fields(expr):
+            value = getattr(expr, field.name)
+            if isinstance(value, ir.Expr):
+                new_value = self._expand_generic_expr(
+                    ctx, value, generics, active)
+            elif isinstance(value, list) and value and \
+                    all(isinstance(v, ir.Expr) for v in value):
+                new_value = [self._expand_generic_expr(ctx, e, generics, active)
+                             for e in value]
+            else:
+                continue
+            if new_value is not value:
+                replacements[field.name] = new_value
+        if not replacements:
+            return expr
+        return dataclasses.replace(expr, **replacements)
+
+    def _instantiate_generic(self, ctx: AstToIrContext, name: str,
+                             call: ir.ExprCall,
+                             generics: Dict[str, '_GenericRef'],
+                             active: tuple) -> Optional[List[ir.Stmt]]:
+        """The body of generic constraint *name*, instantiated for *call*.
+
+        ``None`` means the reference could not be instantiated and a diagnostic
+        was recorded. The returned statements are themselves fully expanded, so a
+        generic constraint may reference another.
+        """
+        if name in active:
+            self._report_recursion(ctx, name, generics, active)
+            return None
+        if len(active) >= self._MAX_GENERIC_CONSTRAINT_DEPTH:
+            ctx.errors.append(
+                f"generic constraint references nested more than "
+                f"{self._MAX_GENERIC_CONSTRAINT_DEPTH} deep at '{name}'")
+            return None
+        decl = generics[name]
+        if decl.foreign and self._escaping_field(decl.fn) is not None:
+            # A component-scope generic's `self` is the component and a
+            # package-scope one is static (§13.1.2), so a field reference in
+            # the body does not name a field of the type being constrained.
+            # Substituting the body here would silently rebind it to a
+            # same-named field of the referencing type, or to nothing --
+            # either way a constraint that reads as correct and is not.
+            ctx.errors.append(
+                f"generic constraint '{name}' declared in "
+                f"'{decl.scope}' references '{self._escaping_field(decl.fn)}' "
+                f"from its declaring scope, which is not in scope where it "
+                f"is referenced; pass it as a parameter instead")
+            return None
+        target = decl.fn
+        params = [a.arg for a in (target.args.args if target.args else [])]
+        # An argument is an expression at the *reference* site, so a reference
+        # inside it is expanded in the caller's context -- with *active* as it
+        # stands here, not extended by this name. Expanding arguments after
+        # substitution instead would make `plus1(plus1(k))` look like `plus1`
+        # reaching itself, which is a sibling reference, not recursion.
+        args = [self._expand_generic_expr(ctx, a, generics, active)
+                for a in call.args]
+        if len(args) != len(params):
+            # The linker checks arity, so reaching here means the two
+            # disagree about the signature -- emit nothing rather than a
+            # body with unbound parameters in it.
+            ctx.errors.append(
+                f"generic constraint '{name}' takes {len(params)} "
+                f"argument(s), but {len(args)} were given")
+            return None
+        for pname, arg in zip(params, args):
+            if pname in (target.metadata.get('_generic_const_params') or ()) \
+                    and self._reads_a_field(arg):
+                # A `const` parameter promises its actual is a constant, which is
+                # what lets one size or index an array. A random actual makes that
+                # promise false at the one moment it matters -- after solving --
+                # and nothing downstream would notice.
+                ctx.errors.append(
+                    f"generic constraint '{name}' declares parameter "
+                    f"'{pname}' const, so its argument must be a constant, but "
+                    f"a random field was passed")
+                return None
+        bindings = dict(zip(params, args))
+        expanded = [self._subst_locals(s, bindings) for s in target.body]
+        prov = self._generic_provenance(ctx, name, decl, active)
+        if decl.is_value:
+            # The value form's body is one expression, and a reference *inside*
+            # it is in expression position too -- `constraint int m3(...) max(a,
+            # max(b,c));`. Expanding it as a statement list would route that
+            # inner reference through the bare-statement path, which rejects a
+            # value form. So expand the expression as an expression.
+            stmt = expanded[0] if expanded else None
+            if not isinstance(stmt, ir.StmtExpr):
+                return []
+            # The provenance goes on the *expression*, not the wrapping
+            # statement: the statement is a carrier that
+            # `_instantiate_generic_as_expr` unwraps, so anything recorded on it
+            # is dropped before the substitution reaches the use site.
+            return [ir.StmtExpr(expr=self._stamp_provenance(
+                self._expand_generic_expr(
+                    ctx, stmt.expr, generics, active + (name,)), prov))]
+        return [self._stamp_provenance(s, prov) for s in
+                self._expand_generic_refs(
+                    ctx, expanded, generics, active + (name,))]
+
+    def _instantiate_generic_as_expr(
+        self,
+        ctx: AstToIrContext,
+        name: str,
+        call: ir.ExprCall,
+        generics: Dict[str, '_GenericRef'],
+        active: tuple,
+    ) -> Optional[ir.Expr]:
+        """*name*'s body as one boolean expression, for an operand position."""
+        stmts = self._instantiate_generic(ctx, name, call, generics, active)
+        if stmts is None:
+            return None
+        exprs: List[ir.Expr] = []
+        for stmt in stmts:
+            if not isinstance(stmt, ir.StmtExpr):
+                # `foreach`, `unique` and if/else have no value, so a body
+                # containing one cannot be folded into an operand. Reject it
+                # rather than dropping the part that does not fit.
+                ctx.errors.append(
+                    f"generic constraint '{name}' is referenced inside an "
+                    f"expression, but its body contains a "
+                    f"{type(stmt).__name__.replace('Stmt', '').lower()} "
+                    f"constraint, which has no value; reference it as a "
+                    f"statement of its own instead")
+                return None
+            exprs.append(stmt.expr)
+        if not exprs:
+            # An empty body constrains nothing, and `true` is the identity of
+            # the conjunction this fold builds.
+            return ir.ExprConstant(value=True)
+        folded = exprs[0]
+        for operand in exprs[1:]:
+            folded = ir.ExprBin(lhs=folded, op=ir.BinOp.And, rhs=operand)
+        # The fold is a new node, so it carries no provenance of its own, while
+        # the statements it was built from do. Move it up: the conjunction *is*
+        # the instantiation as far as the surrounding expression is concerned,
+        # and provenance that only exists on discarded wrappers is provenance
+        # the model does not have.
+        prov = next((s.provenance for s in stmts
+                     if s.provenance is not None), None)
+        return self._stamp_provenance(folded, prov) if prov is not None \
+            else folded
+
+    #: The name recorded in ``Provenance.pass_name`` for a statement or
+    #: expression that a generic constraint reference put there.
+    GENERIC_CONSTRAINT_PASS = 'generic_constraints'
+
+    def _generic_provenance(self, ctx: AstToIrContext, name: str,
+                            decl: '_GenericRef',
+                            active: tuple) -> 'ir.Provenance':
+        """Provenance for one instantiation of generic constraint *name*.
+
+        ``source_names`` is the reference chain, outermost first, ending in the
+        declaration actually being instantiated. The chain matters because a
+        generic constraint may be reachable only through another one, and "this
+        came from `lt`" is a much weaker answer than "this came from `lt`,
+        reached from `in_range`".
+
+        Names rather than ``source_nodes``, deliberately. Pointing at the
+        declaration node would be the more precise link, but it also turns every
+        instantiated statement into a back-edge into the declaration's subtree,
+        which any dataclass-generic walk then follows -- and a recursive generic
+        constraint would make that a cycle. Two of this suite's own IR walkers
+        found the declaration's unexpanded body through such a link and reported
+        it as a leftover reference. Provenance that changes what walking the IR
+        finds is not worth the precision; the declaring scope goes in
+        ``description`` instead, which is what disambiguates a repeated name.
+
+        ``site`` is what keeps two references to one declaration apart. Their
+        bodies are spliced into the same constraint and may be textually
+        identical after substitution, so without a per-reference number the
+        lowering cannot answer "which of the two references produced this?".
+        """
+        ctx.generic_ref_sites += 1
+        via = " reached from " + " -> ".join(
+            f"'{n}'" for n in reversed(active)) if active else ""
+        return ir.Provenance(
+            pass_name=self.GENERIC_CONSTRAINT_PASS,
+            source_names=list(active) + [name],
+            description=(f"generic constraint '{name}' declared in "
+                         f"'{decl.scope}'{via}"),
+            site=ctx.generic_ref_sites)
+
+    @staticmethod
+    def _stamp_provenance(node: Any, prov: 'ir.Provenance') -> Any:
+        """*node* with *prov* recorded on it, unless it already has provenance.
+
+        First writer wins, and the first writer is always the innermost
+        instantiation -- a nested reference is expanded before the reference
+        that reached it returns. That is the right precedence: the innermost
+        chain is strictly the more specific answer, and it already names the
+        outer references in ``source_nodes``.
+
+        A copy rather than an in-place assignment, because an unsubstituted part
+        of a declaration's body is shared with the declaration itself and with
+        every other reference to it. Writing through would give two references
+        one provenance and label the declaration as its own instantiation.
+        """
+        if getattr(node, 'provenance', None) is not None:
+            return node
+        if not dataclasses.is_dataclass(node):
+            return node
+        return dataclasses.replace(node, provenance=prov)
+
+    @classmethod
+    def _generic_ref_name(cls, stmt: ir.Stmt,
+                          generics: Dict[str, '_GenericRef']) -> Optional[str]:
+        """The generic constraint *stmt* is a bare reference to, or ``None``."""
+        if not isinstance(stmt, ir.StmtExpr):
+            return None
+        if not isinstance(stmt.expr, ir.ExprCall):
+            return None
+        return cls._generic_call_name(stmt.expr, generics)
+
+    @staticmethod
+    def _generic_call_name(call: ir.ExprCall,
+                           generics: Dict[str, '_GenericRef']) -> Optional[str]:
+        """The generic constraint *call* references, or ``None``.
+
+        Two spellings reach here. An unqualified name becomes a call on ``self``,
+        because that is how every unqualified name in a constraint is translated.
+        A package-qualified one (`p::lt(x, 20)`) has no ``self`` to hang off and
+        becomes a call on an unresolved reference carrying the qualified name --
+        see :meth:`_translate_expr_ref_static_rooted`.
+        """
+        func = call.func
+        if isinstance(func, ir.ExprAttribute) and \
+                isinstance(func.value, ir.TypeExprRefSelf):
+            return func.attr if func.attr in generics else None
+        if isinstance(func, ir.ExprRefUnresolved):
+            return func.name if func.name in generics else None
+        return None
+
+    @classmethod
+    def _escaping_field(cls, fn: ir.Function) -> Optional[str]:
+        """The first field this generic constraint's body reads off ``self``.
+
+        ``None`` when the body only uses its parameters, which is the only shape
+        that may be expanded into a scope other than the declaring one.
+        """
+        found: List[str] = []
+
+        def walk(node, depth=0):
+            if found or depth > 32 or node is None:
+                return
+            if isinstance(node, ir.ExprAttribute) and \
+                    isinstance(node.value, ir.TypeExprRefSelf):
+                found.append(node.attr)
+                return
+            if isinstance(node, (list, tuple)):
+                for elem in node:
+                    walk(elem, depth + 1)
+                return
+            if not dataclasses.is_dataclass(node):
+                return
+            for field in dataclasses.fields(node):
+                walk(getattr(node, field.name), depth + 1)
+
+        walk(fn.body)
+        return found[0] if found else None
+
+    @classmethod
+    def _reads_a_field(cls, node) -> bool:
+        """Does *node* read a field off ``self``?
+
+        Used as the test for "involves randomization" -- in a constraint, a field
+        of the enclosing type is what the solver assigns, while a parameter, a
+        literal and a folded constant are all fixed before solving. It is
+        conservative in one direction: a *non-rand* attribute reads as random
+        here. That costs a false diagnostic on a shape no test exercises yet, and
+        the alternative -- treating an unknown reference as constant -- would let
+        the cases this predicate exists to catch through silently.
+        """
+        if isinstance(node, ir.ExprAttribute) and \
+                isinstance(node.value, ir.TypeExprRefSelf):
+            return True
+        if isinstance(node, (list, tuple)):
+            return any(cls._reads_a_field(n) for n in node)
+        if not dataclasses.is_dataclass(node):
+            return False
+        return any(cls._reads_a_field(getattr(node, f.name))
+                   for f in dataclasses.fields(node))
+
+    def _report_recursion(self, ctx: AstToIrContext, name: str,
+                          generics: Dict[str, '_GenericRef'],
+                          active: tuple) -> None:
+        """Diagnose a generic constraint reached from itself, per §13.1.2 d.
+
+        Recursion is *legal* when "gated by an expression that does not involve
+        randomization", so three different things bring us here and they want
+        three different messages. Reporting all of them as "refers to itself" is
+        wrong in the way that matters most for the legal case: it tells the author
+        of correct code that their code is circular.
+
+        The gate is the condition of the if/implication the recursive reference
+        sits under, found by walking the declaration's own body.
+        """
+        chain = ' -> '.join(active + (name,))
+        gate = self._recursion_gate(generics[name].fn, set(active) | {name})
+        if gate is None:
+            ctx.errors.append(
+                f"generic constraint '{name}' refers to itself with no gate "
+                f"(via {chain}); recursion must be gated by an expression that "
+                f"does not involve randomization (PSS 3.1 §13.1.2 d)")
+        elif self._reads_a_field(gate):
+            ctx.errors.append(
+                f"generic constraint '{name}' recurses (via {chain}) under a "
+                f"gate that involves randomization; the gate must be resolvable "
+                f"before solving (PSS 3.1 §13.1.2 d)")
+        else:
+            # Legal per §13.1.2 d, and not yet supported: unrolling it means
+            # evaluating the gate during elaboration. Said plainly, because this
+            # is the one bucket where the input is correct.
+            ctx.errors.append(
+                f"generic constraint '{name}' recurses (via {chain}) under a "
+                f"non-random gate, which PSS 3.1 §13.1.2 d permits but this "
+                f"compiler does not yet unroll")
+
+    @classmethod
+    def _recursion_gate(cls, fn: ir.Function,
+                        cycle: Set[str]) -> Optional[ir.Expr]:
+        """The condition guarding a reference in *fn*'s body to a name in *cycle*.
+
+        ``None`` means the reference is reached unconditionally -- so there is no
+        gate at all, rather than a gate that happens to be constant.
+        """
+        found: List[ir.Expr] = []
+
+        def walk(node, gate: Optional[ir.Expr], depth: int = 0) -> None:
+            if found or depth > 32 or node is None:
+                return
+            if isinstance(node, ir.ExprCall):
+                called = node.func
+                called_name = getattr(called, 'attr', None) or \
+                    getattr(called, 'name', None)
+                if called_name == 'implies' and len(node.args) == 2:
+                    # An implication lowers to a call, so its consequent is
+                    # gated even though no `StmtIf` is involved.
+                    walk(node.args[1], node.args[0], depth + 1)
+                    return
+                if called_name in cycle:
+                    found.append(gate)
+                    return
+            if isinstance(node, ir.StmtIf):
+                walk(node.body, node.test, depth + 1)
+                walk(node.orelse, node.test, depth + 1)
+                return
+            if isinstance(node, (list, tuple)):
+                for elem in node:
+                    walk(elem, gate, depth + 1)
+                return
+            if not dataclasses.is_dataclass(node):
+                return
+            for field in dataclasses.fields(node):
+                walk(getattr(node, field.name), gate, depth + 1)
+
+        walk(fn.body, None)
+        return found[0] if found else None
+
+    @classmethod
+    def _subst_locals(cls, node, bindings: Dict[str, ir.Expr]):
+        """Copy *node*, replacing each ``ExprRefLocal`` named in *bindings*.
+
+        A generic constraint's parameters are translated as locals (see
+        :meth:`_translate_constraint_block`), so instantiating the body is a
+        substitution of locals by the argument expressions. The copy is deep: two
+        references to one constraint must not share expression nodes, or a later
+        rewrite of one would silently change the other.
+        """
+        if isinstance(node, ir.ExprRefLocal) and node.name in bindings:
+            return copy.deepcopy(bindings[node.name])
+        if isinstance(node, list):
+            return [cls._subst_locals(n, bindings) for n in node]
+        if not dataclasses.is_dataclass(node):
+            return node
+        replacements = {}
+        for field in dataclasses.fields(node):
+            value = getattr(node, field.name)
+            new_value = cls._subst_locals(value, bindings)
+            if new_value is not value:
+                replacements[field.name] = new_value
+        if not replacements:
+            return copy.deepcopy(node)
+        return dataclasses.replace(copy.deepcopy(node), **replacements)
+
     def _hier_id_to_expr(self, hier_id) -> 'ir.Expr':
         """Convert an ExprHierarchicalId to a chain of ExprAttribute nodes.
 
@@ -1556,6 +2371,10 @@ class AstToIrTranslator:
                 constraint_func = self._translate_constraint_block(ctx, child, struct_ir)
                 if constraint_func:
                     struct_ir.functions.append(constraint_func)
+            elif isinstance(child, pss_ast.GenericConstraintDeclValue):
+                value_func = self._translate_generic_value_constraint(ctx, child)
+                if value_func:
+                    struct_ir.functions.append(value_func)
             elif isinstance(child, pss_ast.Covergroup):
                 cg = self._translate_covergroup(ctx, child)
                 if cg is not None:
@@ -1824,6 +2643,23 @@ class AstToIrTranslator:
             if len(var_names) >= 2:
                 body.append(ir.StmtUnique(vars=var_names))
 
+        elif isinstance(stmt, (pss_ast.ConstraintStmtDefault,
+                               pss_ast.ConstraintStmtDefaultDisable)):
+            # §13.3 rule g: neither form may appear under a generic constraint.
+            # Elsewhere `default` is simply not implemented yet and falls through
+            # to the skip below -- but *here* skipping is not a missing feature,
+            # it is a silently weaker model: a generic constraint whose body is
+            # `default x == 3; x < 100;` would drop the default and compile, with
+            # `x < 100` the only thing left.
+            if ctx.generic_constraint_name is not None:
+                kind = "default disable" if isinstance(
+                    stmt, pss_ast.ConstraintStmtDefaultDisable) else "default"
+                ctx.errors.append(
+                    f"'{kind}' may not be used inside generic constraint "
+                    f"'{ctx.generic_constraint_name}' (PSS 3.1 §13.3 g)")
+            elif self.debug:
+                self.logger.debug("`default` constraints are not implemented")
+
         else:
             if self.debug:
                 self.logger.debug(
@@ -1858,8 +2694,17 @@ class AstToIrTranslator:
             idx = sum(1 for f in owner.functions if f.metadata.get('_is_constraint'))
             func_name = f'_c_{idx}'
 
-        # Detect soft/default constraints (PSS `constraint default ...`)
-        is_soft = bool(getattr(constraint_block, 'getIs_dynamic', lambda: False)())
+        # A generic constraint is a template, not a constraint in force (§13.1.2).
+        # Its parameters are in scope over its body, so register them as locals for
+        # the duration -- otherwise `lim` in `constraint c(int lim) { x < lim; }`
+        # translates to `self.lim`, a field the type does not have.
+        is_generic = self._is_generic_constraint(constraint_block)
+        params = self._translate_generic_constraint_params(ctx, constraint_block)
+        shadowed = {p.arg for p in params} - ctx.local_vars
+        ctx.local_vars |= shadowed
+        outer_generic = ctx.generic_constraint_name
+        if is_generic:
+            ctx.generic_constraint_name = func_name
 
         body: List[ir.Stmt] = []
 
@@ -1908,17 +2753,198 @@ class AstToIrTranslator:
             else:
                 self._collect_constraint_stmt(ctx, stmt, body)
 
-        if not body:
+        ctx.local_vars -= shadowed
+        ctx.generic_constraint_name = outer_generic
+
+        if not body and not is_generic:
             return None
 
-        meta = {'_is_constraint': True}
-        if is_soft:
-            meta['is_soft'] = True
+        if is_generic:
+            # Deliberately NOT `_is_constraint`: a generic constraint is inert
+            # until referenced, so nothing may collect it into a solve problem.
+            # The body and parameters are kept so a reference can instantiate
+            # them once pssparser resolves references (see
+            # docs/design/generic-constraints-system-tests.md, phase 1a).
+            #
+            # Registered even with an *empty* body, unlike a fixed constraint.
+            # An unregistered declaration is not merely absent: the reference to
+            # it then goes unrecognized and reaches the backend as an
+            # unexpanded call, so a body made only of items this translator does
+            # not handle got blamed on the solver. Empty is also legal on its own
+            # -- `constraint g() {}` constrains nothing.
+            return ir.Function(
+                name=func_name,
+                is_async=False,
+                args=ir.Arguments(args=params),
+                body=body,
+                metadata={
+                    '_is_generic_constraint': True,
+                    '_generic_const_params': self._const_param_names(
+                        constraint_block),
+                    '_generic_signature': self._generic_signature(
+                        ctx, constraint_block, params, is_value=False),
+                },
+            )
+
         return ir.Function(
             name=func_name,
             is_async=False,
             body=body,
-            metadata=meta,
+            metadata={'_is_constraint': True},
+        )
+
+    @staticmethod
+    def _is_generic_constraint(constraint_block) -> bool:
+        """Is this block a generic constraint (§13.1.2) rather than one in force?
+
+        Two spellings reach here. ``constraint c(int lim) {...}`` parses to a
+        ``GenericConstraintDeclBool``, which *subclasses* ``ConstraintBlock`` --
+        which is exactly why it used to be swallowed by the ordinary constraint
+        path. ``dynamic constraint c {...}`` is the deprecated spelling of the
+        zero-parameter form and arrives as a plain block with ``is_dynamic`` set.
+        """
+        if isinstance(constraint_block, pss_ast.GenericConstraintDeclBool):
+            return True
+        return bool(getattr(constraint_block, 'getIs_dynamic', lambda: False)())
+
+    def _translate_generic_constraint_params(
+        self,
+        ctx: AstToIrContext,
+        constraint_block,
+    ) -> List[ir.Arg]:
+        """Translate a generic constraint's parameter list; ``[]`` if it has none.
+
+        A ``numeric`` parameter carries no declared type -- the type is reified
+        from the arguments at each reference site -- so it is annotated ``int``
+        here as a placeholder until reference resolution lands (phase 1a).
+        """
+        if not hasattr(constraint_block, 'numParameters'):
+            return []
+        params: List[ir.Arg] = []
+        for i in range(constraint_block.numParameters()):
+            param = constraint_block.getParameter(i)
+            if param is None:
+                continue
+            name_node = param.getName()
+            name = name_node.getId() if isinstance(name_node, pss_ast.ExprId) else str(name_node)
+            if param.getIs_numeric():
+                ptype = ctx.type_map.get('int')
+            else:
+                ptype = self._translate_data_type(ctx, param.getType())
+            params.append(ir.Arg(arg=name, annotation=ptype))
+        return params
+
+    @staticmethod
+    def _const_param_names(decl) -> tuple:
+        """The names of *decl*'s ``const`` parameters.
+
+        ``const`` on a generic constraint parameter is in the grammar (Syntax58)
+        but §13.1.2 says nothing about what it means. Taken here as the reading
+        that makes it useful and that GC-2.5 assumes: the actual must be a
+        constant, which is what lets such a parameter size an array or index one.
+        Checked at the reference, in :meth:`_instantiate_generic`.
+        """
+        if not hasattr(decl, 'numParameters'):
+            return ()
+        out = []
+        for i in range(decl.numParameters()):
+            param = decl.getParameter(i)
+            if param is None or not param.getIs_const():
+                continue
+            name_node = param.getName()
+            out.append(name_node.getId() if isinstance(name_node, pss_ast.ExprId)
+                       else str(name_node))
+        return tuple(out)
+
+    def _generic_signature(self, ctx: AstToIrContext, decl,
+                           params: List[ir.Arg], *, is_value: bool) -> tuple:
+        """*decl*'s signature, for the shadowing check in §13.1.2 c.
+
+        Recorded as plain comparable text rather than as types, because the only
+        consumer asks "do these two match?" and needs to *print* both when they
+        do not.
+
+        The return type appears here and nowhere else. W2 deliberately does not
+        record it for substitution -- each reference is typed by its own
+        arguments, which is what gives per-signature specialization for free --
+        but §13.1.2 c requires the return types of a shadowing pair to match, and
+        that cannot be checked without knowing them.
+        """
+        def type_text(annotation) -> str:
+            name = getattr(annotation, 'name', None)
+            if name:
+                return name
+            bits = getattr(annotation, 'bits', None)
+            if bits is not None:
+                return f"{'int' if getattr(annotation, 'signed', False) else 'bit'}" \
+                       f"[{bits}]"
+            return type(annotation).__name__
+
+        if not is_value:
+            ret = 'bool'
+        elif decl.getIs_return_numeric():
+            # `numeric` has no concrete type until a reference reifies it, so it
+            # is its own signature entry -- two `numeric` declarations match each
+            # other, and neither matches an explicitly typed one.
+            ret = 'numeric'
+        else:
+            ret = type_text(self._translate_data_type(ctx, decl.getReturn_type()))
+        return (ret, tuple(type_text(p.annotation) for p in params))
+
+    def _translate_generic_value_constraint(
+        self,
+        ctx: AstToIrContext,
+        decl: 'pss_ast.GenericConstraintDeclValue',
+    ) -> Optional[ir.Function]:
+        """Translate ``constraint <type> name(params) expr;`` (§13.1.2 b).
+
+        The value-yielding form is one *expression*, not a constraint set, and it
+        is "usable anywhere an expression of that type is legal" -- so unlike the
+        boolean form it never holds on its own; it only contributes a value to
+        whatever constrains the reference. It is stored the same way regardless:
+        an ``ir.Function`` whose single statement wraps the expression, which
+        lets one instantiation path serve both forms (see
+        :meth:`_instantiate_generic`). ``_is_generic_value`` is what tells the
+        two apart where the difference matters -- a bare statement reference is
+        legal for the boolean form and meaningless for this one.
+
+        The declared return type is deliberately not recorded. Substituting the
+        expression at the use site means each reference is typed by its own
+        arguments and its own context, which is the specialization-per-signature
+        behaviour §8.2 calls for -- recording one type here would invite
+        reifying once and reusing it.
+        """
+        name_node = decl.getName()
+        name = name_node.getId() if isinstance(name_node, pss_ast.ExprId) \
+            else str(name_node)
+        if not name:
+            return None
+        expr_node = decl.getExpr()
+        if expr_node is None:
+            return None
+
+        params = self._translate_generic_constraint_params(ctx, decl)
+        shadowed = {p.arg for p in params} - ctx.local_vars
+        ctx.local_vars |= shadowed
+        try:
+            expr = self._translate_expression(ctx, expr_node)
+        finally:
+            ctx.local_vars -= shadowed
+        if expr is None:
+            return None
+
+        return ir.Function(
+            name=name,
+            is_async=False,
+            args=ir.Arguments(args=params),
+            body=[ir.StmtExpr(expr=expr)],
+            metadata={
+                '_is_generic_constraint': True,
+                '_is_generic_value': True,
+                '_generic_const_params': self._const_param_names(decl),
+                '_generic_signature': self._generic_signature(
+                    ctx, decl, params, is_value=True),
+            },
         )
 
     def _translate_enum(self, ctx: AstToIrContext, enum_decl: pss_ast.EnumDecl) -> ir.DataTypeEnum:
@@ -2206,6 +3232,8 @@ class AstToIrTranslator:
         elif isinstance(stmt_node, pss_ast.ProceduralStmtContinue):
             return ir.StmtContinue()
         elif isinstance(stmt_node, pss_ast.ProceduralStmtExpr):
+            # A bare call statement (`f();`, `c.f();`) arrives here, not under a
+            # node of its own -- the parser has no ProceduralStmtFunctionCall.
             expr_node = stmt_node.getExpr()
             if expr_node is not None:
                 ir_expr = self._translate_expression(ctx, expr_node)
@@ -2218,8 +3246,6 @@ class AstToIrTranslator:
             return self._translate_stmt_foreach(ctx, stmt_node)
         elif isinstance(stmt_node, pss_ast.ProceduralStmtMatch):
             return self._translate_stmt_match(ctx, stmt_node)
-        elif isinstance(stmt_node, pss_ast.ProceduralStmtFunctionCall):
-            return self._translate_stmt_function_call(ctx, stmt_node)
         else:
             if self.debug:
                 self.logger.debug(f"Unsupported statement type: {type(stmt_node).__name__}")
@@ -2503,38 +3529,6 @@ class AstToIrTranslator:
 
         return ir.StmtMatch(subject=subject, cases=cases)
 
-    def _translate_stmt_function_call(self, ctx: AstToIrContext, stmt: pss_ast.ProceduralStmtFunctionCall) -> Optional[ir.StmtExpr]:
-        """Translate a standalone function call statement."""
-        # Build prefix (e.g. component path) + function name
-        prefix = stmt.getPrefix()
-        fn_name_parts = []
-        if prefix:
-            hier = prefix.getHier_id() if hasattr(prefix, 'getHier_id') else None
-            if hier:
-                for i in range(hier.numElems()):
-                    e = hier.getElem(i)
-                    fn_name_parts.append(e.getId().getId())
-
-        args = []
-        for i in range(stmt.numParams()):
-            param = stmt.getParam(i)
-            arg_ir = self._translate_expression(ctx, param)
-            if arg_ir is not None:
-                args.append(arg_ir)
-
-        if fn_name_parts:
-            func: ir.Expr = ir.TypeExprRefSelf()
-            for part in fn_name_parts:
-                func = ir.ExprAttribute(value=func, attr=part)
-        else:
-            # bare function — use prefix's params or name from getParams
-            params_node = stmt.getParams()
-            fn_id = params_node.getPrefix() if params_node and hasattr(params_node, 'getPrefix') else None
-            name = fn_id.getId() if fn_id and hasattr(fn_id, 'getId') else "unknown"
-            func = ir.ExprRefUnresolved(name=name)
-
-        return ir.StmtExpr(expr=ir.ExprCall(func=func, args=args))
-
     def _translate_expression(self, ctx: AstToIrContext, expr_node: Any) -> Optional[ir.Expr]:
         """Translate an expression node to IR
 
@@ -2561,12 +3555,10 @@ class AstToIrTranslator:
             return self._translate_expr_ref(ctx, expr_node)
         elif isinstance(expr_node, pss_ast.ExprCast):
             return self._translate_expr_cast(ctx, expr_node)
-        elif isinstance(expr_node, pss_ast.ExprSubscript):
-            return self._translate_expr_subscript(ctx, expr_node)
         elif isinstance(expr_node, pss_ast.ExprBitSlice):
             return self._translate_expr_bitslice(ctx, expr_node)
-        elif isinstance(expr_node, pss_ast.ExprSubstring):
-            return self._translate_expr_substring(ctx, expr_node)
+        elif isinstance(expr_node, pss_ast.ExprSliceRange):
+            return self._translate_expr_slice_range(ctx, expr_node)
         elif isinstance(expr_node, pss_ast.ExprAggrList):
             return self._translate_expr_aggr_list(ctx, expr_node)
         elif isinstance(expr_node, pss_ast.ExprAggrMap):
@@ -2579,6 +3571,8 @@ class AstToIrTranslator:
             return ir.ExprNull()
         elif isinstance(expr_node, pss_ast.ExprIn):
             return self._translate_expr_in(ctx, expr_node)
+        elif isinstance(expr_node, pss_ast.ExprRefPathStaticRooted):
+            return self._translate_expr_ref_static_rooted(ctx, expr_node)
         elif isinstance(expr_node, pss_ast.ExprRefPathStatic):
             return self._translate_expr_ref_static(ctx, expr_node)
         else:
@@ -2625,6 +3619,66 @@ class AstToIrTranslator:
         for name in parts:
             result = ir.ExprAttribute(value=result, attr=name)
         return result
+
+    def _translate_expr_ref_static_rooted(self, ctx: AstToIrContext,
+                                          expr) -> Optional[ir.Expr]:
+        """Translate ``pkg::name(args)`` -- a static path with a call on its leaf.
+
+        This had no branch, so a reference to a package-scope generic constraint
+        translated to ``None``, and a ``None`` constraint statement is not an
+        error anywhere: it is simply absent. ``constraint c { p::lt(x, 20); }``
+        therefore compiled to a model with *no* upper bound on ``x`` at all --
+        stimulus silently weaker than the source asks for, which is the worst
+        failure mode a constraint compiler has.
+
+        Deliberately narrow: only a reference that names a *known generic
+        constraint* is translated, and everything else keeps returning ``None``.
+        The same node spells package-scope function calls and enum references,
+        which have their own unfinished handling; turning those into calls on an
+        unresolved name here would trade one silent gap for a noisier one
+        elsewhere without fixing either.
+        """
+        root = expr.getRoot()
+        leaf = expr.getLeaf()
+        if root is None or leaf is None:
+            return None
+
+        parts: List[str] = []
+        for i in range(root.numBase()):
+            elem = root.getBase(i)
+            eid = elem.getId() if hasattr(elem, 'getId') else None
+            if eid is not None and hasattr(eid, 'getId'):
+                parts.append(eid.getId())
+
+        args_node = None
+        for i in range(leaf.numElems()):
+            elem = leaf.getElem(i)
+            eid = elem.getId() if hasattr(elem, 'getId') else None
+            if eid is None:
+                return None
+            parts.append(eid.getId())
+            args_node = elem.getParams()
+
+        if args_node is None or not parts:
+            return None
+
+        qualified = "::".join(parts)
+        if qualified not in ctx.generic_constraints:
+            return None
+
+        args: List[ir.Expr] = []
+        for arg_node in args_node.getParameters():
+            arg_ir = self._translate_expression(ctx, arg_node)
+            if arg_ir is None:
+                # Dropping an argument would silently change the signature, and
+                # the arity check downstream would then blame the declaration.
+                ctx.errors.append(
+                    f"could not translate an argument to generic constraint "
+                    f"'{qualified}'")
+                return None
+            args.append(arg_ir)
+
+        return ir.ExprCall(func=ir.ExprRefUnresolved(name=qualified), args=args)
 
     def _translate_expr_number(self, ctx: AstToIrContext, expr: Any) -> ir.ExprConstant:
         """Translate a number literal"""
@@ -2724,22 +3778,18 @@ class AstToIrTranslator:
             first_name = first_id.getId() if isinstance(first_id, pss_ast.ExprId) else str(first_id)
             if first_name in ctx.local_vars:
                 if len(elems) == 1:
-                    return ir.ExprRefLocal(name=first_name)
+                    return self._apply_subscripts(
+                        ctx, elems[0], ir.ExprRefLocal(name=first_name))
                 # Multi-element path rooted at a local variable (e.g. p.x, s.upper())
-                result_lv: ir.Expr = ir.ExprRefLocal(name=first_name)
+                result_lv: ir.Expr = self._apply_subscripts(
+                    ctx, elems[0], ir.ExprRefLocal(name=first_name))
                 for elem in elems[1:]:
                     if not hasattr(elem, 'getId'):
                         continue
                     id_obj = elem.getId()
                     attr = id_obj.getId() if isinstance(id_obj, pss_ast.ExprId) else str(id_obj)
                     result_lv = ir.ExprAttribute(value=result_lv, attr=attr)
-                    n_sub = elem.numSubscript() if hasattr(elem, 'numSubscript') else 0
-                    for si in range(n_sub):
-                        sub_expr = elem.getSubscript(si)
-                        if sub_expr is not None:
-                            idx_ir = self._translate_expression(ctx, sub_expr)
-                            if idx_ir is not None:
-                                result_lv = ir.ExprSubscript(value=result_lv, slice=idx_ir)
+                    result_lv = self._apply_subscripts(ctx, elem, result_lv)
                     # Handle method calls on this element (e.g. s.upper())
                     params = elem.getParams() if hasattr(elem, 'getParams') else None
                     if params is not None and hasattr(params, 'numParameters'):
@@ -2778,13 +3828,7 @@ class AstToIrTranslator:
             result = ir.ExprAttribute(value=result, attr=name)
 
             # Apply any subscript indexes on this element: items[0] → result[0]
-            n_sub = elem.numSubscript() if hasattr(elem, 'numSubscript') else 0
-            for si in range(n_sub):
-                sub_expr = elem.getSubscript(si)
-                if sub_expr is not None:
-                    index_ir = self._translate_expression(ctx, sub_expr)
-                    if index_ir is not None:
-                        result = ir.ExprSubscript(value=result, slice=index_ir)
+            result = self._apply_subscripts(ctx, elem, result)
 
             # If this element has method parameters, emit a call immediately
             params = elem.getParams() if hasattr(elem, 'getParams') else None
@@ -2798,6 +3842,24 @@ class AstToIrTranslator:
                 result = ir.ExprCall(func=result, args=args)
 
         return self._apply_ref_bit_slice(expr, result)
+
+    def _apply_subscripts(self, ctx: AstToIrContext, elem, result: ir.Expr) -> ir.Expr:
+        """Wrap *result* in an ``ExprSubscript`` per subscript carried by *elem*.
+
+        The parser hangs subscripts off the hier-id element that wrote them, so
+        ``items[0]`` and ``s[1..3]`` both arrive here: a plain index translates to
+        an index expression, a range to an ``ExprSlice`` (see
+        :meth:`_translate_expr_slice_range`).
+        """
+        n_sub = elem.numSubscript() if hasattr(elem, 'numSubscript') else 0
+        for si in range(n_sub):
+            sub_expr = elem.getSubscript(si)
+            if sub_expr is None:
+                continue
+            index_ir = self._translate_expression(ctx, sub_expr)
+            if index_ir is not None:
+                result = ir.ExprSubscript(value=result, slice=index_ir)
+        return result
 
     def _apply_ref_bit_slice(self, expr_node, result: ir.Expr) -> ir.Expr:
         """If *expr_node* carries a bit-slice, wrap *result* in ExprSubscript.
@@ -2841,13 +3903,6 @@ class AstToIrTranslator:
 
         return ir.ExprCast(target_type=target_type, value=operand)
 
-    def _translate_expr_subscript(self, ctx: AstToIrContext, expr: pss_ast.ExprSubscript) -> ir.ExprSubscript:
-        """Translate a subscript expression (array indexing)"""
-        value = self._translate_expression(ctx, expr.getLhs())
-        index = self._translate_expression(ctx, expr.getRhs())
-
-        return ir.ExprSubscript(value=value, slice=index)
-
     def _translate_expr_bitslice(self, ctx: AstToIrContext, expr: pss_ast.ExprBitSlice) -> ir.ExprSlice:
         """Translate a standalone bit-slice expression.
 
@@ -2861,12 +3916,22 @@ class AstToIrTranslator:
         lower = ir.ExprConstant(value=int(lower_node.getValue())) if (lower_node and hasattr(lower_node, 'getValue')) else None
         return ir.ExprSlice(lower=lower, upper=upper, step=None, is_bit_slice=True)
 
-    def _translate_expr_substring(self, ctx: AstToIrContext, expr: pss_ast.ExprSubstring) -> ir.ExprSlice:
-        """Translate a string sub-string expression s[start..end] → ExprSlice"""
-        value = self._translate_expression(ctx, expr.getExpr())
-        start = self._translate_expression(ctx, expr.getStart())
-        end = self._translate_expression(ctx, expr.getEnd())
-        return ir.ExprSlice(lower=start, upper=end, step=None)
+    def _translate_expr_slice_range(self, ctx: AstToIrContext, expr: pss_ast.ExprSliceRange) -> ir.ExprSlice:
+        """Translate a range subscript ``a[lower..upper]`` to an ``ExprSlice``.
+
+        The parser attaches range subscripts to the hier-id element that carries
+        them, so this node arrives as the *index* of a subscript: the caller in
+        :meth:`_translate_expr_ref` wraps the result in
+        ``ExprSubscript(value=..., slice=ExprSlice(...))``.
+
+        Either endpoint may be absent (``a[lo..]`` / ``a[..hi]``), in which case
+        the corresponding bound is ``None``.
+        """
+        lower_node = expr.getLower()
+        upper_node = expr.getUpper()
+        lower = self._translate_expression(ctx, lower_node) if lower_node is not None else None
+        upper = self._translate_expression(ctx, upper_node) if upper_node is not None else None
+        return ir.ExprSlice(lower=lower, upper=upper, step=None)
 
     def _translate_expr_aggr_list(self, ctx: AstToIrContext, expr) -> ir.ExprList:
         """Translate a PSS aggregate list literal {1, 2, 3} to ExprList"""
