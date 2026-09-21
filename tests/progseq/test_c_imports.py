@@ -103,11 +103,18 @@ def test_a_call_to_nothing_is_refused_by_the_front_end(tmp_path):
     own check (below) sees so few cases: by the time a call reaches lowering it
     has almost always resolved to something.
     """
-    from pssparser.parser import ParseException
+    # Through the DRIVER the front end's refusal arrives as CompileError: a
+    # user error, reported and exit-1'd rather than surfacing as a traceback.
+    # The parser still raises ParseException to its own callers; the driver
+    # converts it and renders the markers (see tests/unit/errors/
+    # test_parse_diagnostics.py).
     model = _MODEL.replace("        plat_delay_us(n);\n",
                            "        no_such_function(n);\n")
-    with pytest.raises(ParseException, match="unknown identifier"):
+    with pytest.raises(driver.CompileError) as exc:
         _gen(tmp_path, model)
+    text = "\n".join(exc.value.errors)
+    assert "unknown identifier" in text
+    assert "no_such_function" in text
 
 
 def test_a_component_scope_import_is_refused_rather_than_mislowered(tmp_path):

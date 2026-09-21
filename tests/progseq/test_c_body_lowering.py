@@ -340,7 +340,10 @@ def test_an_unknown_name_is_caught_by_the_front_end(tmp_path):
     src = _BUILTINS.replace("v = read32(at);", "v = mystery_helper(at);")
     with pytest.raises(Exception) as exc:
         _generate(tmp_path, src)
-    assert "mystery_helper" in str(exc.value)
+    # The driver renders the front end's markers into `.errors`; the summary
+    # line only counts them.
+    text = "\n".join(getattr(exc.value, "errors", [])) or str(exc.value)
+    assert "mystery_helper" in text
 
 
 def test_a_declared_builtin_with_no_c_rendering_is_rejected(tmp_path):

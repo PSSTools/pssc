@@ -11,9 +11,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, List, Optional, Sequence, Union
 
+from pssparser import ParseException
+
 from .frontend import Parser
 from .ast2ir import AstToIrTranslator, AstToIrContext
 from .ir import to_core_context
+from . import diag as _diag
 from . import reg_rmw as _reg_rmw
 from . import targets as _targets
 
@@ -60,6 +63,25 @@ def _normalize_opts(opts: Optional[argparse.Namespace],
     return opts
 
 
+def _parse_error(e: ParseException,
+                 prelude: Sequence[tuple] = ()) -> "CompileError":
+    """Convert a front-end ``ParseException`` into a :class:`CompileError`.
+
+    The markers carry the location; ``prelude`` carries the text of the
+    in-memory units (a target's ``target_cfg_pkg``), which have a name but no
+    file, so a diagnostic pointing into one can still show its source line.
+
+    A ParseException with no markers -- one raised with a message alone --
+    keeps that message, so nothing is lost when the structured form is absent.
+    """
+    sources = {name: text for name, text in (prelude or ())}
+    rendered = _diag.format_markers(getattr(e, "markers", None) or [], sources)
+    if not rendered:
+        rendered = [str(e)]
+    return CompileError(
+        "PSS parse failed with %d error(s)" % len(rendered), rendered)
+
+
 def translate(sources: Union[PathLike, Sequence[PathLike]],
               reg_rmw: str = "native",
               prelude: Sequence[tuple] = (),
@@ -85,8 +107,20 @@ def translate(sources: Union[PathLike, Sequence[PathLike]],
     paths = [str(s) for s in sources]
 
     parser = Parser(collect_comments=comments)
-    parser.parse(paths, prelude=prelude)
-    root = parser.link()
+    # A syntax or resolution error in the user's PSS is a USER error, not a
+    # compiler crash. Left to propagate, ParseException reaches the CLI's
+    # catch-all and is reported as an internal error -- a traceback and exit
+    # status 2, contradicting the documented contract (docs/cli.md: 1 = user
+    # error, parse/translate failure). Re-raising it as CompileError puts it on
+    # the same path as every other user error, and renders the markers the
+    # front end already collected (file:line:col + caret) instead of discarding
+    # them. The parser's own API is unchanged: Parser/load_pss callers still see
+    # ParseException.
+    try:
+        parser.parse(paths, prelude=prelude)
+        root = parser.link()
+    except ParseException as e:
+        raise _parse_error(e, prelude) from None
     ctx = AstToIrTranslator().translate(root)
     if reg_rmw == "expand":
         _reg_rmw.expand_all(ctx)
@@ -137,9 +171,17 @@ def compile(
             raise CompileError(str(e)) from None
         return CompileResult(target=target, errors=[str(e)])
 
-    ctx = translate(sources, reg_rmw=getattr(opts, "reg_rmw", "native"),
-                    comments=not getattr(opts, "no_comments", False),
-                    prelude=prelude)
+    # `raise_on_error=False` promises errors come back in the result rather
+    # than as an exception. A parse failure is an error like any other, so it
+    # honours that promise too -- before, it was the one error that escaped.
+    try:
+        ctx = translate(sources, reg_rmw=getattr(opts, "reg_rmw", "native"),
+                        comments=not getattr(opts, "no_comments", False),
+                        prelude=prelude)
+    except CompileError as e:
+        if raise_on_error:
+            raise
+        return CompileResult(target=target, errors=list(e.errors) or [str(e)])
 
     if ctx.errors:
         if raise_on_error:

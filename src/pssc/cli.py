@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from .__version__ import version
+from . import diag
 from . import driver
 from . import targets as _targets
 from .ir import dump_ir
@@ -430,7 +431,10 @@ def main(argv=None) -> int:
     except driver.CompileError as e:
         print(f"pssc: error: {e}", file=sys.stderr)
         for err in e.errors:
-            print(f"  {err}", file=sys.stderr)
+            # EVERY line indented, not just the first: a diagnostic carries a
+            # source snippet and a caret, and indenting only the head shifts
+            # the caret out from under the token it points at.
+            print(diag.indent_block(str(err)), file=sys.stderr)
         return 1
     except Exception:  # pragma: no cover - internal error path
         traceback.print_exc()

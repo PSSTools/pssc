@@ -7,6 +7,27 @@ pssc [--version] <command> ...
 Exit codes: `0` success · `1` user error (unknown target, parse/translate
 failure) · `2` internal error.
 
+## Diagnostics
+
+A problem in the PSS source is a *user* error: it is reported and exits `1`.
+Exit `2` and a traceback mean a bug in pssc — report it.
+
+Diagnostics lead with `file:line:col:`, the form editors and log filters
+already parse, and carry the source line with a caret under the offending
+token:
+
+```
+model.pss:1:8: error: 'export action' is not PSS syntax -- an exported action is declared without the 'action' keyword [PSSC002]
+    export action pss_top::entry_a();
+           ^~~~~~
+    note: drop 'action': export <action_type>(<params>);
+    note: PSS 3.1 §20.10: export [target|solve] action_type_identifier (<params>);
+```
+
+`note:` lines appear where pssc recognises the specific mistake. The bracketed
+code (`PSS028`, `PSSC002`, …) identifies the diagnostic; `PSSC`-prefixed codes
+come from pssc's own front-end guards rather than from the parser.
+
 ## `pssc compile`
 
 Compile PSS sources to a target.

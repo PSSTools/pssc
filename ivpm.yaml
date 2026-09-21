@@ -34,6 +34,7 @@ package:
       url: https://github.com/zuspec/zuspec-solver.git
     - name: dv-solve
       url: https://github.com/fvutils/dv-solve.git
+      dep-set: use
     - name: pytest
       src: pypi
     - name: sphinx
