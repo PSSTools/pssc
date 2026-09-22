@@ -103,3 +103,21 @@ def test_solver_includes_stay_separate_from_the_backend_set():
     # And both really do ship the colliding header.
     assert (backend_inc / "zsp_alloc.h").is_file()
     assert any((Path(d) / "zsp_alloc.h").is_file() for d in incs)
+
+
+def test_unlinkable_selected_installation_is_an_error_not_a_fallback(
+        tmp_path, monkeypatch):
+    """``ZSP_SOLVER_PATH`` holding only ``libdv_solve.so.1`` is loadable but not
+    linkable. dv-solve used to answer ``get_libdirs()`` with the package's
+    library instead, so the Python solver and ``libpssc_scenario.so`` came
+    from different builds. The error must reach pssc's caller."""
+    from dv_solve import _resolve
+    if not hasattr(_resolve, "select_installation"):
+        pytest.skip("dv-solve predates the installation contract")
+    bad = tmp_path / "override"
+    bad.mkdir()
+    (bad / "libdv_solve.so.1").write_bytes(b"")
+    (bad / "zsp_problem.h").write_text("")
+    monkeypatch.setenv("ZSP_SOLVER_PATH", str(bad))
+    with pytest.raises(RuntimeError, match="ZSP_SOLVER_PATH=%s" % bad):
+        _dvsolve_share()

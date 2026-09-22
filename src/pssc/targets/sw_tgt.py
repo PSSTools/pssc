@@ -291,6 +291,11 @@ def _dvsolve_share() -> tuple:
     namespaced ``dv_solve/`` subdir). These stay the include set for the SOLVER
     translation unit ONLY -- dv-solve and be-sw ship conflicting ``zsp_alloc.h``
     definitions, so the two include sets must not be merged.
+
+    Both answers come from the ONE installation dv-solve selects (the one its
+    Python API loads). If that installation cannot be linked or has no
+    headers, dv-solve raises ``RuntimeError`` naming it, and that propagates:
+    building against some other installation instead is the failure mode.
     """
     import dv_solve as _dv  # the installed package, if present
     return [Path(d) for d in _dv.get_incdirs()], Path(_dv.get_libdirs()[0])
