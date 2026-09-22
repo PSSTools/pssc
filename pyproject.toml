@@ -1,5 +1,9 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+# 77, not 69: `license = "Apache-2.0"` is a PEP 639 license expression only
+# from setuptools 77. Older versions accept the same line as free-text and emit
+# `License:` instead of `License-Expression:`, so the floor is what makes a
+# rebuild from the sdist produce the same metadata as the released wheel.
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -14,6 +18,7 @@ authors = [
 # >=3.10 would let `uvx pssc` install on 3.10/3.11 and then fail at import --
 # an honest resolution error is the better outcome.
 requires-python = ">=3.12"
+license = "Apache-2.0"
 dependencies = [
   "pssparser",
   "zuspec-ir-core",
