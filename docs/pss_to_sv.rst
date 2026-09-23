@@ -289,13 +289,13 @@ Trace and Debug
 The ``zsp_rt_pkg`` trace macros are controlled by the ``zsp_rt_verbosity``
 runtime parameter.
 
-========  ======  ==================================================
-Level     Macro   Output
-========  ======  ==================================================
-0         --      Silent
-1         ``ZSP_TRACE_ACTION``   Action entry (name, component path)
-2         ``ZSP_TRACE_RESOURCE`` Resource acquire/release events
-========  ======  ==================================================
+========  ======================  ==================================================
+Level     Macro                   Output
+========  ======================  ==================================================
+0         --                      Silent
+1         ``ZSP_TRACE_ACTION``    Action entry (name, component path)
+2         ``ZSP_TRACE_RESOURCE``  Resource acquire/release events
+========  ======================  ==================================================
 
 Set at simulation startup::
 
@@ -320,68 +320,68 @@ PSS construct                           SV mapping                     Status
 ``string``                              ``string``                     ✅
 ``chandle``                             ``chandle``                    ✅
 ``enum E { ... }``                      ``typedef enum { ... } E``     ✅
-``struct S { ... }``                    ``class S`` + rand fields       ✅
+``struct S { ... }``                    ``class S`` + rand fields      ✅
 ``list<T>`` / ``array<T,N>``            ``T [$]`` / ``T [N]``          ✅
-``map<K,V>`` / ``set<T>``              associative arrays              ✅
-``bit[N] field[hi:lo]`` (constraint)   ``field[hi:lo]`` in SV         ✅
+``map<K,V>`` / ``set<T>``               associative arrays             ✅
+``bit[N] field[hi:lo]`` (constraint)    ``field[hi:lo]`` in SV         ✅
 ======================================  =============================  ========
 
 Flow objects
 ~~~~~~~~~~~~
 
-===================================================  ==============================  ========
-PSS construct                                        SV mapping                      Status
-===================================================  ==============================  ========
-``buffer B { ... }``                                 ``class B extends zsp_buffer``  ✅
-``stream S { ... }``                                 ``class S extends zsp_stream``  ✅
-``state T { ... }``                                  ``class T extends zsp_state``   ✅
-``output F f`` on action                             ``rand F f``; captured post-body ✅
-``input F f`` on action                              ``F f``; injected pre-``pre_solve`` ✅
-``pool [N] T p; bind p *;``                          ``zsp_resource_pool #(T)``      ✅
-Constraint back-propagation through binds            ``with { field == pinned; }``   ✅
-===================================================  ==============================  ========
+===================================================  ===================================  ========
+PSS construct                                        SV mapping                           Status
+===================================================  ===================================  ========
+``buffer B { ... }``                                 ``class B extends zsp_buffer``       ✅
+``stream S { ... }``                                 ``class S extends zsp_stream``       ✅
+``state T { ... }``                                  ``class T extends zsp_state``        ✅
+``output F f`` on action                             ``rand F f``; captured post-body     ✅
+``input F f`` on action                              ``F f``; injected pre-``pre_solve``  ✅
+``pool [N] T p; bind p *;``                          ``zsp_resource_pool #(T)``           ✅
+Constraint back-propagation through binds            ``with { field == pinned; }``        ✅
+===================================================  ===================================  ========
 
 Resources
 ~~~~~~~~~
 
-==============================================  ==================================  ========
-PSS construct                                   SV mapping                          Status
-==============================================  ==================================  ========
-``resource R { ... }``                          class inheriting ``zsp_resource``   ✅
-``lock R r``                                    ``rand int unsigned r_instance_id`` ✅
-``share R r``                                   ``try_share`` / ``unshare``         ✅
-Parallel head-action coordinated solve          Fisher-Yates or ``unique``          ✅
-==============================================  ==================================  ========
+==============================================  ===================================  ========
+PSS construct                                   SV mapping                           Status
+==============================================  ===================================  ========
+``resource R { ... }``                          class inheriting ``zsp_resource``    ✅
+``lock R r``                                    ``rand int unsigned r_instance_id``  ✅
+``share R r``                                   ``try_share`` / ``unshare``          ✅
+Parallel head-action coordinated solve          Fisher-Yates or ``unique``           ✅
+==============================================  ===================================  ========
 
 Actions and activity
 ~~~~~~~~~~~~~~~~~~~~
 
-===========================================  ======================================  ========
-PSS construct                                SV mapping                              Status
-===========================================  ======================================  ========
-``action A { ... }``                         ``class A extends zsp_action``          ✅
-``abstract action A``                        ``virtual class A``                     ✅
-Action inheritance + named constraint override ``class Derived extends Base``        ✅
-``exec body``                                ``virtual task body()``                 ✅
-``exec pre_solve`` / ``exec post_solve``     ``virtual function void``               ✅
-``covergroup`` in action                     SV ``covergroup`` sampled in post_solve ✅
-Sequential activity                          ``begin ... end``                       ✅
-Named action handle traversal ``h;``         lifecycle on class-level handle         ✅
-Anonymous traversal ``do T;``                ``T _anon = new(); ...``                ✅
-Inline constraint ``do T with { ... }``      ``randomize() with { ... }``            ✅
-``parallel { ... }``                         ``fork ... join``                       ✅
-``parallel join_first`` / ``join_none``      ``fork ... join_any`` / ``join_none``   🔶 pssparser gap
-``schedule { ... }``                         Topologically ordered staged fork/join  ✅
-``bind`` in schedule / activity              Flow-object inject/capture wiring       ✅
-``repeat (N)`` / ``repeat (i: N)``           ``repeat`` / ``for`` loop               ✅
-``do-while`` / ``while-do``                  ``do...while`` / ``while``              ✅
-``foreach``                                  ``foreach``                             ✅
-``if``/``else`` / ``match``                  ``if``/``else`` / ``case``              ✅
-``select { [w]: ... }``                      Weighted random via named begin block   ✅
-``replicate (N)``                            ``fork`` with loop                      ✅
-``atomic { ... }``                           Semaphore-guarded ``begin``             ✅
-``super`` traversal                          ``super.activity()``                    ✅
-===========================================  ======================================  ========
+==============================================  =======================================  ========
+PSS construct                                   SV mapping                               Status
+==============================================  =======================================  ========
+``action A { ... }``                            ``class A extends zsp_action``           ✅
+``abstract action A``                           ``virtual class A``                      ✅
+Action inheritance + named constraint override  ``class Derived extends Base``           ✅
+``exec body``                                   ``virtual task body()``                  ✅
+``exec pre_solve`` / ``exec post_solve``        ``virtual function void``                ✅
+``covergroup`` in action                        SV ``covergroup`` sampled in post_solve  ✅
+Sequential activity                             ``begin ... end``                        ✅
+Named action handle traversal ``h;``            lifecycle on class-level handle          ✅
+Anonymous traversal ``do T;``                   ``T _anon = new(); ...``                 ✅
+Inline constraint ``do T with { ... }``         ``randomize() with { ... }``             ✅
+``parallel { ... }``                            ``fork ... join``                        ✅
+``parallel join_first`` / ``join_none``         ``fork ... join_any`` / ``join_none``    🔶 pssparser gap
+``schedule { ... }``                            Topologically ordered staged fork/join   ✅
+``bind`` in schedule / activity                 Flow-object inject/capture wiring        ✅
+``repeat (N)`` / ``repeat (i: N)``              ``repeat`` / ``for`` loop                ✅
+``do-while`` / ``while-do``                     ``do...while`` / ``while``               ✅
+``foreach``                                     ``foreach``                              ✅
+``if``/``else`` / ``match``                     ``if``/``else`` / ``case``               ✅
+``select { [w]: ... }``                         Weighted random via named begin block    ✅
+``replicate (N)``                               ``fork`` with loop                       ✅
+``atomic { ... }``                              Semaphore-guarded ``begin``              ✅
+``super`` traversal                             ``super.activity()``                     ✅
+==============================================  =======================================  ========
 
 Exec-body statements
 ~~~~~~~~~~~~~~~~~~~~~
@@ -390,12 +390,12 @@ Exec-body statements
 PSS construct                                SV mapping                     Status
 ===========================================  =============================  ========
 Assignment / augmented assignment            Direct SV assignment           ✅
-``if``/``else``, ``match``, loops           Standard SV control flow       ✅
-``break`` / ``continue`` / ``return``       Direct SV equivalents          ✅
-``message(verbosity, fmt, ...)``            ``$display(fmt, ...)``          ✅
-``yield``                                   Comment (no SV equivalent)     🔶
-``cover(expr)``                             ``cover (expr);``               ✅
-``assert(expr)``                            ``assert (expr);``              ✅
+``if``/``else``, ``match``, loops            Standard SV control flow       ✅
+``break`` / ``continue`` / ``return``        Direct SV equivalents          ✅
+``message(verbosity, fmt, ...)``             ``$display(fmt, ...)``         ✅
+``yield``                                    Comment (no SV equivalent)     🔶
+``cover(expr)``                              ``cover (expr);``              ✅
+``assert(expr)``                             ``assert (expr);``             ✅
 ===========================================  =============================  ========
 
 Simulator Compatibility
