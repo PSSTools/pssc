@@ -136,6 +136,8 @@ def _component(node, model) -> Dict[str, Any]:
         "doc": getattr(comp, "doc", None) or "",
         "constructor": _function(ctor) if ctor is not None else None,
         "operations": [_function(fn) for fn in model.operations(comp)],
+        "entries": [{"name": e.name, "action": e.action}
+                    for e in model.entries_of(comp)],
         "sub_components": [
             {"name": s.name,
              "type": (getattr(s.dtype, "name", "") or "").split("::")[-1],

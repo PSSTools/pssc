@@ -812,15 +812,16 @@ class wb_dma_ch : public wb_dma_ch_if {
 
 public:
     explicit wb_dma_ch(wb_dma_import_if &imp)
-      : imp_(imp), regs(wb_dma_ch_regs_c(imp, 0)) {}
-
-    // The PSS constructor. Called by `create()`; call it yourself if you
-    // constructed this object directly.
-    void initialize(int id, pssc::addr_t bank) {
+      : imp_(imp), regs(wb_dma_ch_regs_c(imp, 0)) {
         this->caps.present = true;
         this->caps.ars = true;
         this->caps.ed = true;
         this->caps.cbuf = true;
+    }
+
+    // The PSS constructor. Called by `create()`; call it yourself if you
+    // constructed this object directly.
+    void initialize(int id, pssc::addr_t bank) {
         this->chan = id;
         this->regs = wb_dma_ch_regs_c(this->imp_, bank);
     }
@@ -1447,13 +1448,14 @@ class wb_dma : public wb_dma_if {
 
 public:
     explicit wb_dma(wb_dma_import_if &imp)
-      : imp_(imp), regs(wb_dma_regs_c(imp, 0)), ch_(make_ch_(imp)) {}
+      : imp_(imp), regs(wb_dma_regs_c(imp, 0)), ch_(make_ch_(imp)) {
+        this->num_ch = 4;
+        this->pri_levels = 4;
+    }
 
     // The PSS constructor. Called by `create()`; call it yourself if you
     // constructed this object directly.
     void initialize(pssc::addr_t base) {
-        this->num_ch = 4;
-        this->pri_levels = 4;
         this->regs = wb_dma_regs_c(this->imp_, base);
         for (std::size_t i = 0; i < 4u; ++i) {
             this->ch_[i].initialize(i, (base + (0x20u + 0x20u * i)));

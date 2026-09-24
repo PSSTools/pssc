@@ -4,6 +4,7 @@ AST to IR Translation Module
 Translates PSS AST nodes to Zuspec IR (Intermediate Representation).
 """
 from __future__ import annotations
+import contextlib
 import copy
 import dataclasses
 import enum
@@ -42,6 +43,15 @@ def ast_comments(node: Any) -> Tuple[Optional[str], Optional[str]]:
             trailing.append(c.getText())
 
     return ("\n".join(leading) or None, "\n".join(trailing) or None)
+
+
+def _ast_where(node: Any) -> str:
+    """``line N: `` for an AST node the parser located, else ``''``."""
+    try:
+        line = node.getLocation().lineno
+    except Exception:
+        return ""
+    return f"line {line}: " if line and line > 0 else ""
 
 
 def ast_doc(node: Any) -> Optional[str]:
@@ -113,6 +123,20 @@ class AstToIrContext:
         # surfaced so the SV backend can expose each on `import_api_if` and route
         # exec-body calls through the import handle.
         self.import_functions: List[ir.Function] = []
+        # Package- and global-scope function *definitions*, by qualified and by
+        # bare name (`p::f` and `f`). A package is only a namespace prefix here,
+        # so these have no IR type to live on; without this map they were
+        # dropped, and every call to one reached the backend unresolvable.
+        self.functions: Dict[str, ir.Function] = {}
+        # PSS name -> IR name for a local that shadows an outer one (20.7.1). A
+        # nested block is flattened into its parent's statement list, so the
+        # inner declaration gets a fresh name for the extent of its block.
+        self.local_renames: Dict[str, str] = {}
+        self.local_rename_seq: int = 0
+        # The parameters of the function whose body is being translated. A
+        # reference to one is `self.<name>` in the IR, not a local, so a local
+        # of the same name must be told apart by its IR name (`_bind_local`).
+        self.param_names: Set[str] = set()
         # Folded package-scope `static const` integers, by bare and qualified
         # name. Consumed where a compile-time constant must become a number --
         # array sizes, today.
@@ -122,6 +146,9 @@ class AstToIrContext:
         # it has no IR type -- so a generic constraint declared in one has
         # nowhere else to live, and without this it was dropped outright.
         self.generic_constraints: Dict[str, ir.Function] = {}
+        # The linked root symbol scope. A reference the linker resolved is a
+        # path of child indices from here; see `_package_function_at`.
+        self.symbol_root = None
         # The generic constraint whose body is being translated, or None. Set
         # only so a body item that is illegal *inside* a generic constraint can
         # be reported by name -- §13.3 g forbids `default` there, and nowhere
@@ -210,6 +237,7 @@ class AstToIrTranslator:
         self._type_chain_stack = []
 
         ctx = AstToIrContext()
+        ctx.symbol_root = ast_root
 
         # Initialize built-in types
         self._init_builtin_types(ctx)
@@ -291,7 +319,45 @@ class AstToIrTranslator:
                 unit = global_scope.getUnit(i)
                 self._translate_unit(ctx, unit, phase=phase)
 
+        self._resolve_subcomponent_refs(ctx)
         self._check_refs_resolve(ctx)
+
+    def _resolve_subcomponent_refs(self, ctx: AstToIrContext) -> None:
+        """A sub-component field typed by a FORWARD reference gets the type a
+        backward one does.
+
+        A field whose type is declared earlier holds the `DataTypeComponent`
+        itself; one whose type is declared later -- further down the file, or
+        in a later file -- held a `DataTypeRef`, and every consumer that walks
+        the component tree by field type (`progseq_model.sub_components`)
+        passed it over. The sub-component was silently absent from the model:
+        `component top { sub_c s; } component sub_c {...}` lowered with no `s`.
+
+        Only component-typed fields of components, and elements of arrays of
+        them, are resolved. Other references keep their indirection -- an
+        action-handle field is a `DataTypeRef` on purpose (a reference, not
+        an embedded value), and a template parameter is not a type yet.
+        """
+        def resolve(dt):
+            if not isinstance(dt, ir.DataTypeRef):
+                return dt
+            name = dt.ref_name
+            if not name or name in ctx.template_param_names:
+                return dt
+            found = ctx.get_type(name)
+            if found is None and "::" in name:
+                found = ctx.get_type(name.rsplit("::", 1)[-1])
+            return found if isinstance(found, ir.DataTypeComponent) else dt
+
+        seen: Set[int] = set()
+        for dt in list(ctx.type_map.values()):
+            if id(dt) in seen or not isinstance(dt, ir.DataTypeComponent):
+                continue
+            seen.add(id(dt))
+            for f in getattr(dt, "fields", None) or []:
+                f.datatype = resolve(f.datatype)
+                if isinstance(f.datatype, ir.DataTypeArray):
+                    f.datatype.element_type = resolve(f.datatype.element_type)
 
     def _check_refs_resolve(self, ctx: AstToIrContext) -> None:
         """Every DataTypeRef in the IR must name a type the model declares.
@@ -388,6 +454,13 @@ class AstToIrTranslator:
                 if phase is _Phase.CONST:
                     self._record_scope_generic_constraint(
                         ctx, child, namespace_prefix)
+                continue
+
+            # A package- or global-scope function definition. Translated in the
+            # EXTEND pass, when every type its body may name is registered.
+            if isinstance(child, pss_ast.FunctionDefinition):
+                if phase is _Phase.EXTEND:
+                    self._record_scope_function(ctx, child, namespace_prefix)
                 continue
 
             kind = self._decl_phase(child)
@@ -607,8 +680,13 @@ class AstToIrTranslator:
                 if entry is not None:
                     name, is_async = entry
                     stmts = self._translate_exec_scope(ctx, child)
+                    # `exec_kind` says what this function IS. The name alone
+                    # says it too (an exec kind is a keyword, so no declared
+                    # function can take it), but a consumer should not have to
+                    # know that to tell an exec block from an operation.
                     target_ir.functions.append(
-                        ir.Function(name=name, is_async=is_async, body=stmts))
+                        ir.Function(name=name, is_async=is_async, body=stmts,
+                                    metadata={"exec_kind": name}))
                 elif self.debug:
                     self.logger.debug(
                         f"{qualified_name}: unhandled exec kind {child.getKind()}")
@@ -733,6 +811,17 @@ class AstToIrTranslator:
             target_ir.items[item_name] = next_val
             next_val += 1
 
+    def _record_scope_function(self, ctx: AstToIrContext, fdef,
+                               namespace_prefix: str = "") -> None:
+        """Record a package/global-scope function definition on ``ctx.functions``."""
+        func = self._translate_function(ctx, fdef)
+        if func is None:
+            return
+        qname = f"{namespace_prefix}{func.name}"
+        func.metadata["qualified_name"] = qname
+        ctx.functions[qname] = func
+        ctx.functions.setdefault(func.name, func)
+
     def _translate_package(self, ctx: AstToIrContext, pkg: pss_ast.PackageScope,
                            parent_prefix: str = "", phase: '_Phase' = None):
         """Translate a PSS package declaration.
@@ -821,9 +910,14 @@ class AstToIrTranslator:
         ctx.push_scope(comp)
         self._type_chain_stack.append(comp_name)
 
-        # Set super type reference if present
+        # Set super type reference if present -- named as the LINKER resolved
+        # it (`p::base_c`, not the last element of how it was spelled), so a
+        # consumer finds the base without guessing. A template base
+        # (`executor_c<>`, `reg_c<...>`) keeps its spelled name.
         if super_name:
-            comp.super = ir.DataTypeRef(ref_name=super_name)
+            comp.super = ir.DataTypeRef(
+                ref_name=self._linked_type_name(ctx, component.getSuper_t())
+                or super_name)
 
         # Translate children (fields, functions, nested types). Shared with
         # `extend component <this>` -- see _translate_type_body.
@@ -941,7 +1035,7 @@ class AstToIrTranslator:
         """
         seen = set()
         while super_name and super_name not in seen:
-            if super_name == "reg_group_c":
+            if super_name in ("reg_group_c", "addr_reg_pkg::reg_group_c"):
                 return True
             seen.add(super_name)
             resolved = ctx.get_type(super_name)
@@ -1099,10 +1193,14 @@ class AstToIrTranslator:
         ctx.push_scope(action_ir)
         self._type_chain_stack.append(action_name)
 
-        # Handle inheritance
+        # Handle inheritance. The base is named as the LINKER resolved it: an
+        # action's base may be written `A` for `pss_top::A`, or be found in a
+        # base component (`B` for `base_c::B`), which no lookup of the spelling
+        # in the type table gets right.
         super_t = action.getSuper_t()
         if super_t is not None:
-            super_name = self._type_identifier_name(super_t)
+            super_name = (self._linked_type_name(ctx, super_t)
+                          or self._type_identifier_name(super_t))
             if super_name:
                 action_ir.super = ir.DataTypeRef(ref_name=super_name)
 
@@ -3146,11 +3244,18 @@ class AstToIrTranslator:
         body_stmts = []
         body = function.getBody()
         if body:
-            body_stmts = self._translate_exec_scope(ctx, body)
+            saved_params = ctx.param_names
+            ctx.param_names = {a.arg for a in params} | (
+                {vararg.arg} if vararg is not None else set())
+            try:
+                body_stmts = self._translate_exec_scope(ctx, body)
+            finally:
+                ctx.param_names = saved_params
 
         # Create IR function
         is_pure = prototype.getIs_pure() if hasattr(prototype, 'getIs_pure') else False
         is_solve = bool(prototype.getIs_solve()) if hasattr(prototype, 'getIs_solve') else False
+        is_target = bool(prototype.getIs_target()) if hasattr(prototype, 'getIs_target') else False
         ir_func = ir.Function(
             name=func_name,
             args=args,
@@ -3159,6 +3264,7 @@ class AstToIrTranslator:
             is_async=False,
             is_invariant=bool(is_pure),
             is_solve=is_solve,
+            is_target=is_target,
             doc=ast_doc(function),
         )
 
@@ -3174,15 +3280,57 @@ class AstToIrTranslator:
         Returns:
             List of IR statements
         """
-        stmts = []
+        with self._local_scope(ctx):
+            return self._translate_block_children(ctx, exec_scope)
 
-        for child in exec_scope.children():
+    @contextlib.contextmanager
+    def _local_scope(self, ctx: AstToIrContext):
+        """Locals declared inside end with the scope (20.7.1, 20.7.2)."""
+        saved_vars, saved_renames = set(ctx.local_vars), dict(ctx.local_renames)
+        try:
+            yield
+        finally:
+            ctx.local_vars, ctx.local_renames = saved_vars, saved_renames
+
+    def _bind_local(self, ctx: AstToIrContext, name: str) -> str:
+        """Declare the local *name* in the current scope; its IR name.
+
+        A local that shadows a visible local or a parameter gets a fresh IR name
+        (20.7.1): a nested block is flattened into its parent's statement list,
+        and a loop's variables are scoped to the loop, so a backend whose
+        language scopes names to the function would otherwise overwrite the
+        outer one. Every declaration form binds through here -- a data
+        declaration, a `repeat` index, `foreach` iterator and index variables.
+        Call it inside `_local_scope` so the binding ends with its scope.
+        """
+        ir_name = name
+        if name in ctx.local_vars or name in ctx.param_names:
+            ctx.local_rename_seq += 1
+            ir_name = f"{name}__s{ctx.local_rename_seq}"
+            ctx.local_renames[name] = ir_name
+        ctx.local_vars.add(name)
+        return ir_name
+
+    def _translate_block_children(self, ctx: AstToIrContext, scope) -> List[ir.Stmt]:
+        """The statements of a block, with any nested stand-alone block flattened.
+
+        A stand-alone ``{ ... }`` (20.7.1) has no IR node of its own; its
+        statements join the enclosing list, and a declaration in it that shadows
+        an outer local is renamed for the block's extent. Until this existed a
+        nested block reached ``_translate_statement_kind``, matched nothing, and
+        was dropped with every statement in it.
+        """
+        stmts: List[ir.Stmt] = []
+        for child in scope.children():
             if child is None:
+                continue
+            if isinstance(child, pss_ast.ExecScope):
+                with self._local_scope(ctx):
+                    stmts.extend(self._translate_block_children(ctx, child))
                 continue
             stmt = self._translate_statement(ctx, child)
             if stmt:
                 stmts.append(stmt)
-
         return stmts
 
     def _translate_statement(self, ctx: AstToIrContext, stmt_node: Any) -> Optional[ir.Stmt]:
@@ -3193,6 +3341,15 @@ class AstToIrTranslator:
         nested `if` body as well as one at the top of a function.
         """
         stmt = self._translate_statement_kind(ctx, stmt_node)
+        if stmt is None:
+            # A statement with no IR form is REFUSED, never dropped: a dropped
+            # one compiles a model that does less than it says (`super;` was
+            # lost this way, and a call whose expression did not translate).
+            ctx.errors.append(
+                f"{_ast_where(stmt_node)}a '{type(stmt_node).__name__}' "
+                f"statement could not be translated; refusing it rather than "
+                f"dropping it")
+            return None
 
         if stmt is not None:
             leading, trailing = ast_comments(stmt_node)
@@ -3246,9 +3403,11 @@ class AstToIrTranslator:
             return self._translate_stmt_foreach(ctx, stmt_node)
         elif isinstance(stmt_node, pss_ast.ProceduralStmtMatch):
             return self._translate_stmt_match(ctx, stmt_node)
+        elif isinstance(stmt_node, pss_ast.ProceduralStmtSuper):
+            # Which base block it runs is fixed by where it sits (17.1); the
+            # consumer that knows the enclosing type resolves it.
+            return ir.StmtSuper()
         else:
-            if self.debug:
-                self.logger.debug(f"Unsupported statement type: {type(stmt_node).__name__}")
             return None
 
     def _translate_stmt_return(self, ctx: AstToIrContext, stmt: pss_ast.ProceduralStmtReturn) -> ir.StmtReturn:
@@ -3277,9 +3436,9 @@ class AstToIrTranslator:
         if init_expr:
             value = self._translate_expression(ctx, init_expr)
 
-        # Create name expression for target and register as local variable
-        target = ir.ExprRefLocal(name=var_name)
-        ctx.local_vars.add(var_name)
+        # Create name expression for target and register as local variable. A
+        # declaration that shadows a visible local gets a fresh IR name.
+        target = ir.ExprRefLocal(name=self._bind_local(ctx, var_name))
 
         return ir.StmtAnnAssign(target=target, annotation=var_type, value=value)
 
@@ -3306,15 +3465,7 @@ class AstToIrTranslator:
     def _translate_stmt_if(self, ctx: AstToIrContext, stmt: pss_ast.ProceduralStmtIfElse) -> ir.StmtIf:
         """Translate an if / else-if / else chain into nested StmtIf nodes."""
         def _translate_body(scope):
-            stmts = []
-            if scope:
-                for child in scope.children():
-                    if child is None:
-                        continue
-                    s = self._translate_statement(ctx, child)
-                    if s:
-                        stmts.append(s)
-            return stmts
+            return self._translate_stmt_body(ctx, scope)
 
         # Build the final else branch first
         else_body = _translate_body(stmt.getElse_then())
@@ -3337,14 +3488,7 @@ class AstToIrTranslator:
 
         # Get body
         body_scope = stmt.getBody()
-        body = []
-        if body_scope:
-            for child in body_scope.children():
-                if child is None:
-                    continue
-                stmt_ir = self._translate_statement(ctx, child)
-                if stmt_ir:
-                    body.append(stmt_ir)
+        body = self._translate_stmt_body(ctx, body_scope)
 
         return ir.StmtWhile(test=cond, body=body)
 
@@ -3353,28 +3497,16 @@ class AstToIrTranslator:
         # Get count expression
         count_expr = self._translate_expression(ctx, stmt.getCount())
 
-        # Get optional iterator variable: "repeat (i : 10)" has getIt_id() == "i"
+        # Optional index variable: "repeat (i : 10)" has getIt_id() == "i". It
+        # is scoped to the loop (20.7.6), so it is bound in a scope of its own
+        # and may shadow an outer local, which keeps its value after the loop.
         it_id = stmt.getIt_id()
         target = None
-        iter_name = None
-        if it_id is not None:
-            iter_name = it_id.getId() if hasattr(it_id, 'getId') else str(it_id)
-            target = ir.ExprRefLocal(name=iter_name)
-            ctx.local_vars.add(iter_name)  # so body references become ExprRefLocal
-
-        # Get body
-        body_scope = stmt.getBody()
-        body = []
-        if body_scope:
-            for child in body_scope.children():
-                if child is None:
-                    continue
-                stmt_ir = self._translate_statement(ctx, child)
-                if stmt_ir:
-                    body.append(stmt_ir)
-
-        if iter_name is not None:
-            ctx.local_vars.discard(iter_name)
+        with self._local_scope(ctx):
+            if it_id is not None:
+                iter_name = it_id.getId() if hasattr(it_id, 'getId') else str(it_id)
+                target = ir.ExprRefLocal(name=self._bind_local(ctx, iter_name))
+            body = self._translate_stmt_body(ctx, stmt.getBody())
 
         return ir.StmtFor(target=target, iter=count_expr, body=body)
 
@@ -3383,14 +3515,7 @@ class AstToIrTranslator:
         cond = self._translate_expression(ctx, stmt.getExpr())
 
         body_scope = stmt.getBody()
-        body = []
-        if body_scope:
-            for child in body_scope.children():
-                if child is None:
-                    continue
-                stmt_ir = self._translate_statement(ctx, child)
-                if stmt_ir:
-                    body.append(stmt_ir)
+        body = self._translate_stmt_body(ctx, body_scope)
 
         return ir.StmtRepeatWhile(condition=cond, body=body)
 
@@ -3419,32 +3544,21 @@ class AstToIrTranslator:
         # unrolls by index keying off ``target.name``, so for the index-only form
         # the index variable serves as the target.
         iter_name = it_name if it_name is not None else idx_name
-        target = ir.ExprRefLocal(name=iter_name)
 
         collection_ir = self._translate_expression(ctx, path)
         if collection_ir is None:
             return None
 
-        index_var = ir.ExprRefLocal(name=idx_name) if idx_name is not None else None
-
-        # Register loop variables so body references resolve to ExprRefLocal
-        ctx.local_vars.add(iter_name)
-        if idx_name is not None:
-            ctx.local_vars.add(idx_name)
-
-        body_scope = stmt.getBody()
-        body = []
-        if body_scope:
-            for child in body_scope.children():
-                if child is None:
-                    continue
-                stmt_ir = self._translate_statement(ctx, child)
-                if stmt_ir:
-                    body.append(stmt_ir)
-
-        ctx.local_vars.discard(iter_name)
-        if idx_name is not None:
-            ctx.local_vars.discard(idx_name)
+        # The loop variables are scoped to the loop (20.7.8 e), so body
+        # references resolve to them and an outer local of the same name is
+        # untouched after it.
+        with self._local_scope(ctx):
+            target = ir.ExprRefLocal(name=self._bind_local(ctx, iter_name))
+            index_var = None
+            if idx_name is not None:
+                index_var = (target if idx_name == iter_name else
+                             ir.ExprRefLocal(name=self._bind_local(ctx, idx_name)))
+            body = self._translate_stmt_body(ctx, stmt.getBody())
 
         return ir.StmtForeach(target=target, iter=collection_ir, body=body, index_var=index_var)
 
@@ -3460,14 +3574,13 @@ class AstToIrTranslator:
         body: List[ir.Stmt] = []
         if node is None:
             return body
-        if hasattr(node, "children"):
-            for child in node.children():
-                if child is None:
-                    continue
-                stmt_ir = self._translate_statement(ctx, child)
-                if stmt_ir:
-                    body.append(stmt_ir)
-        else:
+        # Only a `{ ... }` block is a scope to iterate. Some statement nodes
+        # (`repeat`, `foreach`) also expose children(), so duck-typing on it
+        # would translate an unbraced `if (c) repeat (n) {...}` as the repeat's
+        # innards rather than as the repeat.
+        with self._local_scope(ctx):
+            if isinstance(node, pss_ast.ExecScope):
+                return self._translate_block_children(ctx, node)
             stmt_ir = self._translate_statement(ctx, node)
             if stmt_ir:
                 body.append(stmt_ir)
@@ -3478,9 +3591,12 @@ class AstToIrTranslator:
         an IR pattern.
 
         Each open-range value is a single value (``[x]``) or a range
-        (``[lo..hi]``). A single value -> ``PatternValue``; several values in one
-        arm -> ``PatternOr``. (Ranges currently key off the low bound; the
-        register name-match use case only ever uses single string values.)
+        (``[lo..hi]``). A single value -> ``PatternValue``; a range ->
+        ``PatternValue(ExprRange(lo, hi))``; several in one arm -> ``PatternOr``.
+
+        A range used to key off its low bound alone, so ``[0..3]`` matched only
+        0 -- a silent miscompile of every ranged arm (20.7.10). A backend that
+        cannot render a range now meets an ``ExprRange`` it must reject.
         """
         if cond_node is None:
             return ir.PatternAs(pattern=None, name="_")
@@ -3490,8 +3606,13 @@ class AstToIrTranslator:
             for i in range(cond_node.numValues()):
                 orv = cond_node.getValue(i)
                 lhs = orv.getLhs() if hasattr(orv, "getLhs") else None
+                rhs = orv.getRhs() if hasattr(orv, "getRhs") else None
                 lhs_ir = self._translate_expression(ctx, lhs) if lhs is not None else None
-                if lhs_ir is not None:
+                rhs_ir = self._translate_expression(ctx, rhs) if rhs is not None else None
+                if lhs_ir is not None and rhs_ir is not None:
+                    pats.append(ir.PatternValue(
+                        value=ir.ExprRange(lower=lhs_ir, upper=rhs_ir)))
+                elif lhs_ir is not None:
                     pats.append(ir.PatternValue(value=lhs_ir))
         else:
             e = self._translate_expression(ctx, cond_node)
@@ -3663,8 +3784,27 @@ class AstToIrTranslator:
             return None
 
         qualified = "::".join(parts)
-        if qualified not in ctx.generic_constraints:
-            return None
+        # A generic constraint, or a package-scope function called by its
+        # qualified name (`util::neg(x)`) -- which one the LINKER says: the
+        # root path resolves to the package and the leaf's target is the
+        # function's index in it.
+        if qualified in ctx.generic_constraints:
+            what = "generic constraint"
+        else:
+            rt = root.getTarget()
+            fname = None
+            if rt is not None and leaf.numElems() == 1:
+                # `bodyless`: a qualified call to a core-library function
+                # (`addr_reg_pkg::write32(h, d)`, the same function as
+                # `write32(h, d)` and delegated like it, LRM 21.13.9.5) or to
+                # an import. Neither has a body to lower; the name says
+                # which function, and the backend's registry decides.
+                fname = self._package_function_at(
+                    ctx, [pe.idx for pe in rt.getPathList()]
+                    + [leaf.getElem(0).getTarget()], bodyless=True)
+            if fname is None:
+                return None
+            qualified, what = fname, "function"
 
         args: List[ir.Expr] = []
         for arg_node in args_node.getParameters():
@@ -3673,7 +3813,7 @@ class AstToIrTranslator:
                 # Dropping an argument would silently change the signature, and
                 # the arity check downstream would then blame the declaration.
                 ctx.errors.append(
-                    f"could not translate an argument to generic constraint "
+                    f"could not translate an argument to {what} "
                     f"'{qualified}'")
                 return None
             args.append(arg_ir)
@@ -3753,6 +3893,44 @@ class AstToIrTranslator:
                 ranges.append(ir.ExprRange(lower=lower, upper=upper))
         return ir.ExprIn(value=value, container=ir.ExprRangeList(ranges=ranges))
 
+    @staticmethod
+    def _package_function_at(ctx: AstToIrContext, idxs,
+                             bodyless: bool = False) -> Optional[str]:
+        """The qualified name of the package-scope function at ``idxs``, or
+        None.
+
+        ``idxs`` is a linker resolution: child indices from the root symbol
+        scope. It names a package-scope function when every step before the
+        last is a package and the last is a function WITH A BODY -- a
+        `std_pkg` built-in and an `import` function have none, and keep their
+        own handling. The name is built from the scopes walked, so it is the
+        key `_record_scope_function` files the function under.
+
+        ``bodyless`` accepts a function without a body too. Only the QUALIFIED
+        call form asks for it: an unqualified built-in keeps the `self.<name>`
+        form every backend recognises, and a qualified one had no form at all
+        -- its statement was dropped.
+        """
+        scope = getattr(ctx, "symbol_root", None)
+        if scope is None or not idxs:
+            return None
+        names: List[str] = []
+        for k, i in enumerate(idxs):
+            if i is None or i < 0 or i >= scope.numChildren():
+                return None
+            scope = scope.getChild(i)
+            if k < len(idxs) - 1:
+                # Only a package on the way: through a type, it is a member.
+                if type(scope) is not pss_ast.SymbolScope:
+                    return None
+                names.append(scope.getName())
+        if not isinstance(scope, pss_ast.SymbolFunctionScope):
+            return None
+        if scope.getBody() is None and not bodyless:
+            return None
+        names.append(scope.getName())
+        return "::".join(names)
+
     def _translate_expr_ref(self, ctx: AstToIrContext, expr) -> ir.Expr:
         """Translate a reference expression (variable, field, or method call) to IR.
 
@@ -3769,6 +3947,15 @@ class AstToIrTranslator:
 
         elems = [hier_id.getElem(i) for i in range(hier_id.numElems())]
 
+        # `super.f(...)` / `super.x`: rooted at the base type, not at `self`.
+        # The front end builds an ExprRefPathSuper for exactly these, so the
+        # form is decided here, before any branch below can read the name as a
+        # local, a constant or a package function. Translating it as `self.f`
+        # made an override calling its base call itself.
+        if isinstance(expr, pss_ast.ExprRefPathSuper):
+            return self._translate_ref_chain(ctx, expr, elems,
+                                             ir.TypeExprRefSuper())
+
         # Check if the first element is a known local variable (e.g. foreach iterator 'p').
         # Single-element: return ExprRefLocal('p').
         # Multi-element: build ExprAttribute(ExprRefLocal('p'), 'x', ...) instead of
@@ -3777,12 +3964,13 @@ class AstToIrTranslator:
             first_id = elems[0].getId()
             first_name = first_id.getId() if isinstance(first_id, pss_ast.ExprId) else str(first_id)
             if first_name in ctx.local_vars:
+                local_name = ctx.local_renames.get(first_name, first_name)
                 if len(elems) == 1:
                     return self._apply_subscripts(
-                        ctx, elems[0], ir.ExprRefLocal(name=first_name))
+                        ctx, elems[0], ir.ExprRefLocal(name=local_name))
                 # Multi-element path rooted at a local variable (e.g. p.x, s.upper())
                 result_lv: ir.Expr = self._apply_subscripts(
-                    ctx, elems[0], ir.ExprRefLocal(name=first_name))
+                    ctx, elems[0], ir.ExprRefLocal(name=local_name))
                 for elem in elems[1:]:
                     if not hasattr(elem, 'getId'):
                         continue
@@ -3802,6 +3990,32 @@ class AstToIrTranslator:
                         result_lv = ir.ExprCall(func=result_lv, args=args)
                 return result_lv
 
+        # A call the linker resolved to a package-scope function: a function
+        # named by its qualified name, not a member of `self`. Deciding this
+        # from the resolution is what makes a component's own `twice` shadow
+        # the package's inside the component, and not inside a package
+        # function -- no backend has to re-derive it from the name.
+        if (len(elems) == 1 and ctx is not None
+                and getattr(elems[0], 'getParams', lambda: None)() is not None):
+            ref = expr.getTarget() if hasattr(expr, 'getTarget') else None
+            qname = (self._package_function_at(
+                        ctx, [pe.idx for pe in ref.getPathList()])
+                     if ref is not None else None)
+            if qname is not None:
+                params = elems[0].getParams()
+                args: List[ir.Expr] = []
+                for j in range(params.numParameters()):
+                    arg_ir = self._translate_expression(ctx, params.getParameter(j))
+                    if arg_ir is None:
+                        ctx.errors.append(
+                            f"could not translate an argument to function "
+                            f"'{qname}'")
+                        return ir.ExprRefUnresolved(name=qname)
+                    args.append(arg_ir)
+                return self._apply_subscripts(
+                    ctx, elems[0],
+                    ir.ExprCall(func=ir.ExprRefUnresolved(name=qname), args=args))
+
         # A single-element reference may name a constant rather than a field:
         # an enum item, or a package-scope `static const` imported by name.
         # Folding it here is what lets an address expression written in terms of
@@ -3815,11 +4029,15 @@ class AstToIrTranslator:
             if name in ctx.const_map and name not in ctx.local_vars:
                 return ir.ExprConstant(value=ctx.const_map[name])
 
-        # Build the ExprAttribute chain starting from self.
-        # Note: expr.getIs_super() is True for ALL scope-level references in the PSS
-        # frontend (not just actual super.x references), so we cannot use it to
-        # distinguish super calls. Both "x" and "super.x" produce identical AST.
-        result: ir.Expr = ir.TypeExprRefSelf()
+        # Build the ExprAttribute chain starting from self. (`super.x` was
+        # handled above: the front end gives it its own node, ExprRefPathSuper.)
+        return self._translate_ref_chain(ctx, expr, elems, ir.TypeExprRefSelf())
+
+    def _translate_ref_chain(self, ctx: AstToIrContext, expr, elems,
+                             root: ir.Expr) -> ir.Expr:
+        """`a.b[i].f(x)` as an ExprAttribute chain from *root*, with a call
+        wherever an element carries parameters."""
+        result: ir.Expr = root
         for elem in elems:
             if not hasattr(elem, 'getId'):
                 continue
@@ -4080,6 +4298,53 @@ class AstToIrTranslator:
             if self.debug:
                 self.logger.debug(f"Unsupported data type: {type(dtype_node).__name__}")
             return None
+
+    def _linked_type_name(self, ctx: AstToIrContext, type_id) -> Optional[str]:
+        """The qualified name of the type ``type_id`` was LINKED to, or None.
+
+        Follows the linker's `SymbolRefPath` from the symbol root: a child step
+        descends, and a super step (`ElemKind_Super`, recorded when the name was
+        found in a base type) moves to the base type's scope by following that
+        type's own `super_t` link -- as `TaskResolveSymbolPathRef` does. The
+        name is the chain of scopes from the root, the key types are filed
+        under. None if the path holds any other kind of step.
+        """
+        get_target = getattr(type_id, "getTarget", None)
+        ref = get_target() if get_target is not None else None
+        scope = self._symbol_scope_at(ctx, ref, depth=0)
+        if scope is None:
+            return None
+        names: List[str] = []
+        s = scope
+        while s is not None and s is not ctx.symbol_root \
+                and s.getUpper() is not None:
+            names.append(s.getName())
+            s = s.getUpper()
+        return "::".join(reversed(names)) or None
+
+    def _symbol_scope_at(self, ctx: AstToIrContext, ref, depth: int):
+        """The symbol scope a `SymbolRefPath` names, or None."""
+        root = getattr(ctx, "symbol_root", None)
+        if ref is None or root is None or depth > 64:
+            return None
+        K = pss_ast.SymbolRefPathElemKind
+        scope = root
+        for pe in ref.getPathList():
+            if pe.kind == K.ElemKind_ChildIdx:
+                if not hasattr(scope, "numChildren") \
+                        or not 0 <= pe.idx < scope.numChildren():
+                    return None
+                scope = scope.getChild(pe.idx)
+            elif pe.kind == K.ElemKind_Super:
+                ts = scope.getTarget() if hasattr(scope, "getTarget") else None
+                sup = ts.getSuper_t() if hasattr(ts, "getSuper_t") else None
+                sref = sup.getTarget() if hasattr(sup, "getTarget") else None
+                scope = self._symbol_scope_at(ctx, sref, depth + 1)
+                if scope is None:
+                    return None
+            else:
+                return None
+        return scope
 
     def _type_identifier_name(self, node) -> Optional[str]:
         """Extract the (possibly package-qualified) type name from a TypeIdentifier or ExprId.

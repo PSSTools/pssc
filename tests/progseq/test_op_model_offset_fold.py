@@ -177,6 +177,23 @@ def test_scalar_offset_resolves():
     assert scalar_offset(_Group(offset_map={"gcsr": 4}), "gcsr") == 4
 
 
+def test_scalar_offset_comes_from_the_groups_own_function():
+    """The model's `get_offset_of_instance` wins over the front end's
+    sequential `offset_map`, which put a register placed at 0x8 at 0x4."""
+    import zuspec.ir.core as ir
+    case = argparse.Namespace(
+        pattern=ir.PatternValue(value=ir.ExprConstant(value="stat")),
+        body=[argparse.Namespace(value=ir.ExprConstant(value=0x8))])
+    match = argparse.Namespace(cases=[case])
+    match.__class__ = type("StmtMatch", (argparse.Namespace,), {})
+    g = _Group(functions=[_Fn("get_offset_of_instance", body=[match],
+                              args=("name",))],
+               offset_map={"stat": 4})
+    assert scalar_offset(g, "stat") == 0x8
+    with pytest.raises(OffsetFoldError, match="declares no instance named 'ctrl'"):
+        scalar_offset(g, "ctrl")
+
+
 # --- the soundness fix ------------------------------------------------------
 
 def _arm_group(expr_src):

@@ -1,0 +1,110 @@
+# pssc bytecode backend: expected non-PASS verdicts on the pss-corpus executable
+# tier. Facts about this backend, so they live here and not in the corpus.
+#
+# Each entry is strict. A listed test that starts passing fails the suite until
+# its entry is removed; one that fails differently (another verdict) fails too.
+#
+#   [expected."<test id>"]
+#   verdict = "FAIL" | "UNSUPPORTED"
+#   reason  = "why, with the owning defect"
+
+[expected]
+
+[expected."L0.func.recursive.001"]
+verdict = "UNSUPPORTED"
+reason = "bc inlines native functions at each call site, so it rejects recursion (lower/procedural.py _inline)"
+
+[expected."proc.func.recursion.001"]
+verdict = "UNSUPPORTED"
+reason = "bc inlines native functions at each call site, so it rejects recursion (lower/procedural.py _inline)"
+
+# --- operation-model features, batch 1 (2026-09-24). Each is the FIRST gap the
+# test hits; fixing it may expose the next.
+
+[expected."comp.array.001"]
+verdict = "UNSUPPORTED"
+reason = "bc gap: a component attribute or package constant reached through a path (`comp.ch.chan`, `cfg_pkg::X`) -- 'reference through ExprAttribute' (lower/procedural.py)"
+
+[expected."comp.func.calls.001"]
+verdict = "UNSUPPORTED"
+reason = "bc gap: a call through a component path deeper than `comp.f()` (`comp.a.f()`, `comp.c.try_get()`, `ch[i].f()`) -- _call_name returns None (lower/procedural.py)"
+
+[expected."comp.init.order.001"]
+verdict = "UNSUPPORTED"
+reason = "bc gap: a component attribute or package constant reached through a path (`comp.ch.chan`, `cfg_pkg::X`) -- 'reference through ExprAttribute' (lower/procedural.py)"
+
+[expected."comp.init.solve_fn.001"]
+verdict = "UNSUPPORTED"
+reason = "bc gap: a component attribute or package constant reached through a path (`comp.ch.chan`, `cfg_pkg::X`) -- 'reference through ExprAttribute' (lower/procedural.py)"
+
+[expected."comp.instances.001"]
+verdict = "UNSUPPORTED"
+reason = "bc gap: a call through a component path deeper than `comp.f()` (`comp.a.f()`, `comp.c.try_get()`, `ch[i].f()`) -- _call_name returns None (lower/procedural.py)"
+
+[expected."comp.attr.struct.001"]
+verdict = "UNSUPPORTED"
+reason = "bc gap: a call through a component path deeper than `comp.f()` (`comp.a.f()`, `comp.c.try_get()`, `ch[i].f()`) -- _call_name returns None (lower/procedural.py)"
+
+[expected."proc.compile_if.001"]
+verdict = "UNSUPPORTED"
+reason = "bc gap: a component attribute or package constant reached through a path (`comp.ch.chan`, `cfg_pkg::X`) -- 'reference through ExprAttribute' (lower/procedural.py)"
+
+[expected."proc.yield.single.001"]
+verdict = "UNSUPPORTED"
+reason = "bc gap: the yield statement in procedural code (lower/procedural.py)"
+
+[expected."sync.channel.depth.001"]
+verdict = "UNSUPPORTED"
+reason = "bc gap: a call through a component path deeper than `comp.f()` (`comp.a.f()`, `comp.c.try_get()`, `ch[i].f()`) -- _call_name returns None (lower/procedural.py)"
+
+[expected."sync.channel.guard.001"]
+verdict = "UNSUPPORTED"
+reason = "bc gap: a call through a component path deeper than `comp.f()` (`comp.a.f()`, `comp.c.try_get()`, `ch[i].f()`) -- _call_name returns None (lower/procedural.py)"
+
+[expected."sync.channel.try.001"]
+verdict = "UNSUPPORTED"
+reason = "bc gap: a call through a component path deeper than `comp.f()` (`comp.a.f()`, `comp.c.try_get()`, `ch[i].f()`) -- _call_name returns None (lower/procedural.py)"
+
+[expected."types.bitpack.001"]
+verdict = "UNSUPPORTED"
+reason = "bc gap: struct types in procedural code -- 'DataTypeStruct is not supported' (lower/types.py from_datatype)"
+
+[expected."types.const.package.001"]
+verdict = "UNSUPPORTED"
+reason = "bc gap: a component attribute or package constant reached through a path (`comp.ch.chan`, `cfg_pkg::X`) -- 'reference through ExprAttribute' (lower/procedural.py)"
+
+[expected."types.string.match.001"]
+verdict = "UNSUPPORTED"
+reason = "bc gap: a call through a component path deeper than `comp.f()` (`comp.a.f()`, `comp.c.try_get()`, `ch[i].f()`) -- _call_name returns None (lower/procedural.py)"
+
+[expected."types.struct.copy.001"]
+verdict = "UNSUPPORTED"
+reason = "bc gap: struct types in procedural code -- 'DataTypeStruct is not supported' (lower/types.py from_datatype)"
+
+[expected."types.struct.fields.001"]
+verdict = "UNSUPPORTED"
+reason = "bc gap: struct types in procedural code -- 'DataTypeStruct is not supported' (lower/types.py from_datatype)"
+
+[expected."types.struct.param.001"]
+verdict = "UNSUPPORTED"
+reason = "bc gap: struct types in procedural code -- 'DataTypeStruct is not supported' (lower/types.py from_datatype)"
+
+[expected."types.struct.return.001"]
+verdict = "UNSUPPORTED"
+reason = "bc gap: struct types in procedural code -- 'DataTypeStruct is not supported' (lower/types.py from_datatype)"
+
+[expected."L0P.tap.rw8.001"]
+verdict = "UNSUPPORTED"
+reason = "bc procedural code has no addr_handle_t (DataTypeChandle), so no memory primitive or executor tap"
+
+[expected."L0P.tap.rw16.001"]
+verdict = "UNSUPPORTED"
+reason = "bc procedural code has no addr_handle_t (DataTypeChandle), so no memory primitive or executor tap"
+
+[expected."L0P.tap.rw32.001"]
+verdict = "UNSUPPORTED"
+reason = "bc procedural code has no addr_handle_t (DataTypeChandle), so no memory primitive or executor tap"
+
+[expected."L0P.tap.rw64.001"]
+verdict = "UNSUPPORTED"
+reason = "bc procedural code has no addr_handle_t (DataTypeChandle), so no memory primitive or executor tap"

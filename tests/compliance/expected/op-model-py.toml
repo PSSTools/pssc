@@ -1,0 +1,51 @@
+# pssc op-model-py backend: expected non-PASS verdicts on the pss-corpus
+# executable tier, run with each test's root action as the entry point
+# (--export-action). Same rules as bc.toml: each entry is strict. Each is
+# the FIRST gap the test hits; fixing it may expose the next.
+#
+#   [expected."<test id>"]
+#   verdict = "FAIL" | "UNSUPPORTED"
+#   reason  = "why, with the owning defect"
+
+[expected]
+
+[expected."L0.nested.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+[expected."L0.seq.bodies.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+[expected."proc.compile_if.001"]
+verdict = "UNSUPPORTED"
+reason = "op-model-py gap: message() argument typing (expr_types.py) does not resolve a package constant, so %n cannot be checked"
+
+[expected."proc.field.rw.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the action reads its own attributes; entries take no parameters yet (export_action.py)"
+
+[expected."proc.match.ranges.001"]
+verdict = "UNSUPPORTED"
+reason = "op-model-py gap: a range in a `match` pattern (ExprRange) has no expr_range hook"
+
+[expected."proc.rand.input.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the action has rand attributes (export_action.py)"
+
+[expected."sync.channel.depth.001"]
+verdict = "UNSUPPORTED"
+reason = "op-model-py sync form: blocking channel get()/put() need --py-await async (HAVE_EVENT_WAIT=false)"
+
+[expected."types.const.package.001"]
+verdict = "UNSUPPORTED"
+reason = "op-model-py gap: a field initializer that is an expression over package constants (ExprBin) is not lowered"
+
+[expected."types.enum.match.001"]
+verdict = "UNSUPPORTED"
+reason = "op-model-py gap: `match` pattern PatternAs is not lowered"
+
+[expected."types.string.match.001"]
+verdict = "UNSUPPORTED"
+reason = "op-model-py gap: a user function named get_offset_of_instance on a non-register component is classified a register-offset FOLD by name alone (call_legality)"
+

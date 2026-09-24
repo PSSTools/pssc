@@ -207,7 +207,14 @@ class Prefixes:
         self._by_id: Dict[int, str] = {}
         overrides = overrides or {}
         used: Dict[str, str] = {}
-        for i, node in enumerate(regular_nodes(model)):
+        # Tree components, then the base classes a backend rendering
+        # inheritance natively emits though nothing instantiates them
+        # (`OpModel.base_classes`; none for a flattening one).
+        import types
+        nodes = list(regular_nodes(model)) + [
+            types.SimpleNamespace(dtype=c)
+            for c in (getattr(model, "base_classes", None) or [])]
+        for i, node in enumerate(nodes):
             # The QUALIFIED name identifies the type; the short one names it in
             # C and in `--prefix-map`. Comparing the short names here let
             # `p::x_c` and `q::x_c` -- two different components -- look like one
@@ -712,7 +719,9 @@ def _builtin_name(func) -> Optional[str]:
     """
     cn = _dt_name(func)
     if cn == "ExprRefUnresolved":
-        return getattr(func, "name", None)
+        # `std_pkg::message` is `message` (`validate_calls.callee_name`).
+        from ..validate_calls import callee_name
+        return callee_name(func)
     if cn == "ExprAttribute":
         return func.attr
     return None
@@ -1071,10 +1080,12 @@ class _BodyEmitter(CallDispatch, BodyWalker):
             # reads the wrong memory and reports it as device behaviour.
             # Hence the behavioural gate (a register write trace) rather
             # than a compile gate: -Werror sees nothing wrong here.
-            if e.attr in self.comp_fields:
-                return f"{self.h}->{mangle(e.attr)}"
+            # A parameter shadows a field of the same name: the front end
+            # spells both `self.a`, so scope order decides (as `ExprTypes`).
             if e.attr in self.arg_names:
                 return self.arg_rename[e.attr]
+            if e.attr in self.comp_fields:
+                return f"{self.h}->{mangle(e.attr)}"
             # Not a member: a package-scope `static const`, which is a
             # plain identifier in C too.
             return e.attr

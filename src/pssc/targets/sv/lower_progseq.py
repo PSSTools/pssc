@@ -13,9 +13,13 @@ import API to the user object and exposes the static `create()`.
 """
 from __future__ import annotations
 
+import dataclasses as dc
 from typing import Dict, List, Optional
 
+import zuspec.ir.core as ir
+
 from ..body_walker import BodyWalker
+from ..validate_calls import callee_name, is_core_call
 from ..progseq_model import (func_kind, FuncKind, field_is_reg_group, _dt_name,
                              sub_components, SubComp, field_is_channel,
                              channel_fields, array_base_stride, scalar_offset,
@@ -256,10 +260,11 @@ class _BodyEmitter(BodyWalker):
         base = e.value
         if _dt_name(base) == "TypeExprRefSelf":
             # self.<x>: a component field -> member; a function arg -> name
-            if e.attr in self.member_of:
-                return self.member_of[e.attr]
+            # A parameter shadows a field of the same name (scope order).
             if e.attr in self.arg_names:
                 return self.arg_rename[e.attr]
+            if e.attr in self.member_of:
+                return self.member_of[e.attr]
             return e.attr
         return f"{self.expr(base)}.{e.attr}"
 
@@ -283,6 +288,14 @@ class _BodyEmitter(BodyWalker):
 
     def expr_call(self, e) -> str:
         callee = e.func
+        if is_core_call(callee):
+            # `std_pkg::message(...)` names the function `message(...)` does,
+            # so it takes the form an unqualified call has. The spelling only
+            # matters inside an executor's override, and this target refuses
+            # overrides (`executors.check`).
+            e = dc.replace(e, func=ir.ExprAttribute(
+                value=ir.TypeExprRefSelf(), attr=callee_name(callee)))
+            callee = e.func
         # Address-space builtins are arithmetic, not calls: there is no
         # address-space object in generated SV, only 64-bit addresses.
         if _dt_name(callee) == "ExprAttribute" and callee.attr in _ADDR_BUILTINS:

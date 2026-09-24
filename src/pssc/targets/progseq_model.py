@@ -28,6 +28,7 @@ class FuncKind(Enum):
     IMPORT_TASK = "import_task"   # import target fn -> import-API task
     IMPORT_SOLVE = "import_solve"  # import solve fn -> import-API function
     REG_OFFSET = "reg_offset"     # get_offset_of_instance[_array] -- evaluated, not emitted
+    EXEC = "exec"                 # a component exec block (`exec init_down`) -- see exec_kind()
 
 
 #: Register-group offset functions are consumed by the generator (to compute
@@ -109,6 +110,21 @@ def set_ctor_name(name: Optional[str]) -> None:
     _ctor_names.set(frozenset({name}) if name else DEFAULT_CTOR_NAMES)
 
 
+#: The exec kinds that run while the component tree is built (LRM 20.1.2).
+INIT_EXEC_KINDS = ("init_down", "init_up")
+
+
+def exec_kind(fn) -> Optional[str]:
+    """``"init_down"``, ``"init_up"``, ... if ``fn`` is an exec block, else None.
+
+    Read off the front end's ``exec_kind`` mark. An exec block is not an
+    operation: before the mark, `exec init_down` classified as EXPORT_OP and
+    was emitted as a method called `init_down` with no argument list.
+    """
+    md = getattr(fn, "metadata", None) or {}
+    return md.get("exec_kind")
+
+
 def func_kind(fn, ctor_names: Optional[FrozenSet[str]] = None) -> FuncKind:
     """Classify an ``ir.Function`` by the flags the front end already sets.
 
@@ -122,6 +138,8 @@ def func_kind(fn, ctor_names: Optional[FrozenSet[str]] = None) -> FuncKind:
     """
     if fn.name in _REG_OFFSET_FNS:
         return FuncKind.REG_OFFSET
+    if exec_kind(fn) is not None:
+        return FuncKind.EXEC
     if getattr(fn, "is_solve", False):
         names = current_ctor_names() if ctor_names is None else ctor_names
         return FuncKind.CONSTRUCTOR if fn.name in names else FuncKind.EXPORT_SOLVE
@@ -155,7 +173,7 @@ def is_reg_group(dtype) -> bool:
     """
     if _dt_name(dtype) == _DT_REGISTER_GROUP:
         return True
-    return _super_ref_name(dtype) == "reg_group_c"
+    return _super_ref_name(dtype) in ("reg_group_c", "addr_reg_pkg::reg_group_c")
 
 
 def is_register(dtype) -> bool:
@@ -165,7 +183,7 @@ def is_register(dtype) -> bool:
     of the named form, the second silently became an ordinary component."""
     if _dt_name(dtype) == _DT_REGISTER:
         return True
-    return _super_ref_name(dtype) == "reg_c"
+    return _super_ref_name(dtype) in ("reg_c", "addr_reg_pkg::reg_c")
 
 
 def comp_kind(dtype) -> CompKind:
@@ -461,7 +479,31 @@ def array_base_stride(group_dtype, field_name: str) -> Tuple[int, int]:
 
 
 def scalar_offset(group_dtype, name: str) -> int:
-    """Byte offset of a scalar instance within ``group_dtype``."""
+    """Byte offset of a scalar instance within ``group_dtype``, from the group's
+    own ``get_offset_of_instance``.
+
+    The offsets are the user's (LRM 21.14.1: "users shall provide the
+    implementation"). The front end's ``offset_map`` packs registers 4 bytes
+    apart in declaration order; it is used only for a group that implements no
+    ``get_offset_of_instance`` at all. Reading it unconditionally put a register
+    the model places at 0x8 at 0x4 -- right only for a dense, in-order layout,
+    and a wrong address that no golden snapshot can catch.
+    """
+    gname = _strip_pkg_name(group_dtype)
+    fn = _offset_fn(group_dtype, "get_offset_of_instance")
+    if fn is not None and fn.body:
+        if _dt_name(fn.body[0]) != "StmtMatch":
+            raise OffsetFoldError(
+                f"'{gname}.get_offset_of_instance' is not a match over the "
+                f"instance name, so its offsets cannot be evaluated at build "
+                f"time")
+        for case in fn.body[0].cases:
+            if _pattern_str(case.pattern) == name:
+                off, _ = _affine(case.body[0].value, ())
+                return off
+        raise OffsetFoldError(
+            f"register group '{gname}' declares no instance named '{name}' "
+            f"(its get_offset_of_instance would return the -1 error sentinel)")
     omap = getattr(group_dtype, "offset_map", None) or {}
     if name not in omap:
         raise OffsetFoldError(
@@ -528,6 +570,30 @@ def collect_reg_groups(root_dtype) -> List[object]:
             if field_is_reg_group(f) and is_reg_group(f.datatype):
                 visit(f.datatype)
     return out
+
+
+def resolve_ref(dtype, type_map):
+    """*dtype*, with a `DataTypeRef` looked up in *type_map*."""
+    if _dt_name(dtype) == "DataTypeRef":
+        return (type_map or {}).get(getattr(dtype, "ref_name", None))
+    return dtype
+
+
+def struct_base(dtype, type_map) -> Optional[object]:
+    """The struct *dtype* inherits from, resolved, or ``None``."""
+    sup = resolve_ref(getattr(dtype, "super", None), type_map)
+    return sup if _dt_name(sup) == _DT_STRUCT else None
+
+
+def struct_fields(dtype, type_map) -> List[object]:
+    """Every field of struct *dtype*: its bases' first, in declaration order.
+
+    The IR lists a struct's OWN fields; `transparent_addr_region_s` holds
+    `addr`, and its `size` is two bases up. A struct's value is all of them.
+    """
+    base = struct_base(dtype, type_map)
+    inherited = struct_fields(base, type_map) if base is not None else []
+    return inherited + list(getattr(dtype, "fields", None) or [])
 
 
 def collect_value_structs(groups: List[object]) -> List[object]:

@@ -19,7 +19,10 @@ import keyword
 from typing import Sequence
 
 __all__ = ["mangle", "class_name", "module_name", "reg_symbol", "strip_suffix",
-           "IMPORTS_ATTR", "IMPORTS_PARAM", "def_kw", "is_async"]
+           "IMPORTS_ATTR", "IMPORTS_PARAM", "INIT_METHOD", "EXECUTOR_ATTR",
+           "CONSTRUCT_METHOD", "CTOR_METHOD", "init_kind_method",
+           "field_storage", "group_base",
+           "BIND_METHOD", "DEFAULT_EXECUTOR", "def_kw", "is_async"]
 
 #: The constructor parameter carrying the import API, and the attribute it is
 #: stored in. TWO names for one thing, and they are here rather than as literals
@@ -30,6 +33,50 @@ __all__ = ["mangle", "class_name", "module_name", "reg_symbol", "strip_suffix",
 #: that half-lands leaves a model whose accessors call an attribute nothing set.
 IMPORTS_PARAM = "imports"
 IMPORTS_ATTR = "_imports"
+
+#: The method running a component's `exec init_down`/`init_up` blocks over its
+#: subtree (`backend.emit_init`). Private: the root's constructor calls it, and
+#: calling it again would re-run initialization on a built model.
+INIT_METHOD = "_pss_init"
+
+#: A component's executor (LRM 21.7.2.6), the method that resolves it over the
+#: tree once `_pss_init` has run, and the class a component with no executor is
+#: bound to: the primitives' default implementation, which is the platform.
+#: Emitted only for a model that has an executor (`executors.has_executors`).
+EXECUTOR_ATTR = "_pss_xtr"
+BIND_METHOD = "_pss_bind"
+DEFAULT_EXECUTOR = "_PssDefaultExecutor"
+
+#: A component class in an inheritance hierarchy (`comp_inherit.in_hierarchy`)
+#: splits what `__init__` does, so a derived class can extend each part: its own
+#: state (`_pss_construct`, which calls its base's first) and the PSS
+#: constructor body (`_pss_ctor`, which `super.initialize(...)` reaches).
+#: An init block kind is a method too (`_pss_init_down`), for `super;`.
+CONSTRUCT_METHOD = "_pss_construct"
+CTOR_METHOD = "_pss_ctor"
+
+
+def group_base(group: str) -> str:
+    """The attribute holding register group *group*'s base address.
+
+    One per group, as C and C++ bind each group separately: two groups a
+    constructor binds to different handles (`regs.set_handle(base)`,
+    `more.set_handle(base + 0x40)`) shared one `_base` here, and every
+    access through the first landed at the second's address."""
+    return f"_pss_base_{group}"
+
+
+def init_kind_method(kind: str) -> str:
+    """The method holding a class's own `exec <kind>` blocks."""
+    return f"_pss_{kind}"
+
+
+def field_storage(decl_name: str, field: str) -> str:
+    """Where a field lives when a base and a derived class both declare it.
+
+    Python has one attribute namespace per object, so two PSS fields of one
+    name (17.1: a field shadows, it does not replace) need two names."""
+    return f"_pss_{decl_name.replace('::', '__')}_{field}"
 
 
 def mangle(name: str) -> str:

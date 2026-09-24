@@ -172,6 +172,26 @@ class OpModel:
     #: Where the backend writes.
     out_dir: Path
 
+    #: Exported actions (`--export-action`), each an entry point rendered as a
+    #: task of the component it runs in. See `export_action.py`.
+    entries: Tuple[Any, ...] = ()
+
+    #: Package-scope functions the model calls, transitively, in first-reached
+    #: order -- empty unless the target lowers them. See `pkg_functions.py`.
+    functions: Tuple[Any, ...] = ()
+
+    #: The component TYPES a backend that renders inheritance natively emits a
+    #: class for: every type in the tree, plus the user base types they derive
+    #: from, each base before anything derived from it. Equal to
+    #: `comp_dtypes` for a target that flattens (`comp_inherit`).
+    classes: Tuple[Any, ...] = ()
+
+    @property
+    def base_classes(self) -> List[Any]:
+        """`classes` that are not in the tree: bases nothing instantiates."""
+        have = {id(n.dtype) for n in self.components}
+        return [c for c in self.classes if id(c) not in have]
+
     # -- convenience -------------------------------------------------------
     #
     # Delegations, not logic. They exist so an emitter says what it means
@@ -195,6 +215,11 @@ class OpModel:
         return [fn for fn in (getattr(dtype, "functions", None) or [])
                 if pm.func_kind(fn, self.ctor_names) is pm.FuncKind.EXPORT_OP]
 
+    def entries_of(self, comp) -> List[Any]:
+        """The entry points that run in ``comp``, in `--export-action` order."""
+        dtype = getattr(comp, "dtype", comp)
+        return [e for e in self.entries if e.comp is dtype]
+
     def ctor(self, comp):
         """The component's constructor, or ``None``."""
         dtype = getattr(comp, "dtype", comp)
@@ -202,6 +227,33 @@ class OpModel:
             if pm.func_kind(fn, self.ctor_names) is pm.FuncKind.CONSTRUCTOR:
                 return fn
         return None
+
+    def init_blocks(self, comp, kind: str) -> List[Any]:
+        """The component's `exec <kind>` blocks (``init_down``/``init_up``),
+        in source order -- which is the order they run in, as one block
+        (LRM 20.1 d)."""
+        from .comp_inherit import SUPER_BLOCK
+        dtype = getattr(comp, "dtype", comp)
+        return [fn for fn in (getattr(dtype, "functions", None) or [])
+                if pm.exec_kind(fn) == kind
+                and SUPER_BLOCK not in (fn.metadata or {})]
+
+    def super_blocks(self, comp) -> List[Any]:
+        """Private copies of a base component's exec blocks that `super;` in
+        this component's blocks runs (`comp_inherit`). Not run otherwise."""
+        from .comp_inherit import SUPER_BLOCK
+        dtype = getattr(comp, "dtype", comp)
+        return [fn for fn in (getattr(dtype, "functions", None) or [])
+                if SUPER_BLOCK in (getattr(fn, "metadata", None) or {})]
+
+    def initializes(self, comp) -> bool:
+        """Does anything under ``comp``, itself included, declare an
+        `exec init_down`/`init_up`? A subtree that does not needs no
+        initialization pass."""
+        dtype = getattr(comp, "dtype", comp)
+        return (any(self.init_blocks(dtype, k) for k in pm.INIT_EXEC_KINDS)
+                or any(self.initializes(s.dtype)
+                       for s in pm.sub_components(dtype)))
 
     def func_kind(self, fn) -> pm.FuncKind:
         """Classify a function using THIS run's constructor names."""
@@ -227,11 +279,34 @@ class OpModel:
         return pm.array_base_stride(group, instance)
 
     def total_operations(self) -> int:
-        return sum(len(self.operations(n)) for n in self.components)
+        return (sum(len(self.operations(n)) for n in self.components)
+                + len(self.entries))
 
 
-def elaborate(ctx, root, out_dir, *, ctor_names: Optional[FrozenSet[str]] = None
-              ) -> OpModel:
+def _classes(ctx, components, native: bool) -> Tuple[Any, ...]:
+    """`OpModel.classes`: the tree's types, with their user bases first."""
+    from .comp_inherit import declared
+    out: List[Any] = []
+    seen: set = set()
+
+    def add(d):
+        if id(d) in seen:
+            return
+        dec = declared(ctx, d) if native else None
+        if dec is not None:
+            add(dec.base)
+        seen.add(id(d))
+        out.append(d)
+
+    for n in components:
+        add(n.dtype)
+    return tuple(out)
+
+
+def elaborate(ctx, root, out_dir, *, ctor_names: Optional[FrozenSet[str]] = None,
+              entries: Sequence[Any] = (),
+              pkg_functions: bool = False,
+              native_inheritance: bool = False) -> OpModel:
     """Walk ``root``'s subtree and gather everything a backend needs.
 
     Called once per compile, before any file is opened, so a failure here
@@ -239,9 +314,14 @@ def elaborate(ctx, root, out_dir, *, ctor_names: Optional[FrozenSet[str]] = None
     """
     names = (frozenset(ctor_names) if ctor_names is not None
              else pm.current_ctor_names())
+    from .comp_inherit import complete, problems
+    complete(ctx)
     tree = pm.walk_tree(root, resolver(ctx))
     post = _post_order(tree)
     pre = _pre_order(tree)
+    bad = problems(ctx, pre)
+    if bad:
+        raise ValueError("component inheritance: " + "; ".join(bad))
 
     groups: List[Any] = []
     seen = set()
@@ -250,6 +330,18 @@ def elaborate(ctx, root, out_dir, *, ctor_names: Optional[FrozenSet[str]] = None
             if id(g) not in seen:
                 seen.add(id(g))
                 groups.append(g)
+
+    entries = _entries_in_tree(tuple(entries), post)
+    classes = _classes(ctx, post, native_inheritance)
+    have = {id(n.dtype) for n in post}
+    extra = [c for c in classes if id(c) not in have]
+    functions: Tuple[Any, ...] = ()
+    if pkg_functions:
+        from . import pkg_functions as pf
+        from .validate_calls import package_bodies
+        functions = pf.unique(package_bodies(
+            root, ctx, names,
+            [(e.comp, fn) for e in entries for fn in e.functions], extra))
 
     return OpModel(
         ctx=ctx,
@@ -262,7 +354,23 @@ def elaborate(ctx, root, out_dir, *, ctor_names: Optional[FrozenSet[str]] = None
         imports=dict(_import_map(ctx)),
         ctor_names=names,
         out_dir=Path(str(out_dir)),
+        entries=entries,
+        functions=functions,
+        classes=classes,
     )
+
+
+def _entries_in_tree(entries, components) -> Tuple[Any, ...]:
+    """``entries``, each checked to run in a component of the walked tree."""
+    from .export_action import ExportActionError
+    have = {id(n.dtype) for n in components}
+    for e in entries:
+        if id(e.comp) not in have:
+            raise ExportActionError(
+                f"--export-action '{e.action}' runs in component "
+                f"'{getattr(e.comp, 'name', '?')}', which is not in the tree "
+                f"under --root")
+    return entries
 
 
 def _import_map(ctx) -> Dict[str, Any]:
@@ -313,6 +421,34 @@ class OpModelTarget(Target):
 
     #: Named in the "N call(s) cannot be lowered to X" diagnostic.
     language: str = ""
+
+    #: Whether this backend renders component inheritance NATIVELY -- a class
+    #: per component type, derived from its base's, with `super` as the
+    #: language's own -- rather than from `comp_inherit`'s flattened view. Such
+    #: a backend also emits base types nothing instantiates
+    #: (`OpModel.classes`), and the gate checks their bodies too.
+    native_inheritance: bool = False
+
+    #: Whether this backend renders `OpModel.entries` (`--export-action`). A
+    #: backend that does not refuses a model with entries rather than
+    #: generating an API without them.
+    supports_entries: bool = False
+
+    #: Whether this backend lowers package-scope functions the model calls
+    #: (`OpModel.functions`). A backend that does not refuses each call by
+    #: name at the legality gate.
+    supports_package_functions: bool = False
+
+    #: Whether this backend runs the components' `exec init_down`/`init_up`
+    #: blocks as part of building the tree. A backend that does not refuses a
+    #: model that has them (`validate_calls.exec_blocks`).
+    supports_init_blocks: bool = False
+
+    #: Whether this backend delegates memory primitives -- and the register
+    #: accesses built on them -- to the assigned executor's overrides (LRM
+    #: 21.13.9.5), and renders `set_executor`. A backend that does not refuses
+    #: a model whose executor overrides one (`executors.check`).
+    supports_executor_delegation: bool = False
 
     # -- derivation ---------------------------------------------------------
 
@@ -533,13 +669,27 @@ class OpModelTarget(Target):
         model and must not have to restate how `--root` and `--ctor-name` are
         read. Restating it is how the two answers drift.
         """
+        from .comp_inherit import complete
+        from .export_action import entry_points
+        # First: every reader below -- the entry-name clash check included --
+        # sees a derived component with what it inherits (`comp_inherit`).
+        complete(ctx)
+        entries = entry_points(ctx, getattr(opts, "export_actions", None) or [])
+        if entries and not self.supports_entries:
+            raise ValueError(
+                f"{self.name} does not yet render exported actions "
+                f"(--export-action {entries[0].action}); op-model-py does")
         root_name = getattr(opts, "progseq_root", None)
-        if not root_name:
-            raise ValueError(f"{self.name} requires --root <component>")
+        if not root_name and not entries:
+            raise ValueError(f"{self.name} requires --root <component> or "
+                             f"--export-action <action>")
         with pm.ctor_names_scope(getattr(opts, "progseq_ctor_name", None)):
-            root = self.resolve_root(ctx, root_name)
+            # Without --root, the tree is the one the first entry runs in.
+            root = (self.resolve_root(ctx, root_name) if root_name
+                    else entries[0].comp)
             return self.elaborate(ctx, root, opts,
-                                  ctor_names=self.ctor_names_for(opts))
+                                  ctor_names=self.ctor_names_for(opts),
+                                  entries=entries)
 
     def sections(self, model: OpModel,
                  opts: argparse.Namespace) -> Dict[str, str]:
@@ -553,10 +703,14 @@ class OpModelTarget(Target):
         """
         return {}
 
-    def elaborate(self, ctx, root, opts, *, ctor_names=None) -> OpModel:
+    def elaborate(self, ctx, root, opts, *, ctor_names=None,
+                  entries=()) -> OpModel:
         """Build the `OpModel`. Overridable, but there is rarely a reason."""
         out_dir = Path(str(getattr(opts, "output_dir", ".") or "."))
-        return elaborate(ctx, root, out_dir, ctor_names=ctor_names)
+        return elaborate(ctx, root, out_dir, ctor_names=ctor_names,
+                         entries=entries,
+                         pkg_functions=self.supports_package_functions,
+                         native_inheritance=self.native_inheritance)
 
     def check(self, model: OpModel) -> None:
         """Everything that must hold before any file is opened.
@@ -574,8 +728,29 @@ class OpModelTarget(Target):
         """
         from .validate_calls import gate
         gate(model.root, model.ctx, self.legality_target or self.name,
-             self.language or self.name, model.ctor_names)
+             self.language or self.name, model.ctor_names,
+             entries=[(e.comp, fn) for e in model.entries
+                      for fn in e.functions],
+             pkg_functions=self.supports_package_functions,
+             init_blocks=self.supports_init_blocks,
+             extra_components=model.base_classes,
+             native=self.native_inheritance)
+        self.check_executors(model)
         self.assert_api_is_not_empty(model)
+
+    def check_executors(self, model: OpModel) -> None:
+        """Refuse an executor this backend would lower wrongly
+        (`executors.check`)."""
+        from ..driver import CompileError
+        from . import executors
+
+        tm = getattr(model.ctx, "type_map", {}) or {}
+        bad = executors.check([n.dtype for n in model.components], tm,
+                              delegating=self.supports_executor_delegation)
+        if bad:
+            raise CompileError(
+                f"{len(bad)} executor(s) cannot be lowered to "
+                f"{self.language or self.name}", bad)
 
     @staticmethod
     def assert_api_is_not_empty(model: OpModel) -> None:

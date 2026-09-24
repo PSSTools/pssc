@@ -120,6 +120,7 @@ Each entry of `components`:
 | `doc` | string | the PSS doc comment, verbatim (`""` if none) |
 | `constructor` | function or `null` | the `solve function` matched by `ctor_names` |
 | `operations` | [function] | the export API, in declaration order |
+| `entries` | [{`name`, `action`}] | exported actions (`--export-action`) that run in this component, each a method with no parameters and no result; `action` is the qualified action name |
 | `sub_components` | [{`name`, `type`, `count`}] | instances; `count` is the array size |
 | `channels` | [{`name`, `element`, `depth`}] | declared channels |
 | `registers` | [register] | every register reachable from this component |

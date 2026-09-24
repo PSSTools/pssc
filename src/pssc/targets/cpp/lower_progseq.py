@@ -29,6 +29,10 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Set
 
+import zuspec.ir.core as ir
+
+from .. import comp_inherit as ci
+
 from ..comments import LINE, append_trailing, blank_line, comment_lines, doc_block
 from ..progseq_model import (
     func_kind, FuncKind, field_is_reg_group, _dt_name, channel_fields,
@@ -187,6 +191,23 @@ def _parent_types(model, comp) -> List[object]:
     return out
 
 
+def _declared(model, comp):
+    """``(base, fields, functions)`` as *comp* DECLARES them
+    (`comp_inherit.declared`); its members as they are when it has no base."""
+    dec = ci.declared(model.ctx, comp)
+    if dec is None:
+        return (None, list(getattr(comp, "fields", None) or []),
+                list(getattr(comp, "functions", None) or []))
+    return dec.base, list(dec.fields), list(dec.functions)
+
+
+def _view(fields):
+    """A component-shaped object with just *fields*, for the member walks."""
+    import types
+    return types.SimpleNamespace(fields=list(fields), functions=[], name="",
+                                 super=None)
+
+
 def _fn_named(comp, name):
     """A component's function by name, or ``None``."""
     for fn in (getattr(comp, "functions", None) or []):
@@ -249,6 +270,11 @@ class _BodyEmitter:
         self.comp_fields = {f.name for f in getattr(comp, "fields", [])}
         self.field_types = {f.name: f.datatype
                             for f in getattr(comp, "fields", [])}
+        #: The base component and its class, for `super` -- set when this
+        #: body belongs to a class rendered as a derived C++ class
+        #: (`_native`). `super.f(...)` is `base::f(...)`, a static call.
+        self.super_base = None
+        self.super_cls: Optional[str] = None
         self.write_only_locals: Set[str] = self._scan_write_only(fn)
         #: Declared type of every local and argument, for enum coercion below.
         self.local_types: Dict[str, object] = {
@@ -347,6 +373,8 @@ class _BodyEmitter:
             return None
         if _dt_name(func.value) == "TypeExprRefSelf":
             return _fn_named(self.comp, func.attr) or self.imports.get(func.attr)
+        if _dt_name(func.value) == "TypeExprRefSuper":
+            return _fn_named(self.super_base, func.attr)
         chain = self._chain(func.value)
         if chain and len(chain) == 1 and chain[0][0] in self.subs:
             return _fn_named(self.subs[chain[0][0]].dtype, func.attr)
@@ -441,12 +469,13 @@ class _BodyEmitter:
         and it also states in the output which names are component state and
         which are package constants.
         """
+        # A parameter shadows a member of the same name (scope order).
+        if name in self.arg_names:
+            return self.arg_rename[name]
         if name in self.subs:
             return f"this->{_sub_member(self.subs[name])}"
         if name in self.comp_fields:
             return f"this->{mangle(name)}"
-        if name in self.arg_names:
-            return self.arg_rename[name]
         # Not a member: a package-scope constant, which is a plain identifier.
         return name
 
@@ -594,6 +623,27 @@ class _BodyEmitter:
         args = ", ".join(self._call_args(call))
         return f"{self.expr(func.value)}.{mangle(func.attr)}({args})"
 
+    def _super(self) -> str:
+        if self.super_cls is None:
+            raise ValueError(
+                f"`super` in '{getattr(self.fn, 'name', '?')}': "
+                f"'{getattr(self.comp, 'name', '?')}' has no base component")
+        return self.super_cls
+
+    def _super_call(self, call) -> str:
+        """`super.f(args)` -> `base::f(args)`: the base's `f`, statically.
+        `super.initialize(...)` is the base's PSS constructor."""
+        name = call.func.attr
+        callee = _fn_named(self.super_base, name)
+        if callee is None:
+            raise ValueError(
+                f"'super.{name}(...)' in '{getattr(self.fn, 'name', '?')}': "
+                f"no base of '{getattr(self.comp, 'name', '?')}' declares it")
+        args = ", ".join(self._call_args(call))
+        if func_kind(callee, self.ctor_names) == FuncKind.CONSTRUCTOR:
+            return f"{self._super()}::initialize({args})"
+        return f"{self._super()}::{mangle(name)}({args})"
+
     def _model_call(self, call) -> str:
         """A call on the model itself: an operation of this component, or an
         `import target/solve function` the platform supplies."""
@@ -678,6 +728,10 @@ class _BodyEmitter:
             base = e.value
             if _dt_name(base) == "TypeExprRefSelf":
                 return self._self_member(e.attr)
+            if _dt_name(base) == "TypeExprRefSuper":
+                # The base's field: a derived class's own of that name hides
+                # it and does not replace it (17.1), exactly as in C++.
+                return f"this->{self._super()}::{mangle(e.attr)}"
             return f"{self.expr(base)}.{e.attr}"
         if cn == "ExprSubscript":
             return f"{self.expr(e.value)}[{self.expr(e.slice)}]"
@@ -697,6 +751,9 @@ class _BodyEmitter:
             # a C cast would silently also permit the ones it does not.
             return f"static_cast<{cpp_type(e.target_type)}>({self.expr(e.value)})"
         if cn == "ExprCall":
+            if _dt_name(e.func) == "ExprAttribute" and \
+                    _dt_name(e.func.value) == "TypeExprRefSuper":
+                return self._super_call(e)
             for handler in (self._reg_call, self._chan_call, self._sub_op_call,
                             self._builtin_call):
                 out = handler(e)
@@ -981,7 +1038,7 @@ def _iface(names, dtype) -> str:
     return f"{names[dtype]}_if"
 
 
-def emit_export_api(node, names, ctor_names=None) -> str:
+def emit_export_api(node, names, ctor_names=None, model=None) -> str:
     """The pure-virtual operation interface for one component.
 
     Sub-component access is ON THE INTERFACE, returning the child's interface:
@@ -990,14 +1047,24 @@ def emit_export_api(node, names, ctor_names=None) -> str:
     """
     comp = node.dtype
     cls = names[comp]
+    ops, subs, head = (_operations(comp, ctor_names), sub_components(comp),
+                       f"struct {cls}_if {{")
+    if model is not None and ci.in_hierarchy(model.ctx, comp):
+        # Its own operations and sub-components; its base interface's by
+        # inheritance -- VIRTUAL, as the class derives from both.
+        base, fields, fns = _declared(model, comp)
+        ops = [f for f in fns if func_kind(f, ctor_names) == FuncKind.EXPORT_OP]
+        subs = sub_components(_view(fields))
+        if base is not None:
+            head = f"struct {cls}_if : public virtual {_iface(names, base)} {{"
     lines = doc_block(getattr(comp, "doc", None), "", LINE)
-    lines.append(f"struct {cls}_if {{")
+    lines.append(head)
     lines.append(f"    virtual ~{cls}_if() = default;")
-    for fn in _operations(comp, ctor_names):
+    for fn in ops:
         blank_line(lines)
         lines += doc_block(getattr(fn, "doc", None), "    ", LINE)
         lines.append(f"    virtual {_ret(fn)} {mangle(fn.name)}({_params(fn)}) = 0;")
-    for sub in sub_components(comp):
+    for sub in subs:
         blank_line(lines)
         sub_if = _iface(names, sub.dtype)
         if sub.is_array:
@@ -1140,8 +1207,14 @@ def _binds_handle(ctor, field: str) -> bool:
     return found
 
 
+#: The function a field default is rendered in: none of the component's own,
+#: since a default belongs to construction, not to a PSS function.
+_DEFAULTS_FN = ir.Function(name="<field defaults>", args=ir.Arguments(args=[]),
+                           body=[], returns=None)
+
+
 def _field_defaults(comp, emitter, pad: str) -> List[str]:
-    """PSS field initializers, as assignments at the top of `initialize`.
+    """PSS field initializers, as assignments in the class constructor.
 
     A default is part of a field's MEANING: `wb_dma_ch_caps_s` declares every
     capability true, and a model that reads back all-false silently refuses the
@@ -1150,7 +1223,7 @@ def _field_defaults(comp, emitter, pad: str) -> List[str]:
 
     Assignments rather than member initialisers because a struct-typed
     attribute carries its defaults on the STRUCT's fields, which have to be
-    walked out member by member, and because `initialize` may be called again.
+    walked out member by member.
     """
     out: List[str] = []
     for f in data_members(comp):
@@ -1207,8 +1280,12 @@ def _sub_array_maker(sub, names, ns: str) -> List[str]:
 
 
 def emit_component(node, names, ns: str, *, imports=None, is_root: bool,
-                   parents=(), ctor_names=None, **be_kw) -> str:
+                   parents=(), ctor_names=None, model=None, **be_kw) -> str:
     """One component class: state, lifecycle, operations, sub-component access."""
+    if model is not None and ci.in_hierarchy(model.ctx, node.dtype):
+        return emit_hier_component(node, names, ns, model, imports=imports,
+                                   is_root=is_root, parents=parents,
+                                   ctor_names=ctor_names, **be_kw)
     be_kw = dict(be_kw, imports=imports, ctor_names=ctor_names)
     comp = node.dtype
     cls = names[comp]
@@ -1263,7 +1340,20 @@ def emit_component(node, names, ns: str, *, imports=None, is_root: bool,
     lines.append("")
     lines.append("public:")
     lines.append(f"    explicit {cls}({ns}_import_if &imp)")
-    lines.append("      : " + ", ".join(inits) + " {}")
+    # Field defaults are part of CONSTRUCTION, as in C and Python: every
+    # instance has them, whether or not anything calls its `initialize`. They
+    # were emitted only into `initialize`, and only when the component had a
+    # PSS constructor -- so `int a = 5;` in a component without one, or in a
+    # sub-component whose parent never calls its `initialize`, was 0.
+    defaults = _field_defaults(
+        comp, _CtorEmitter(_DEFAULTS_FN, comp, names, cls=cls, **be_kw),
+        "        ")
+    if defaults:
+        lines.append("      : " + ", ".join(inits) + " {")
+        lines += defaults
+        lines.append("    }")
+    else:
+        lines.append("      : " + ", ".join(inits) + " {}")
     lines.append("")
 
     # -- initialize (the PSS constructor) ------------------------------------
@@ -1299,7 +1389,143 @@ def emit_component(node, names, ns: str, *, imports=None, is_root: bool,
     return "\n".join(lines)
 
 
-def _emit_initialize(comp, cls, names, ctor, groups, **be_kw) -> List[str]:
+def _native(be, base, names):
+    """Configure *be* for a body of a class derived from *base*'s."""
+    if base is not None:
+        be.super_base = base
+        be.super_cls = names[base]
+    return be
+
+
+def emit_hier_component(node, names, ns: str, model, *, imports=None,
+                        is_root: bool, parents=(), ctor_names=None,
+                        **be_kw) -> str:
+    """A component in an inheritance hierarchy, as a C++ class derived from
+    its base component's class (LRM 17.1, Table 27).
+
+    It declares only what the component DECLARES; the rest is its base's.
+    Functions are virtual (every operation is, through the interfaces), and
+    `super.f(...)` is `base::f(...)`. A field a derived class declares again
+    hides the base's and does not replace it -- 17.1's rule and C++'s. State
+    is `protected` so a derived class's code reaches what it inherits. Both
+    interfaces are derived from VIRTUALLY: the class implements its base's
+    interface through its base class, and its own, which extends that one.
+    """
+    be_kw = dict(be_kw, imports=imports, ctor_names=ctor_names)
+    comp = node.dtype
+    cls = names[comp]
+    base, own_fields, own_fns = _declared(model, comp)
+    view = _view(own_fields)
+    subs = sub_components(view)
+    groups = _reg_group_fields(view)
+    head = (f"class {cls} : public {names[base]}, public virtual {cls}_if {{"
+            if base is not None else f"class {cls} : public virtual {cls}_if {{")
+    lines: List[str] = [head]
+    for parent in parents:
+        lines.append(f"    friend class {names[parent]};")
+    lines.append("protected:")
+
+    # -- state: its own ------------------------------------------------------
+    if base is None:
+        lines.append(f"    {ns}_import_if &{_IMP};")
+    for f in data_members(view):
+        lines += comment_lines(getattr(f, "doc", None), "    ", LINE)
+        lines.append(f"    {_data_member(f)}")
+    for f in channel_fields(view):
+        lines.append(f"    {_chan_member(f)}")
+    for name, g in groups.items():
+        lines.append(f"    {_strip_pkg(g.name)} {mangle(name)};")
+    for sub in subs:
+        t = names[sub.dtype]
+        if sub.is_array:
+            lines.append(f"    std::array<{t}, {sub.size}> {_sub_member(sub)};")
+        else:
+            lines.append(f"    {t} {_sub_member(sub)};")
+    makers = [ln for sub in subs if sub.is_array
+              for ln in _sub_array_maker(sub, names, ns)]
+    if makers:
+        lines.append("")
+        lines += makers
+
+    # -- construction: the base's first --------------------------------------
+    inits = [f"{names[base]}(imp)" if base is not None else f"{_IMP}(imp)"]
+    for name, g in groups.items():
+        inits.append(f"{mangle(name)}({_strip_pkg(g.name)}(imp, 0))")
+    for sub in subs:
+        inits.append(f"{_sub_member(sub)}(make_{_sub_member(sub)}(imp))"
+                     if sub.is_array else
+                     f"{_sub_member(sub)}({names[sub.dtype]}(imp))")
+    lines += ["", "public:", f"    explicit {cls}({ns}_import_if &imp)"]
+    defaults = _field_defaults(
+        view, _native(_CtorEmitter(_DEFAULTS_FN, comp, names, cls=cls,
+                                   **be_kw), base, names), "        ")
+    if defaults:
+        lines.append("      : " + ", ".join(inits) + " {")
+        lines += defaults
+        lines.append("    }")
+    else:
+        lines.append("      : " + ", ".join(inits) + " {}")
+
+    # -- initialize: its own, or its base's plus its own register groups -----
+    own_ctor = next((f for f in own_fns
+                     if func_kind(f, ctor_names) == FuncKind.CONSTRUCTOR), None)
+    if base is None or own_ctor is not None:
+        # Every register group it has, inherited ones included, is bound by
+        # default here: a constructor that shadows the base's does not run it.
+        lines.append("")
+        lines += _emit_initialize(comp, cls, names, own_ctor,
+                                  _reg_group_fields(comp), native=base,
+                                  **be_kw)
+    elif groups:
+        lines.append("")
+        eff = _ctor(comp, ctor_names)
+        params = _params(eff) if eff is not None else ""
+        fwd = ", ".join(mangle(a.arg) for a in (eff.args.args if eff else []))
+        addr = _addr_arg(eff) or "0"
+        lines += [
+            "    // The PSS constructor is the base's; this class binds its "
+            "own register",
+            "    // groups after it.",
+            f"    void initialize({params}) {{",
+            f"        {names[base]}::initialize({fwd});"]
+        for name, g in groups.items():
+            lines.append(f"        this->{mangle(name)} = "
+                         f"{_strip_pkg(g.name)}(this->{_IMP}, {addr});")
+        lines.append("    }")
+
+    # -- operations: those it declares ---------------------------------------
+    for fn in own_fns:
+        if func_kind(fn, ctor_names) != FuncKind.EXPORT_OP:
+            continue
+        be = _native(_BodyEmitter(fn, comp, names, cls=cls, **be_kw),
+                     base, names)
+        lines.append("")
+        lines += doc_block(getattr(fn, "doc", None), "    ", LINE)
+        lines.append(f"    {_ret(fn)} {mangle(fn.name)}({_params(fn)}) override {{")
+        lines += be.stmts(fn.body, 2)
+        lines.append("    }")
+
+    # -- sub-component access: its own ---------------------------------------
+    for sub in subs:
+        sub_if = _iface(names, sub.dtype)
+        member = _sub_member(sub)
+        lines.append("")
+        if sub.is_array:
+            lines.append(f"    {sub_if} &{mangle(sub.name)}(std::size_t i) "
+                         f"override {{ return {member}[i]; }}")
+        else:
+            lines.append(f"    {sub_if} &{mangle(sub.name)}() override "
+                         f"{{ return {member}; }}")
+
+    if is_root:
+        lines.append("")
+        lines += _emit_factory(cls, ns, _ctor(comp, ctor_names))
+    lines.append("};")
+    return "\n".join(lines)
+
+
+def _emit_initialize(comp, cls, names, ctor, groups, native=None,
+                     **be_kw) -> List[str]:
     """`initialize(...)`: the PSS constructor body, plus what precedes it.
 
     The default register-group binding comes FIRST and the body may override it
@@ -1326,10 +1552,9 @@ def _emit_initialize(comp, cls, names, ctor, groups, **be_kw) -> List[str]:
         # rather than quietly wrong.
         body.append(f"        this->{mangle(name)} = {gt}(this->{_IMP}, {bind});")
 
-    be = _CtorEmitter(ctor, comp, names, cls=cls, **be_kw) if ctor is not None \
-        else None
+    be = (_native(_CtorEmitter(ctor, comp, names, cls=cls, **be_kw), native,
+                  names) if ctor is not None else None)
     if be is not None:
-        body += _field_defaults(comp, be, "        ")
         body += be.stmts(ctor.body, 2)
     if not body:
         body = ["        // The model's constructor is empty and this "
@@ -1358,6 +1583,22 @@ def _emit_factory(cls: str, ns: str, ctor) -> List[str]:
     ]
 
 
+def _class_nodes(model) -> List[object]:
+    """A node per class: children first, and each base class before the
+    classes derived from it -- including bases nothing instantiates
+    (`OpModel.classes`)."""
+    import types
+    order = post_order(model)
+    classes = getattr(model, "classes", None)
+    if not classes or not any(ci.in_hierarchy(model.ctx, c) for c in classes):
+        return order        # nothing derives: exactly the tree, as always
+    by_type = {}
+    for n in order:
+        by_type.setdefault(id(n.dtype), n)
+    return [by_type.get(id(c)) or types.SimpleNamespace(dtype=c)
+            for c in classes]
+
+
 def lower_components(model, names, ns: str, *, imports=None, **be_kw) -> str:
     """Every component's interface and class.
 
@@ -1366,15 +1607,17 @@ def lower_components(model, names, ns: str, *, imports=None, **be_kw) -> str:
     holds its children by value -- so each needs the other side complete, and
     only splitting the two into separate passes satisfies both.
     """
+    nodes = _class_nodes(model)
     parts: List[str] = ["// ----- Export API. -----"]
-    for node in post_order(model):
-        parts.append(emit_export_api(node, names, model.ctor_names))
+    for node in nodes:
+        parts.append(emit_export_api(node, names, model.ctor_names, model))
         parts.append("")
     parts.append("// ----- Components. -----")
-    for node in post_order(model):
+    for node in nodes:
         parts.append(emit_component(node, names, ns, imports=imports,
                                     is_root=model.is_root(node.dtype),
                                     parents=_parent_types(model, node.dtype),
-                                    ctor_names=model.ctor_names, **be_kw))
+                                    ctor_names=model.ctor_names, model=model,
+                                    **be_kw))
         parts.append("")
     return "\n".join(parts).rstrip()

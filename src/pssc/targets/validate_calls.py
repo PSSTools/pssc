@@ -20,8 +20,10 @@ from __future__ import annotations
 
 from typing import FrozenSet, List, Optional, Set
 
-from .call_legality import Ctx, Outcome, classify
-from .progseq_model import FuncKind, func_kind, _dt_name, sub_components
+from . import pkg_functions as pf
+from .call_legality import Ctx, Outcome, classify, core_function
+from .progseq_model import (FuncKind, INIT_EXEC_KINDS, exec_kind, func_kind,
+                            is_reg_group, _dt_name, sub_components)
 
 
 def _where(node) -> str:
@@ -47,6 +49,8 @@ def _where(node) -> str:
 def _site(comp, fn, call) -> str:
     """The most specific location available: a real one if the IR has it, else
     the component and function that contain the call."""
+    if comp is None:
+        return _where(call) or f"{pf.qualified_name(fn)}: "
     return _where(call) or f"{_name_of(comp)}::{fn.name}: "
 
 
@@ -55,13 +59,72 @@ def _name_of(dtype) -> str:
     return nm.split("::")[-1]
 
 
-def _callee_name(func) -> Optional[str]:
-    """The bare name a call targets, however the IR spells the reference."""
+def callee_name(func) -> Optional[str]:
+    """The name a call is classified by, however the IR spells the reference.
+
+    A call qualified by a core-library package is classified by its short
+    name: `addr_reg_pkg::write32` is `write32` (`call_legality.core_function`).
+    Any other qualified name stays qualified, so the registry finds nothing
+    under it and the call is refused rather than mistaken for a built-in.
+    """
     for attr in ("attr", "name"):
         v = getattr(func, attr, None)
         if isinstance(v, str):
-            return v
+            return core_function(v) or v
     return None
+
+
+def is_core_call(func) -> bool:
+    """True if the call was WRITTEN qualified by a core-library package.
+
+    The spelling changes nothing about which function it is:
+    `addr_reg_pkg::write32(h, d)` is delegated to the active executor exactly
+    as `write32(h, d)` is (LRM 21.13.9.5), so inside that executor's own
+    `write32` it is a call to itself. The default implementation is
+    `super.write32(...)` (`is_super_call`).
+    """
+    return (_dt_name(func) == "ExprRefUnresolved"
+            and core_function(getattr(func, "name", "") or "") is not None)
+
+
+def is_super_call(func) -> bool:
+    """True for `super.f(...)`: the base type's `f`, never an override."""
+    return (_dt_name(func) == "ExprAttribute"
+            and _dt_name(getattr(func, "value", None)) == "TypeExprRefSuper")
+
+
+def own_ops(comp, ctor_names=None) -> FrozenSet[str]:
+    """The operations ``comp`` itself declares."""
+    return frozenset(fn.name for fn in (getattr(comp, "functions", None) or [])
+                     if func_kind(fn, ctor_names) is FuncKind.EXPORT_OP)
+
+
+def ops_for_call(comp, func, ops: FrozenSet[str],
+                 ctor_names=None, super_base=None) -> FrozenSet[str]:
+    """The operation names a call of this FORM may be classified against.
+
+    ``ops`` is every operation in the model, by name (`model_names`). That is
+    the right set for a call through a sub-component (`self.ch.start()`), whose
+    receiver this pass does not type. It is the WRONG set for `self.f()`: the
+    front end writes a call to a core-library function that way too, so an
+    executor anywhere in the model that overrides `read32` (LRM 21.13.9.5)
+    would turn every other component's `read32(h)` into a call to a method it
+    does not have. `self.f()` is an operation only if ``comp`` declares `f`,
+    and neither is a call written `addr_reg_pkg::read32(...)` or
+    `super.read32(...)`. (A base component's operations are not inherited by
+    the lowered component, so `super.f()` has no operation to name.)
+    """
+    if is_super_call(func):
+        # The base's operation, where the body belongs to a class rendered as
+        # derived from its base's (`super_base`); nothing otherwise.
+        return (own_ops(super_base, ctor_names) if super_base is not None
+                else frozenset())
+    if is_core_call(func):
+        return frozenset()
+    if (_dt_name(func) == "ExprAttribute"
+            and _dt_name(getattr(func, "value", None)) == "TypeExprRefSelf"):
+        return own_ops(comp, ctor_names) if comp is not None else frozenset()
+    return ops
 
 
 def _walk_calls(node, out: List[object]) -> None:
@@ -108,7 +171,39 @@ def _context_of(fn, ctor_names=None) -> Optional[Ctx]:
         return Ctx.TARGET
     if kind in (FuncKind.CONSTRUCTOR, FuncKind.EXPORT_SOLVE):
         return Ctx.SOLVE
+    if kind is FuncKind.EXEC and exec_kind(fn) in INIT_EXEC_KINDS:
+        # Solve context: the tree is built before any scenario runs (20.1.2).
+        # Whether the target lowers them at all is `exec_blocks`' question.
+        return Ctx.SOLVE
     return None
+
+
+def exec_blocks(root, ctx, target: str, init_blocks: bool) -> List[str]:
+    """Refuse every component exec block the target would not run.
+
+    An exec block the backend does not lower is a statement the model makes
+    that the generated code silently does not: `exec init_down { a = 10; }`
+    dropped leaves `a` at its initializer, and nothing says so. So a target
+    either lowers init_down/init_up (``init_blocks``) or is refused them here,
+    and every other component exec kind is refused everywhere.
+
+    Inherited blocks arrive with the component (`comp_inherit`): a kind the
+    derived component does not declare is the base's, and one it declares
+    shadows the base's. `super;` in a derived block is the backend's to resolve
+    or refuse (op-model-py's `stmt_super` refuses it outside an entry).
+    """
+    msgs: List[str] = []
+    for comp in _components(root):
+        kinds = [exec_kind(fn) for fn in (getattr(comp, "functions", None) or [])
+                 if exec_kind(fn) is not None]
+        for k in dict.fromkeys(kinds):
+            if k not in INIT_EXEC_KINDS:
+                msgs.append(f"{_name_of(comp)}: `exec {k}` is not lowered "
+                            f"by '{target}'")
+            elif not init_blocks:
+                msgs.append(f"{_name_of(comp)}: `exec {k}` is not lowered "
+                            f"by '{target}' yet")
+    return msgs
 
 
 def _components(root) -> List[object]:
@@ -154,9 +249,47 @@ def model_names(root, ctor_names=None):
     return comps, frozenset(ops), frozenset(ctors)
 
 
+def _with_extra(comps, extra) -> List[object]:
+    """``comps`` plus the ``extra`` ones not already in it."""
+    have = {id(c) for c in comps}
+    return list(comps) + [c for c in extra or () if id(c) not in have]
+
+
+def package_bodies(root, ctx, ctor_names=None, entries=(),
+                   extra_components=()):
+    """`pkg_functions.reach` from everything the tree rooted at ``root``
+    lowers: ``[(function, context)]``. The ONE answer to "which package
+    functions does this model carry", used by the gate and by `OpModel`.
+
+    ``extra_components`` are rendered too though not in the tree: the base
+    classes of a target that renders inheritance natively."""
+    comps, ops, ctors = model_names(root, ctor_names)
+    comps = _with_extra(comps, extra_components)
+    bodies = [(fn, _context_of(fn, ctor_names))
+              for comp in comps
+              for fn in (getattr(comp, "functions", None) or [])]
+    bodies += [(fn, Ctx.TARGET) for _, fn in entries]
+    return pf.reach(ctx, bodies)
+
+
 def validate_calls(root, ctx, target: str, *, report_only: bool = False,
-                   ctor_names=None) -> List[str]:
+                   ctor_names=None, entries=(),
+                   pkg_functions: bool = False,
+                   init_blocks: bool = False,
+                   extra_components=(), native: bool = False) -> List[str]:
     """Classify every call in the component tree rooted at ``root``.
+
+    ``entries`` is ``[(component, function)]`` for the exported actions
+    (`export_action.EntryPoint`): target-context code that runs in
+    ``component`` but is not one of its declared functions.
+
+    ``pkg_functions`` says whether the target lowers package-scope functions.
+    If it does, each one the model reaches is checked too, in the context it
+    runs in (`pkg_functions.py`); if not, a call to one is refused by name.
+
+    ``init_blocks`` says whether it lowers `exec init_down`/`init_up`. If it
+    does, their bodies are checked in solve context; if not, each is refused
+    (:func:`exec_blocks`).
 
     Returns the diagnostics. Unless ``report_only``, they are also pushed onto
     ``ctx.errors`` via ``add_error``, which is what stops the build --
@@ -164,27 +297,78 @@ def validate_calls(root, ctx, target: str, *, report_only: bool = False,
     the target has to check for itself (docs §5.3).
     """
     comps, ops, ctors = model_names(root, ctor_names)
-    imports: FrozenSet[str] = frozenset(
-        f.name for f in (getattr(ctx, "import_functions", None) or []))
+    comps = _with_extra(comps, extra_components)
+    import_fns = getattr(ctx, "import_functions", None) or []
+    imports: FrozenSet[str] = frozenset(f.name for f in import_fns)
+    # Only the `target` qualifier is enforced on imports: a target import
+    # cannot run while the tree is built. The converse -- a `solve` import
+    # called from a target function -- is also illegal (20.2.1.3), but models
+    # and tests in this repo do it (`test_c_imports.py`), so refusing it is a
+    # separate decision.
+    import_contexts = {f.name: pf.contexts_of(f) for f in import_fns
+                       if getattr(f, "is_target", False)}
 
-    msgs: List[str] = []
+    msgs: List[str] = exec_blocks(root, ctx, target, init_blocks)
+    # What each class renders. A target rendering inheritance natively
+    # (`native`) renders a derived component's DECLARED functions, `super`
+    # intact, and reaches the rest through its base class; a flattening one
+    # renders `comp_inherit`'s completed view.
+    from .comp_inherit import declared as _declared_members
+    bodies = []
     for comp in comps:
-        for fn in (getattr(comp, "functions", None) or []):
-            context = _context_of(fn, ctor_names)
-            if context is None:
+        dec = _declared_members(ctx, comp) if native else None
+        fns = dec.functions if dec is not None else (
+            getattr(comp, "functions", None) or [])
+        sb = dec.base if dec is not None else None
+        bodies += [(comp, fn, _context_of(fn, ctor_names), sb) for fn in fns
+                   if init_blocks
+                   or func_kind(fn, ctor_names) is not FuncKind.EXEC]
+    bodies += [(comp, fn, Ctx.TARGET, None) for comp, fn in entries]
+
+    declared = pf.declared(ctx)
+    if pkg_functions:
+        # A package function has no component, so no call in its body is an
+        # operation or a sub-component constructor of one.
+        bodies += [(None, fn, c, None) for fn, c in
+                   package_bodies(root, ctx, ctor_names, entries,
+                                  extra_components)]
+
+    for comp, fn, context, super_base in bodies:
+        if context is None:
+            continue
+        calls: List[object] = []
+        _walk_calls(getattr(fn, "body", None), calls)
+        in_pkg = comp is None
+        for call in calls:
+            func = getattr(call, "func", None)
+            name = callee_name(func)
+            if name is None:
                 continue
-            calls: List[object] = []
-            _walk_calls(getattr(fn, "body", None), calls)
-            for call in calls:
-                name = _callee_name(getattr(call, "func", None))
-                if name is None:
-                    continue
+            callee = pf.callee(call, declared)
+            if callee is not None and not pkg_functions:
+                msgs.append(
+                    f"{_site(comp, fn, call)}cannot lower call: '{name}' is a "
+                    f"package-scope function, which '{target}' does not "
+                    f"lower yet")
+                continue
+            if callee is not None:
+                # The front end says which function this is; the model's own
+                # names do not enter into it.
                 res = classify(name, context=context, target=target,
-                               model_ops=ops, imports=imports, subcomps=ctors)
-                if res.outcome is Outcome.SUPPORTED:
-                    continue
-                msgs.append(f"{_site(comp, fn, call)}cannot lower call: "
-                            f"{res.message}")
+                               pkg_funcs={name: pf.contexts_of(callee)})
+            else:
+                res = classify(name, context=context, target=target,
+                               model_ops=(frozenset() if in_pkg else
+                                          ops_for_call(comp, func, ops,
+                                                       ctor_names,
+                                                       super_base)),
+                               imports=imports,
+                               import_contexts=import_contexts,
+                               subcomps=frozenset() if in_pkg else ctors)
+            if res.outcome is Outcome.SUPPORTED:
+                continue
+            msgs.append(f"{_site(comp, fn, call)}cannot lower call: "
+                        f"{res.message}")
 
     if not report_only:
         for m in msgs:
@@ -192,7 +376,10 @@ def validate_calls(root, ctx, target: str, *, report_only: bool = False,
     return msgs
 
 
-def gate(root, ctx, target: str, language: str, ctor_names=None) -> None:
+def gate(root, ctx, target: str, language: str, ctor_names=None,
+         entries=(), pkg_functions: bool = False,
+         init_blocks: bool = False, extra_components=(),
+         native: bool = False) -> None:
     """Run :func:`validate_calls` and raise if anything is unlowerable.
 
     Every operation-model backend calls this as its first act, BEFORE any file
@@ -208,7 +395,10 @@ def gate(root, ctx, target: str, language: str, ctor_names=None) -> None:
     P2 of docs/design/generator-style-extensions-plan.md.
     """
     from ..driver import CompileError
-    bad = validate_calls(root, ctx, target, ctor_names=ctor_names)
+    bad = validate_calls(root, ctx, target, ctor_names=ctor_names,
+                         entries=entries, pkg_functions=pkg_functions,
+                         init_blocks=init_blocks,
+                         extra_components=extra_components, native=native)
     if bad:
         raise CompileError(
             f"{len(bad)} call(s) cannot be lowered to {language}", bad)

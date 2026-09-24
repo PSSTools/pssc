@@ -15,12 +15,13 @@ computing offsets two ways is the worst duplication available here.
 """
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional, Set
 
 from ...reg_field_resolve import struct_layout
 from ..comments import HASH, append_trailing, comment_lines
 from ..reg_layout import RegAccessor, collect_accessors
-from .naming import IMPORTS_ATTR, def_kw, is_async, mangle, reg_symbol
+from .naming import (EXECUTOR_ATTR, IMPORTS_ATTR, def_kw, group_base,
+                     is_async, mangle, reg_symbol)
 
 __all__ = ["emit_value_base", "emit_value_class", "lower_value_classes",
            "lower_accessors", "value_class_name", "accessor_map",
@@ -52,14 +53,30 @@ class _RegValue(object):
     BITS: int = 0
 
     def __init__(self, **fields):
-        for name, _, _ in self.LAYOUT:
-            setattr(self, name, 0)
+        self._pss_defaults()
         for name, value in fields.items():
             if name not in self.__slots__:
                 raise TypeError("%s has no field %r; it has: %s" % (
                     type(self).__name__, name,
                     ", ".join(n for n, _, _ in self.LAYOUT)))
             setattr(self, name, value)
+
+    def _pss_defaults(self):
+        """Every field at its default. A layout whose fields declare other
+        defaults extends this."""
+        for name, _, _ in self.LAYOUT:
+            setattr(self, name, 0)
+
+    def _pss_assign(self, other):
+        """`self = other` in PSS: field by field, in place (LRM 8.3)."""
+        for name, _, _ in self.LAYOUT:
+            setattr(self, name, getattr(other, name))
+        return self
+
+    @classmethod
+    def _pss_copy(cls, other):
+        """A new value of this type, assigned from *other*."""
+        return cls()._pss_assign(other)
 
     @classmethod
     def unpack(cls, raw):
@@ -108,8 +125,12 @@ def value_class_name(struct_dtype) -> str:
     return mangle((getattr(struct_dtype, "name", "") or "").split("::")[-1])
 
 
-def emit_value_class(struct_dtype) -> str:
-    """One value class: the layout, and whatever the PSS said about each field."""
+def emit_value_class(struct_dtype, default_of=None) -> str:
+    """One value class: the layout, and whatever the PSS said about each field.
+
+    A field that declares a default other than 0 is set in `_pss_defaults`;
+    *default_of* renders it, as it does for a plain struct.
+    """
     name = value_class_name(struct_dtype)
     slices = struct_layout(struct_dtype)
     total = sum(s.width for s in slices)
@@ -131,10 +152,18 @@ def emit_value_class(struct_dtype) -> str:
         lines += append_trailing(
             [f'        ("{fs.name}", {fs.lsb}, {fs.width}),'], trailing, HASH)
     lines.append("    )")
+    defaults = [(f.name, default_of(f)) for f in struct_dtype.fields
+                if getattr(f, "initial_value", None) is not None] \
+        if default_of else []
+    defaults = [(n, d) for n, d in defaults if d != "0"]
+    if defaults:
+        lines += ["", "    def _pss_defaults(self):",
+                  "        super()._pss_defaults()"]
+        lines += [f"        self.{n} = {d}" for n, d in defaults]
     return "\n".join(lines)
 
 
-def lower_value_classes(model) -> List[str]:
+def lower_value_classes(model, default_of=None) -> List[str]:
     """Every value class the model uses, in first-use order, de-duplicated.
 
     De-duplicated by identity across components: a sub-component's register
@@ -148,7 +177,7 @@ def lower_value_classes(model) -> List[str]:
         if id(struct) in seen:
             continue
         seen.add(id(struct))
-        out.append(emit_value_class(struct))
+        out.append(emit_value_class(struct, default_of))
     return out
 
 
@@ -169,12 +198,13 @@ def _idx_params(n: int) -> str:
 
 
 def _addr_expr(acc: RegAccessor) -> str:
-    terms = [f"self._base + 0x{acc.const_off:x}"]
+    terms = [f"self.{group_base(acc.segs[0])} + 0x{acc.const_off:x}"]
     terms += [f"i{k} * 0x{stride:x}" for k, stride in enumerate(acc.strides)]
     return " + ".join(terms)
 
 
-def emit_accessor(acc: RegAccessor, await_style: str = "sync") -> List[str]:
+def emit_accessor(acc: RegAccessor, await_style: str = "sync",
+                  desc: Optional[str] = None) -> List[str]:
     """The methods for one register.
 
     `_addr` is emitted for every register regardless of direction, because the
@@ -191,6 +221,10 @@ def emit_accessor(acc: RegAccessor, await_style: str = "sync") -> List[str]:
     `reg_c<bit[32]>` exactly as it calls `CSR.write(csr)` on a struct-valued
     one, so a call site must never have to ask which kind of register it is
     holding. It is the rule the C accessors already follow.
+
+    *desc* is given for a model with executors: a register access is defined
+    in terms of its primitive (LRM 21.13.9.5), so it is DELEGATED to the
+    component's executor like any other, passing *desc* as the descriptor.
     """
     idx = _idx_params(len(acc.strides))
     stem = lambda kind: reg_symbol(acc.segs, acc.name, kind)   # noqa: E731
@@ -205,15 +239,18 @@ def emit_accessor(acc: RegAccessor, await_style: str = "sync") -> List[str]:
         f'        """Address of `{".".join(acc.path)}`."""',
         f"        return {_addr_expr(acc)}",
     ]
+    recv, tail = f"self.{IMPORTS_ATTR}", ""
+    if desc is not None:
+        recv, tail = f"self.{EXECUTOR_ATTR}", f", {desc}"
     if acc.readable:
         out += [
             f"    {d} {stem('read_val')}(self{idx}):",
-            f"        return {aw}self.{IMPORTS_ATTR}.read{width}({addr_call})",
+            f"        return {aw}{recv}.read{width}({addr_call}{tail})",
         ]
     if acc.writable:
         out += [
             f"    {d} {stem('write_val')}(self{idx}, value):",
-            f"        {aw}self.{IMPORTS_ATTR}.write{width}({addr_call}, value)",
+            f"        {aw}{recv}.write{width}({addr_call}, value{tail})",
         ]
     write_arg = "value"
     if acc.is_struct:
@@ -256,7 +293,9 @@ def emit_accessor(acc: RegAccessor, await_style: str = "sync") -> List[str]:
     return out
 
 
-def lower_accessors(comp_dtype, await_style: str = "sync") -> List[str]:
+def lower_accessors(comp_dtype, await_style: str = "sync",
+                    desc: Optional[str] = None,
+                    groups: Optional[Set[str]] = None) -> List[str]:
     """Every register accessor for one component, keyed to ITS base.
 
     Per component rather than per model, because the address a register lives at
@@ -264,10 +303,16 @@ def lower_accessors(comp_dtype, await_style: str = "sync") -> List[str]:
     is `base + 0x0`, and the same physical register reached from the root is
     `regs_bank_csr_addr(i)` = `base + 0x20 + 0x20*i`. Both are correct because
     they are methods on objects holding different bases.
+
+    ``groups``, when given, limits them to the register groups of those
+    field names: a class that derives its base's accessors by inheritance
+    emits only its own.
     """
     out: List[str] = []
     for acc in collect_accessors(comp_dtype):
-        out += emit_accessor(acc, await_style)
+        if groups is not None and (not acc.segs or acc.segs[0] not in groups):
+            continue
+        out += emit_accessor(acc, await_style, desc)
     return out
 
 
@@ -279,7 +324,10 @@ def tuple_lines(name: str, items, pad: str, width: int = 79) -> List[str]:
     here: the generated module is meant to be read beside the PSS it came from.
     """
     quoted = [f'"{i}"' for i in items]
-    one = f"{pad}{name} = (" + ", ".join(quoted) + ")"
+    # `("a")` is a string, not a tuple: a one-field struct's FIELDS would be
+    # iterated a character at a time.
+    one = f"{pad}{name} = (" + ", ".join(quoted) + \
+        ("," if len(quoted) == 1 else "") + ")"
     if len(one) <= width:
         return [one]
     out = [f"{pad}{name} = ("]

@@ -432,7 +432,7 @@ def test_the_component_tree_is_constructed_with_folded_bases(wb_dma):
     mod, rt, _ = wb_dma
     dut = mod.WbDma(rt.MemoryBus(), 0x2000)
     assert dut.ch_size() == 4
-    assert [dut.ch_at(i)._base for i in range(4)] == [
+    assert [dut.ch_at(i).regs_csr_addr() for i in range(4)] == [
         0x2000 + 0x20 + 0x20 * i for i in range(4)]
 
 
@@ -462,7 +462,7 @@ def test_a_completion_token_survives_a_probe_that_finds_it_running(wb_dma):
     dut = mod.WbDma(bus, 0x2000)
     ch = dut.ch_at(0)
     ch.inflight.try_put(0x5a)
-    bus.mem[ch._base] = 1 << 10          # BUSY, not DONE: still running
+    bus.mem[ch.regs_csr_addr()] = 1 << 10         # BUSY, not DONE: still running
     ch.check_completion()
     assert ch.inflight.full and ch.inflight.value == 0x5a
 
@@ -702,14 +702,14 @@ async def test_a_blocking_channel_receive_really_suspends(wb_dma_async):
     bus = rt.AsyncMemoryBus()
     dut = mod.WbDma(bus, 0x2000)
     ch = dut.ch_at(0)
-    bus.mem[ch._base] = 1 << 10          # BUSY: the poll will not terminate
+    bus.mem[ch.regs_csr_addr()] = 1 << 10         # BUSY: the poll will not terminate
 
     async def complete():
         # Let the waiter reach its suspension, then post -- via the model's own
         # event producer, which is what a platform's ISR would call.
         await asyncio.sleep(0)
         await asyncio.sleep(0)
-        bus.mem[ch._base] = 1 << 11      # DONE
+        bus.mem[ch.regs_csr_addr()] = 1 << 11      # DONE
         await dut.notify_irq()
 
     ch.inflight.try_put(1)
@@ -717,7 +717,8 @@ async def test_a_blocking_channel_receive_really_suspends(wb_dma_async):
         asyncio.gather(ch.wait_completion(), complete()), timeout=2.0)
     assert status == mod.WB_DMA_DONE
 
-    reads = [e for e in bus.log if e[0] == "read" and e[2] == ch._base]
+    csr = ch.regs_csr_addr()
+    reads = [e for e in bus.log if e[0] == "read" and e[2] == csr]
     # Two probes: the one that found it BUSY and the one after the wake. A spin
     # would have made this grow with the sleeps above.
     assert len(reads) == 2, bus.log
@@ -904,3 +905,98 @@ def test_the_generated_module_compiles_under_the_bare_interpreter(wb_dma):
                                doraise=True, cfile=None)
         """)], capture_output=True, text=True)
     assert res.returncode == 0, res.stderr
+
+
+# --- a sparse register layout -----------------------------------------------
+#
+# Every other model here places its scalar registers 4 bytes apart in
+# declaration order, which is exactly what the front end's `offset_map` assumes.
+# So a fold that ignored `get_offset_of_instance` and read that map passed them
+# all while putting a register the model places at 0x8 at 0x4. This model has
+# gaps, an out-of-order register and a sub-group at a scalar offset -- the three
+# shapes a sequential packing gets wrong -- and the addresses are the ones its
+# own offset functions state.
+
+_SPARSE_MODEL = """
+import std_pkg::*;
+import addr_reg_pkg::*;
+
+struct word_s : packed_s<> { bit[32] v; }
+pure component word_r : reg_c<word_s, READWRITE, 32> {}
+
+pure component sub_regs_c : reg_group_c {
+    word_r a;
+    word_r b;
+    function bit[64] get_offset_of_instance(string name) {
+        match (name) {
+            ["a"]: return 0x4;
+            ["b"]: return 0x0;
+            default: return -1;
+        }
+    }
+}
+
+pure component sparse_regs_c : reg_group_c {
+    word_r ctrl;
+    word_r stat;
+    word_r last;
+    sub_regs_c sub;
+    word_r bank[4];
+    function bit[64] get_offset_of_instance(string name) {
+        match (name) {
+            ["ctrl"]: return 0x0;
+            ["stat"]: return 0x8;
+            ["last"]: return 0x3c;
+            ["sub"]:  return 0x100;
+            default:  return -1;
+        }
+    }
+    function bit[64] get_offset_of_instance_array(string name, int index) {
+        match (name) {
+            ["bank"]: return 0x40 + index*0x10;
+            default:  return -1;
+        }
+    }
+}
+
+component sparse_c {
+    sparse_regs_c regs;
+
+    solve function void initialize(addr_handle_t base) {
+        regs.set_handle(base);
+    }
+
+    target function void touch(int i) {
+        regs.ctrl.write_val(1);
+        regs.stat.write_val(2);
+        regs.last.write_val(3);
+        regs.sub.a.write_val(4);
+        regs.sub.b.write_val(5);
+        regs.bank[i].write_val(6);
+    }
+}
+"""
+
+
+@pytest.fixture(scope="module")
+def sparse(tmp_path_factory):
+    src = tmp_path_factory.mktemp("sparse") / "sparse.pss"
+    src.write_text(_SPARSE_MODEL)
+    with compile_op_model("op-model-py", sources=[str(src)],
+                          root="sparse_c") as outcome:
+        mod, rt = _load(outcome, "sparse")
+        yield mod, rt, outcome
+
+
+def test_a_sparse_layout_is_addressed_where_the_model_places_it(sparse):
+    mod, rt, _ = sparse
+    bus = rt.MemoryBus()
+    mod.Sparse(bus, 0x1000).touch(2)
+    assert [(k, hex(a), d) for k, _, a, d in bus.log] == [
+        ("write", "0x1000", 1),
+        ("write", "0x1008", 2),     # not 0x1004: the model says 0x8
+        ("write", "0x103c", 3),
+        ("write", "0x1104", 4),     # sub at 0x100, a at +0x4
+        ("write", "0x1100", 5),     # b before a in the map, after it in source
+        ("write", "0x1060", 6),     # bank[2]: 0x40 + 2*0x10
+    ]

@@ -286,20 +286,20 @@ class CallDispatch:
 
     def call_names(self) -> Dict[str, Any]:
         """`{model_ops, imports, subcomps}` -- the names the MODEL supplies,
-        which are in no tier. See `validate_calls.model_names`."""
+        which are in no tier. See `validate_calls.model_names`. A backend that
+        lowers package-scope functions adds `pkg_funcs` (`{name: contexts}`),
+        consulted only for a call the front end resolved to one."""
         return {}
 
     def callee_name(self, call) -> Optional[str]:
-        """The bare name a call targets, however the IR spells the reference."""
-        func = getattr(call, "func", None)
-        for attr in ("attr", "name"):
-            v = getattr(func, attr, None)
-            if isinstance(v, str):
-                return v
-        return None
+        """The name a call is classified by (`validate_calls.callee_name`)."""
+        from .validate_calls import callee_name
+
+        return callee_name(getattr(call, "func", None))
 
     def expr_call(self, call) -> str:
         from .call_legality import Outcome, classify
+        from .validate_calls import ops_for_call
 
         name = self.callee_name(call)
         if name is None:
@@ -308,8 +308,25 @@ class CallDispatch:
                 f"{_dt_name(getattr(call, 'func', None))}: it names nothing to "
                 f"look up in the call registry")
 
+        func = getattr(call, "func", None)
+        names = dict(self.call_names())
+        pkg = names.pop("pkg_funcs", None)
+        raw = getattr(func, "name", None)
+        if (pkg and raw in pkg
+                and _dt_name(func) == "ExprRefUnresolved"):
+            # The front end resolved this call to a package-scope function
+            # (see `pkg_functions.py`); the model's own names do not apply.
+            # Looked up by the name AS WRITTEN: `addr_reg_pkg::write32` is
+            # classified as `write32`, and must not find a user package's
+            # `write32` on the way.
+            names = {"pkg_funcs": {raw: pkg[raw]}}
+            name = raw
+        elif "model_ops" in names:
+            names["model_ops"] = ops_for_call(
+                getattr(self, "comp", None), func, names["model_ops"],
+                getattr(self, "ctor_names", None))
         res = classify(name, context=self.call_context,
-                       target=self.legality_target, **self.call_names())
+                       target=self.legality_target, **names)
         if res.outcome is not Outcome.SUPPORTED:
             # `validate_calls` runs first and reports every one of these with a
             # location. Reaching here means the gate did not run, or the two

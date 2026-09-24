@@ -31,7 +31,7 @@ class TestActionInheritance:
         derived = ctx.type_map.get("C::derived_a")
         assert derived is not None
         assert isinstance(derived.super, ir.DataTypeRef)
-        assert derived.super.ref_name == "base_a"
+        assert derived.super.ref_name == "C::base_a"   # as linked, not as spelled
 
     def test_base_action_has_no_super(self):
         ctx = parse_and_translate("""
@@ -64,9 +64,9 @@ class TestActionInheritance:
         a1 = ctx.type_map.get("C::a1")
         a2 = ctx.type_map.get("C::a2")
         assert isinstance(a1.super, ir.DataTypeRef)
-        assert a1.super.ref_name == "a0"
+        assert a1.super.ref_name == "C::a0"
         assert isinstance(a2.super, ir.DataTypeRef)
-        assert a2.super.ref_name == "a1"
+        assert a2.super.ref_name == "C::a1"
 
 
 # -------------------------------------------------------------------
@@ -101,7 +101,7 @@ class TestAbstractActions:
         derived = ctx.type_map.get("C::derived_a")
         assert base.is_abstract is True
         assert derived.is_abstract is False
-        assert derived.super.ref_name == "base_a"
+        assert derived.super.ref_name == "C::base_a"   # as linked, not as spelled
 
 
 # -------------------------------------------------------------------

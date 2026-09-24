@@ -21,7 +21,7 @@ import dataclasses
 from pathlib import Path
 from typing import Dict, List
 
-from .call_legality import BOTH, TARGET_ONLY, Disposition, Entry
+from .call_legality import BOTH, SOLVE_ONLY, TARGET_ONLY, Disposition, Entry
 from .op_model import OpModelTarget
 
 
@@ -60,6 +60,11 @@ class PyProgSeqTarget(OpModelTarget):
     name = "op-model-py"
     description = "Python operation-model API generated from a component tree"
     language = "Python"
+    supports_entries = True
+    native_inheritance = True
+    supports_package_functions = True
+    supports_init_blocks = True
+    supports_executor_delegation = True
 
     #: The DEFAULT form's capabilities -- what a bare command line gets. The
     #: form is a per-run choice (`--py-await`), so the answer that actually
@@ -92,6 +97,17 @@ class PyProgSeqTarget(OpModelTarget):
         # Renderable: Chan1.try_get / try_put (DEPTH > 1 is rejected).
         _e("try_get", Disposition.CHANNEL, TARGET_ONLY, "21.9.1"),
         _e("try_put", Disposition.CHANNEL, TARGET_ONLY, "21.9.1"),
+        # Renderable for a TRANSPARENT region: its handle is its `addr`
+        # (21.10.3.3), which the model states. Solve-only, as the LRM has it:
+        # regions are part of the static component hierarchy (21.10.1.2.1).
+        # Any other region is refused where it is lowered -- where the tool
+        # would place it is exactly what an operation model cannot know.
+        _e("add_region",                Disposition.ADDR, SOLVE_ONLY, "21.10"),
+        _e("add_nonallocatable_region", Disposition.ADDR, SOLVE_ONLY, "21.10"),
+        # Consumed by the lowering, like `set_handle`: it records the
+        # component's executor, and the tree's assignment is resolved once it
+        # is built. Rendered only in `exec init_down`/`init_up` (21.7.2.6).
+        _e("set_executor", Disposition.STRUCTURAL, SOLVE_ONLY, "21.7.2.6"),
     )
 
     def __init__(self) -> None:

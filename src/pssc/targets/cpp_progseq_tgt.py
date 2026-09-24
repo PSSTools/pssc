@@ -24,6 +24,9 @@ class CppProgSeqTarget(OpModelTarget):
     description = "C++ operation-model API generated from a component tree"
     language = "C++"
 
+    #: A derived component is a derived class: `: public base`, `base::f`.
+    native_inheritance = True
+
     # Same reasoning as op-model-c: plain functions, no coroutine runtime, no
     # solver in the image.
     target_cfg = {

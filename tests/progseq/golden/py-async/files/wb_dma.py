@@ -91,12 +91,18 @@ WB_DMA_SOFTWARE = 0
 WB_DMA_HW_HANDSHAKE = 1
 
 class _Struct(object):
-    """Base of every plain (non-register) struct the API mentions.
+    """Base of every plain (non-register) struct: a PSS value.
 
-    A subclass declares `FIELDS` -- names in declaration order -- and the
-    matching `__slots__`. Fields default to 0 and may be set positionally or by
+    A subclass declares `FIELDS` -- every field, its bases' first, in
+    declaration order -- and `__slots__` for the ones it adds. Fields start at
+    their declared defaults (`_pss_defaults`), and may be set positionally or by
     keyword, so a caller writes `wb_dma_ch_cfg_s(prio=2)` and gets defined
     values for everything else.
+
+    A PSS struct is a VALUE (LRM 8.3): assigning one copies it, element by
+    element. A Python object is a reference, so the generated code never binds
+    a second name to a struct it does not own -- it copies with `_pss_assign`
+    or `_pss_copy` instead.
     """
 
     # Annotated for the reason `_RegValue`'s are: a subclass assigns a
@@ -110,8 +116,7 @@ class _Struct(object):
         if len(args) > len(self.FIELDS):
             raise TypeError("%s takes at most %d positional arguments" % (
                 type(self).__name__, len(self.FIELDS)))
-        for name in self.FIELDS:
-            setattr(self, name, 0)
+        self._pss_defaults()
         for name, value in zip(self.FIELDS, args):
             setattr(self, name, value)
         for name, value in kwargs.items():
@@ -119,6 +124,36 @@ class _Struct(object):
                 raise TypeError("%s has no field %r; it has: %s" % (
                     type(self).__name__, name, ", ".join(self.FIELDS)))
             setattr(self, name, value)
+
+    def _pss_defaults(self):
+        """Every field at its default. A class whose fields declare other
+        defaults extends this."""
+        for name in self.FIELDS:
+            setattr(self, name, 0)
+
+    def _pss_assign(self, other):
+        """`self = other` in PSS: element by element, IN PLACE (LRM 8.3).
+
+        In place is what an assignment to an aggregate parameter means -- the
+        parameter is the caller's instance (20.3.2) -- and it is also what
+        keeps a nested struct owned by exactly one parent. A derived `other`
+        contributes the fields this type has.
+        """
+        for name in self.FIELDS:
+            value = getattr(other, name)
+            mine = getattr(self, name)
+            if hasattr(mine, "_pss_assign"):
+                mine._pss_assign(value)
+            elif isinstance(value, list):
+                setattr(self, name, _pss_copy_list(value))
+            else:
+                setattr(self, name, value)
+        return self
+
+    @classmethod
+    def _pss_copy(cls, other):
+        """A new value of this type, assigned from *other*."""
+        return cls()._pss_assign(other)
 
     def __eq__(self, other):
         return type(other) is type(self) and all(
@@ -130,7 +165,21 @@ class _Struct(object):
     def __repr__(self):
         return "%s(%s)" % (type(self).__name__, ", ".join(
             "%s=%r" % (n, getattr(self, n)) for n in self.FIELDS))
-class wb_dma_desc_csr_s(_Struct):
+
+
+def _pss_copy_list(values):
+    """A PSS array value, copied: its struct elements too."""
+    return [v._pss_copy(v) if hasattr(v, "_pss_copy") else
+            _pss_copy_list(v) if isinstance(v, list) else v for v in values]
+
+
+class packed_s(_Struct):
+    """Base type for structs with bit-packed fields"""
+
+    __slots__ = ()
+    FIELDS = ()
+
+class wb_dma_desc_csr_s(packed_s):
     """The control word of one external (linked-list) descriptor
     (§3.3 Figure 6 / Table 1).
 
@@ -155,7 +204,7 @@ class wb_dma_desc_csr_s(_Struct):
         "eol", "reserved1",
     )
 
-class wb_dma_desc_s(_Struct):
+class wb_dma_desc_s(packed_s):
     """One external (linked-list) descriptor, as it sits in memory.
 
     A descriptor carries a strict SUBSET of the channel CSR: mode, priority,
@@ -168,6 +217,10 @@ class wb_dma_desc_s(_Struct):
 
     __slots__ = ("csr", "adr0", "adr1", "next")
     FIELDS = ("csr", "adr0", "adr1", "next")
+
+    def _pss_defaults(self):
+        super()._pss_defaults()
+        self.csr = wb_dma_desc_csr_s()
 
 class wb_dma_ch_caps_s(_Struct):
     """Build-time per-channel capabilities (RTL ``chN_conf``).
@@ -185,6 +238,13 @@ class wb_dma_ch_caps_s(_Struct):
 
     __slots__ = ("present", "ars", "ed", "cbuf")
     FIELDS = ("present", "ars", "ed", "cbuf")
+
+    def _pss_defaults(self):
+        super()._pss_defaults()
+        self.present = True
+        self.ars = True
+        self.ed = True
+        self.cbuf = True
 
 class wb_dma_ch_cfg_s(_Struct):
     """Everything ``configure_channel()`` programs into a channel's register
@@ -236,14 +296,30 @@ class _RegValue(object):
     BITS: int = 0
 
     def __init__(self, **fields):
-        for name, _, _ in self.LAYOUT:
-            setattr(self, name, 0)
+        self._pss_defaults()
         for name, value in fields.items():
             if name not in self.__slots__:
                 raise TypeError("%s has no field %r; it has: %s" % (
                     type(self).__name__, name,
                     ", ".join(n for n, _, _ in self.LAYOUT)))
             setattr(self, name, value)
+
+    def _pss_defaults(self):
+        """Every field at its default. A layout whose fields declare other
+        defaults extends this."""
+        for name, _, _ in self.LAYOUT:
+            setattr(self, name, 0)
+
+    def _pss_assign(self, other):
+        """`self = other` in PSS: field by field, in place (LRM 8.3)."""
+        for name, _, _ in self.LAYOUT:
+            setattr(self, name, getattr(other, name))
+        return self
+
+    @classmethod
+    def _pss_copy(cls, other):
+        """A new value of this type, assigned from *other*."""
+        return cls()._pss_assign(other)
 
     @classmethod
     def unpack(cls, raw):
@@ -328,7 +404,7 @@ class wb_dma_sz_s(_RegValue):
 class wb_dma_addr_s(_RegValue):
     """wb_dma_regs.bank[].adr0 (+1 more)"""
 
-    __slots__ = ("addr")
+    __slots__ = ("addr",)
     BITS = 32
     LAYOUT = (
         ("addr", 0, 32),   # [31:0] sw=rw hw=r
@@ -338,7 +414,7 @@ class wb_dma_addr_s(_RegValue):
 class wb_dma_amask_s(_RegValue):
     """wb_dma_regs.bank[].am0 (+1 more)"""
 
-    __slots__ = ("mask")
+    __slots__ = ("mask",)
     BITS = 32
     LAYOUT = (
         ("mask", 0, 32),   # [31:0] sw=rw hw=r reset=0xfffffffc
@@ -348,7 +424,7 @@ class wb_dma_amask_s(_RegValue):
 class wb_dma_descptr_s(_RegValue):
     """wb_dma_regs.bank[].desc"""
 
-    __slots__ = ("ptr")
+    __slots__ = ("ptr",)
     BITS = 32
     LAYOUT = (
         ("ptr", 0, 32),   # [31:0] sw=rw hw=rw
@@ -438,18 +514,18 @@ class WbDmaCh(object):
 
     def __init__(self, imports: WbDmaImportApi, id, bank):
         self._imports = imports
-        self._base = bank
+        self._pss_base_regs = bank
         self.inflight = Chan1(imports.event)
         self.wake = Chan1(imports.event)
         self.chan = 0
-        self.caps = wb_dma_ch_caps_s(present=True, ars=True, ed=True, cbuf=True)
+        self.caps = wb_dma_ch_caps_s()
         self.chan = id
-        self._base = bank
+        self._pss_base_regs = bank
 
     # ----- Register accessors, offsets folded. -----
     def regs_csr_addr(self):
         """Address of `regs.csr`."""
-        return self._base + 0x0
+        return self._pss_base_regs + 0x0
     async def regs_csr_read_val(self):
         return await self._imports.read32(self.regs_csr_addr())
     async def regs_csr_write_val(self, value):
@@ -464,7 +540,7 @@ class WbDmaCh(object):
         await self.regs_csr_write_val((cur & ~mask) | (val & mask))
     def regs_sz_addr(self):
         """Address of `regs.sz`."""
-        return self._base + 0x4
+        return self._pss_base_regs + 0x4
     async def regs_sz_read_val(self):
         return await self._imports.read32(self.regs_sz_addr())
     async def regs_sz_write_val(self, value):
@@ -479,7 +555,7 @@ class WbDmaCh(object):
         await self.regs_sz_write_val((cur & ~mask) | (val & mask))
     def regs_adr0_addr(self):
         """Address of `regs.adr0`."""
-        return self._base + 0x8
+        return self._pss_base_regs + 0x8
     async def regs_adr0_read_val(self):
         return await self._imports.read32(self.regs_adr0_addr())
     async def regs_adr0_write_val(self, value):
@@ -494,7 +570,7 @@ class WbDmaCh(object):
         await self.regs_adr0_write_val((cur & ~mask) | (val & mask))
     def regs_am0_addr(self):
         """Address of `regs.am0`."""
-        return self._base + 0xc
+        return self._pss_base_regs + 0xc
     async def regs_am0_read_val(self):
         return await self._imports.read32(self.regs_am0_addr())
     async def regs_am0_write_val(self, value):
@@ -509,7 +585,7 @@ class WbDmaCh(object):
         await self.regs_am0_write_val((cur & ~mask) | (val & mask))
     def regs_adr1_addr(self):
         """Address of `regs.adr1`."""
-        return self._base + 0x10
+        return self._pss_base_regs + 0x10
     async def regs_adr1_read_val(self):
         return await self._imports.read32(self.regs_adr1_addr())
     async def regs_adr1_write_val(self, value):
@@ -524,7 +600,7 @@ class WbDmaCh(object):
         await self.regs_adr1_write_val((cur & ~mask) | (val & mask))
     def regs_am1_addr(self):
         """Address of `regs.am1`."""
-        return self._base + 0x14
+        return self._pss_base_regs + 0x14
     async def regs_am1_read_val(self):
         return await self._imports.read32(self.regs_am1_addr())
     async def regs_am1_write_val(self, value):
@@ -539,7 +615,7 @@ class WbDmaCh(object):
         await self.regs_am1_write_val((cur & ~mask) | (val & mask))
     def regs_desc_addr(self):
         """Address of `regs.desc`."""
-        return self._base + 0x18
+        return self._pss_base_regs + 0x18
     async def regs_desc_read_val(self):
         return await self._imports.read32(self.regs_desc_addr())
     async def regs_desc_write_val(self, value):
@@ -554,7 +630,7 @@ class WbDmaCh(object):
         await self.regs_desc_write_val((cur & ~mask) | (val & mask))
     def regs_swptr_addr(self):
         """Address of `regs.swptr`."""
-        return self._base + 0x1c
+        return self._pss_base_regs + 0x1c
     async def regs_swptr_read_val(self):
         return await self._imports.read32(self.regs_swptr_addr())
     async def regs_swptr_write_val(self, value):
@@ -821,11 +897,11 @@ class WbDmaCh(object):
         # CH_EN is what arms the channel, so it must not ride along with the
         # configuration write.
         csr.ch_en = 0
-        csr.src_sel = ((cfg.src_if) & 0x1)
-        csr.dst_sel = ((cfg.dst_if) & 0x1)
+        csr.src_sel = (cfg.src_if & 0x1)
+        csr.dst_sel = (cfg.dst_if & 0x1)
         csr.inc_src = cfg.inc_src
         csr.inc_dst = cfg.inc_dst
-        csr.mode = ((cfg.mode) & 0x1)
+        csr.mode = (cfg.mode & 0x1)
         csr.prio = cfg.prio
         csr.sz_wb = cfg.sz_wb
         # Capability-gated. Hardware silently ignores these on a channel built
@@ -906,7 +982,7 @@ class WbDmaCh(object):
         # pretend.
         if not (self.caps.ars):
             return
-        await self.regs_csr_write_val_masked(64, (((enable) & 0xffffffff) & 1) << 6)
+        await self.regs_csr_write_val_masked(64, (enable & 1) << 6)
 
     async def set_software_pointer(self, ptr, enable):
         """Publish how far a software reader has drained a FIFO in memory.
@@ -1025,7 +1101,7 @@ class WbDmaCh(object):
         # Step 1: point the channel at the head of the list. The DMA fetches
         # descriptors from interface 0 regardless of which interface the data
         # moves on, so `head` must be IF0-reachable.
-        await self.regs_desc_write_val(((head) & 0xffffffff))
+        await self.regs_desc_write_val((head & 0xffffffff))
         # Steps 3 and 4, in that order and as TWO WRITES, deliberately: the
         # device requires them separate, and write_fields({"use_ed","ch_en"},
         # {1,1}) would coalesce them into one bus read-modify-write -- that is
@@ -1156,18 +1232,18 @@ class WbDma(object):
 
     def __init__(self, imports: WbDmaImportApi, base):
         self._imports = imports
-        self._base = base
+        self._pss_base_regs = base
         self.num_ch = 4
         self.pri_levels = 4
         self.ch = [None] * 4
-        self._base = base
+        self._pss_base_regs = base
         for i in range(4):
             self.ch[i] = WbDmaCh(self._imports, i, (base + (0x20 + 0x20 * i)))
 
     # ----- Register accessors, offsets folded. -----
     def regs_csr_addr(self):
         """Address of `regs.csr`."""
-        return self._base + 0x0
+        return self._pss_base_regs + 0x0
     async def regs_csr_read_val(self):
         return await self._imports.read32(self.regs_csr_addr())
     async def regs_csr_write_val(self, value):
@@ -1182,7 +1258,7 @@ class WbDma(object):
         await self.regs_csr_write_val((cur & ~mask) | (val & mask))
     def regs_int_msk_a_addr(self):
         """Address of `regs.int_msk_a`."""
-        return self._base + 0x4
+        return self._pss_base_regs + 0x4
     async def regs_int_msk_a_read_val(self):
         return await self._imports.read32(self.regs_int_msk_a_addr())
     async def regs_int_msk_a_write_val(self, value):
@@ -1197,7 +1273,7 @@ class WbDma(object):
         await self.regs_int_msk_a_write_val((cur & ~mask) | (val & mask))
     def regs_int_msk_b_addr(self):
         """Address of `regs.int_msk_b`."""
-        return self._base + 0x8
+        return self._pss_base_regs + 0x8
     async def regs_int_msk_b_read_val(self):
         return await self._imports.read32(self.regs_int_msk_b_addr())
     async def regs_int_msk_b_write_val(self, value):
@@ -1212,7 +1288,7 @@ class WbDma(object):
         await self.regs_int_msk_b_write_val((cur & ~mask) | (val & mask))
     def regs_int_src_a_addr(self):
         """Address of `regs.int_src_a`."""
-        return self._base + 0xc
+        return self._pss_base_regs + 0xc
     async def regs_int_src_a_read_val(self):
         return await self._imports.read32(self.regs_int_src_a_addr())
     async def regs_int_src_a_read(self):
@@ -1220,7 +1296,7 @@ class WbDma(object):
         return wb_dma_intsrc_s.unpack(raw)
     def regs_int_src_b_addr(self):
         """Address of `regs.int_src_b`."""
-        return self._base + 0x10
+        return self._pss_base_regs + 0x10
     async def regs_int_src_b_read_val(self):
         return await self._imports.read32(self.regs_int_src_b_addr())
     async def regs_int_src_b_read(self):
@@ -1228,7 +1304,7 @@ class WbDma(object):
         return wb_dma_intsrc_s.unpack(raw)
     def regs_bank_csr_addr(self, i0):
         """Address of `regs.bank.csr`."""
-        return self._base + 0x20 + i0 * 0x20
+        return self._pss_base_regs + 0x20 + i0 * 0x20
     async def regs_bank_csr_read_val(self, i0):
         return await self._imports.read32(self.regs_bank_csr_addr(i0))
     async def regs_bank_csr_write_val(self, i0, value):
@@ -1243,7 +1319,7 @@ class WbDma(object):
         await self.regs_bank_csr_write_val(i0, (cur & ~mask) | (val & mask))
     def regs_bank_sz_addr(self, i0):
         """Address of `regs.bank.sz`."""
-        return self._base + 0x24 + i0 * 0x20
+        return self._pss_base_regs + 0x24 + i0 * 0x20
     async def regs_bank_sz_read_val(self, i0):
         return await self._imports.read32(self.regs_bank_sz_addr(i0))
     async def regs_bank_sz_write_val(self, i0, value):
@@ -1258,7 +1334,7 @@ class WbDma(object):
         await self.regs_bank_sz_write_val(i0, (cur & ~mask) | (val & mask))
     def regs_bank_adr0_addr(self, i0):
         """Address of `regs.bank.adr0`."""
-        return self._base + 0x28 + i0 * 0x20
+        return self._pss_base_regs + 0x28 + i0 * 0x20
     async def regs_bank_adr0_read_val(self, i0):
         return await self._imports.read32(self.regs_bank_adr0_addr(i0))
     async def regs_bank_adr0_write_val(self, i0, value):
@@ -1273,7 +1349,7 @@ class WbDma(object):
         await self.regs_bank_adr0_write_val(i0, (cur & ~mask) | (val & mask))
     def regs_bank_am0_addr(self, i0):
         """Address of `regs.bank.am0`."""
-        return self._base + 0x2c + i0 * 0x20
+        return self._pss_base_regs + 0x2c + i0 * 0x20
     async def regs_bank_am0_read_val(self, i0):
         return await self._imports.read32(self.regs_bank_am0_addr(i0))
     async def regs_bank_am0_write_val(self, i0, value):
@@ -1288,7 +1364,7 @@ class WbDma(object):
         await self.regs_bank_am0_write_val(i0, (cur & ~mask) | (val & mask))
     def regs_bank_adr1_addr(self, i0):
         """Address of `regs.bank.adr1`."""
-        return self._base + 0x30 + i0 * 0x20
+        return self._pss_base_regs + 0x30 + i0 * 0x20
     async def regs_bank_adr1_read_val(self, i0):
         return await self._imports.read32(self.regs_bank_adr1_addr(i0))
     async def regs_bank_adr1_write_val(self, i0, value):
@@ -1303,7 +1379,7 @@ class WbDma(object):
         await self.regs_bank_adr1_write_val(i0, (cur & ~mask) | (val & mask))
     def regs_bank_am1_addr(self, i0):
         """Address of `regs.bank.am1`."""
-        return self._base + 0x34 + i0 * 0x20
+        return self._pss_base_regs + 0x34 + i0 * 0x20
     async def regs_bank_am1_read_val(self, i0):
         return await self._imports.read32(self.regs_bank_am1_addr(i0))
     async def regs_bank_am1_write_val(self, i0, value):
@@ -1318,7 +1394,7 @@ class WbDma(object):
         await self.regs_bank_am1_write_val(i0, (cur & ~mask) | (val & mask))
     def regs_bank_desc_addr(self, i0):
         """Address of `regs.bank.desc`."""
-        return self._base + 0x38 + i0 * 0x20
+        return self._pss_base_regs + 0x38 + i0 * 0x20
     async def regs_bank_desc_read_val(self, i0):
         return await self._imports.read32(self.regs_bank_desc_addr(i0))
     async def regs_bank_desc_write_val(self, i0, value):
@@ -1333,7 +1409,7 @@ class WbDma(object):
         await self.regs_bank_desc_write_val(i0, (cur & ~mask) | (val & mask))
     def regs_bank_swptr_addr(self, i0):
         """Address of `regs.bank.swptr`."""
-        return self._base + 0x3c + i0 * 0x20
+        return self._pss_base_regs + 0x3c + i0 * 0x20
     async def regs_bank_swptr_read_val(self, i0):
         return await self._imports.read32(self.regs_bank_swptr_addr(i0))
     async def regs_bank_swptr_write_val(self, i0, value):
@@ -1438,7 +1514,7 @@ class WbDma(object):
         """
         desc_csr = 0
         desc_csr = await self._imports.read32(desc_ptr)
-        return ((desc_csr) & 0xfff)
+        return (desc_csr & 0xfff)
 
     async def write_descriptor(self, at, prev, desc):
         """Write one external descriptor into memory and link it to its predecessor.
@@ -1466,18 +1542,18 @@ class WbDma(object):
         csr_word = 0
         # Deep copy: `desc` is the caller's struct (aggregates pass by handle)
         # and we terminate this link ourselves.
-        d = desc
+        d._pss_assign(desc)
         d.next = 0
         # This block is one call -- write_struct(at, d) -- once read_struct /
         # write_struct land; they are commented out of the front end's
         # addr_reg_pkg ("TODO: generic type"). wb_dma_desc_s already declares
         # the packed layout, so nothing here adds information.
-        csr_word = ((d.csr.tot_sz) & 0xffffffff)
-        csr_word |= ((d.csr.dst_sel) & 0xffffffff) << 16
-        csr_word |= ((d.csr.src_sel) & 0xffffffff) << 17
-        csr_word |= ((d.csr.inc_dst) & 0xffffffff) << 18
-        csr_word |= ((d.csr.inc_src) & 0xffffffff) << 19
-        csr_word |= ((d.csr.eol) & 0xffffffff) << 20
+        csr_word = d.csr.tot_sz
+        csr_word |= d.csr.dst_sel << 16
+        csr_word |= d.csr.src_sel << 17
+        csr_word |= d.csr.inc_dst << 18
+        csr_word |= d.csr.inc_src << 19
+        csr_word |= d.csr.eol << 20
         await self._imports.write32(at, csr_word)
         await self._imports.write32((at + 4), d.adr0)
         await self._imports.write32((at + 8), d.adr1)
@@ -1486,5 +1562,5 @@ class WbDma(object):
         # handle comparison, because an address handle is opaque and not
         # usefully comparable.
         if prev != 0:
-            await self._imports.write32((prev + 12), ((at) & 0xffffffff))
+            await self._imports.write32((prev + 12), (at & 0xffffffff))
         return (at + 16)

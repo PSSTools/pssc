@@ -51,6 +51,7 @@ class Disposition(Enum):
     MODEL_OP = "model_op"          # an operation of the lowered model
     IMPORT = "import"              # a declared import function
     SUBCOMP_CTOR = "subcomp_ctor"  # a sub-component constructor, in an init
+    PKG_FUNC = "pkg_func"          # a package-scope function the model carries
     STRUCTURAL = "structural"      # consumed by the lowering (set_handle)
 
 
@@ -137,6 +138,24 @@ _COMMON_LIST = [
 ]
 
 COMMON: Dict[str, Entry] = {e.name: e for e in _COMMON_LIST}
+
+
+#: The packages of the PSS core library (LRM 21). A call qualified by one of
+#: them -- `addr_reg_pkg::write32(h, d)` -- names the same core-library function
+#: its short name does, and is classified by that name.
+CORE_PACKAGES = frozenset({"std_pkg", "addr_reg_pkg", "executor_pkg",
+                           "sync_pkg"})
+
+
+def core_function(name: str) -> Optional[str]:
+    """The short name of a call qualified by a core-library package, or None.
+
+    Only the qualified spelling needs this: the front end names an unqualified
+    core-library call by its short name already, and a qualified one by the
+    path it was written with (`ast2ir._package_function_at`).
+    """
+    pkg, sep, short = name.rpartition("::")
+    return short if sep and pkg in CORE_PACKAGES else None
 
 
 # --- Tier 0: declared, but not lowerable anywhere ---------------------------
@@ -402,15 +421,42 @@ def renderable(target: str) -> FrozenSet[str]:
     return frozenset(n for n, e in entries_for(target).items() if not e.unsupported)
 
 
+def _in_context(entry: Entry, context: Ctx, what: str) -> Result:
+    """SUPPORTED if ``entry`` may be called from ``context``."""
+    if context in entry.contexts:
+        return Result(Outcome.SUPPORTED, entry, "")
+    only = "/".join(sorted(c.value for c in entry.contexts))
+    return Result(Outcome.WRONG_CONTEXT, entry, (
+        f"'{entry.name}' is {what}, legal only in a {only} context (PSS "
+        f"{entry.lrm}), and this call is in a {context.value} context"))
+
+
 def classify(name: str, *, context: Ctx, target: str,
              model_ops: FrozenSet[str] = frozenset(),
              imports: FrozenSet[str] = frozenset(),
-             subcomps: FrozenSet[str] = frozenset()) -> Result:
+             subcomps: FrozenSet[str] = frozenset(),
+             pkg_funcs: Optional[Dict[str, FrozenSet[Ctx]]] = None,
+             import_contexts: Optional[Dict[str, FrozenSet[Ctx]]] = None
+             ) -> Result:
     """Classify a call by NAME, in ``context``, for ``target``.
 
     ``model_ops`` / ``imports`` / ``subcomps`` are the model's own names, which
     are not in any tier: an operation of the component being lowered, a declared
     import function, and a sub-component whose constructor an init may call.
+
+    ``import_contexts`` is ``{name: contexts}`` for the imports that carry a
+    `target`/`solve` qualifier; an import it does not name may be called from
+    both (22.2.3).
+
+    A model operation is a `target function`, so a call to one from a solve
+    context -- a constructor, an `exec init_down` -- is WRONG_CONTEXT like any
+    other target-only call.
+
+    ``pkg_funcs`` is ``{name: contexts}`` for a call the FRONT END resolved to
+    a package-scope function (`pkg_functions.callee` -- the IR form says so,
+    not the name). The caller passes it alone, with none of the model's names:
+    which function a name means was the linker's decision, and a component
+    function of the same name must not be consulted.
 
     Name-based, which is what the emitters already do. It cannot tell a user
     component's no-argument `get()` from a channel receive -- a pre-existing
@@ -418,11 +464,21 @@ def classify(name: str, *, context: Ctx, target: str,
     wrong MAPPING, not an unmapped call, and fixing it needs receiver types the
     emitter does not carry.
     """
+    if pkg_funcs is not None and name in pkg_funcs:
+        entry = _e(name, Disposition.PKG_FUNC, pkg_funcs[name], "22.2.3")
+        if context not in entry.contexts:
+            only = "/".join(sorted(c.value for c in entry.contexts))
+            return Result(Outcome.WRONG_CONTEXT, entry, (
+                f"'{name}' is a {only} function (PSS 22.2.3), and this call "
+                f"is in a {context.value} context"))
+        return Result(Outcome.SUPPORTED, entry, "")
     if name in model_ops:
-        return Result(Outcome.SUPPORTED,
-                      _e(name, Disposition.MODEL_OP, TARGET_ONLY), "")
+        return _in_context(_e(name, Disposition.MODEL_OP, TARGET_ONLY, "22.2.3"),
+                           context, "an operation of this model")
     if name in imports:
-        return Result(Outcome.SUPPORTED, _e(name, Disposition.IMPORT, BOTH), "")
+        ctxs = (import_contexts or {}).get(name, BOTH)
+        return _in_context(_e(name, Disposition.IMPORT, ctxs, "22.2.3"),
+                           context, "an import function")
     if name in subcomps:
         return Result(Outcome.SUPPORTED,
                       _e(name, Disposition.SUBCOMP_CTOR, SOLVE_ONLY), "")

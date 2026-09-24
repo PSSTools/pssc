@@ -158,6 +158,81 @@ Three properties are load-bearing and all three are tested:
   simulator — so an offset bug fails there first, in three languages' worth of
   shared code.
 
+**Executors** (`targets/executors.py`, LRM 21.13.9.5). In a model with an
+executor component, every memory primitive and register access is DELEGATED:
+`self._pss_xtr.read32(h, desc)`, where `_pss_xtr` is the component's executor
+(`set_executor` in an init block, else the parent's, resolved by `_pss_bind`
+after `_pss_init`) or a `_PssDefaultExecutor` that calls the seam. Executor
+classes derive from `_PssDefaultExecutor`, so an unoverridden primitive reaches
+the platform by method lookup. A model with no executor renders exactly as
+before. Targets without delegation (`supports_executor_delegation = False`)
+REFUSE a model whose executor overrides a primitive; accesses bypassing the
+override would be a model that compiles and does something else.
+
+`self.f()` is an operation only if the component itself declares `f`
+(`validate_calls.ops_for_call`): the front end writes a core-library call the
+same way, and a model-wide name set made one component's `read32` override
+capture every other component's `read32(h)`. A call written
+`addr_reg_pkg::write32(...)` is the same function as `write32(...)`: it is
+classified by its short name and delegated to the active executor -- so inside
+that executor's own `write32` it recurses, as PSS says. The default
+implementation is `super.write32(...)`, which ast2ir roots at
+`ir.TypeExprRefSuper` (never `self`) and op-model-py renders as
+`_PssDefaultExecutor.write32(self, ...)`.
+
+**Component inheritance** (`targets/comp_inherit.py`, LRM 17.1 Table 27). The
+IR keeps a type's OWN members plus a `super` named as the linker resolved it
+(the SV testbench renders `extends` from that). Every op-model reader walks
+own members, so `complete(ctx)` -- first thing in `build_model` -- gives each
+derived user component its base's fields (first) and every function and exec
+kind it does not shadow, IN PLACE (consumers compare components by identity).
+Functions are VIRTUAL (user ruling): an inherited body is copied into the
+derived component and rendered there, so its `f()` reaches the override on
+every target with no dispatch table. `super.f(args)` is STATIC: it becomes a
+call to a private copy of the base's `f` (`_pss_super_<base>_f`); a shadowed
+field is two fields, the base's under the private name its bodies and
+`super.a` read; `super;` in an init block calls private copies of the base's
+blocks of that kind. Every base-member copy goes through `from_base`. Still
+refused, for a component in the tree: shadowing a component INSTANCE, and a
+differently-typed shadow that an inherited body calls.
+
+That completed view is what C and SV RENDER (flattened; held to "generates
+what writing it out by hand does" in `test_op_model_py_inherit.py`). Python and
+C++ render inheritance NATIVELY (`OpModelTarget.native_inheritance`): a class
+per component type derived from its base's (`class Der(Base)`, `class der :
+public base, public virtual der_if`), emitting only what the component
+DECLARES (`comp_inherit.declared` -- the members before completion, `super`
+intact), with the language's `super` (`super().f`, `base::f`). They also emit
+base types nothing instantiates (`OpModel.classes`/`base_classes`), and the
+gate checks what they render: declared bodies, with `super.f` classified
+against the base (`validate_calls(native=True)`). Python splits construction
+(`_pss_construct`, `_pss_ctor`, `_pss_init_down`/`_up`) so each class adds its
+part, and keeps a field declared by a base and a derived class under per-class
+attributes behind properties (`naming.field_storage`) -- Python has one
+attribute namespace per object. `test_op_model_inherit_native.py` runs every
+case on both and requires the same trace. C is to get a vtable, and SV native
+classes wait on hoisting task calls into temporaries.
+
+Python binds each register GROUP's base separately (`naming.group_base`,
+`self._pss_base_<group>`), as C and C++ do: one `_base` per component put two
+groups bound to different handles at the second's address.
+
+`self.x` in the IR is a NAME, not a field: the front end spells a parameter
+the same way. Resolve it in scope order -- parameter first, then field -- as
+`ExprTypes`, bc and every op-model emitter now do
+(`test_param_shadows_field.py`).
+
+**Action inheritance in an entry** (`export_action.py`, LRM 17.1, 20.1.4). A
+derived action's `exec body` shadows its base's; `super;` (`ir.StmtSuper`, only
+legal at the top level of an exec block) runs the base's body there, and an
+action with no body runs its base's. Each base body `super;` reaches is its own
+private method (`_pss_super_<entry>_<k>`, `EntryPoint.supers`), so its locals
+and its `return` stay its own; the `super;` names it in `metadata["super"]`.
+Anything consuming entries iterates `EntryPoint.functions`, never `.function`
+alone. An action's base is recorded as the LINKER resolved it
+(`ast2ir._linked_type_name`: `B` found in a base component is `base_c::B`).
+A statement ast2ir cannot translate is a translation error, never dropped.
+
 Its `PyOpModelBackend` follows `COpModelBackend`'s two rules (every `emit_*`
 returns text; the module is exactly its `module_sections()`) but carries no
 `@overridable` marks and is NOT a published surface. Publishing one is a
@@ -289,6 +364,35 @@ Two references hang off it and are checked the same way:
 admission rule for a new `@overridable`, and the deprecation window) and
 `docs/op-model-manifest.md` (the `--emit-manifest` schema). If you change what a
 surface promises, that page is the one to edit — nothing else states the policy.
+
+## Compliance tests (pss-corpus executable tier)
+
+`tests/compliance/` runs the corpus's executable tier
+(`packages/pss-corpus/compliance/`, design in
+`packages/pss-corpus/COMPLIANCE-DESIGN.md`) on the bc backend through
+`adapters/pssc_bc.py`. The corpus checker gives the verdict, not pssc.
+`expected/bc.toml` lists bc's known non-PASS verdicts. Each entry is strict: a
+listed test that starts passing fails the suite, so the list cannot go stale.
+
+```
+direnv exec . ../python/bin/python -m pytest tests/compliance
+```
+
+It needs the **checkout** of zuspec-ir-core (`ScCoroutine.fields`). If the venv
+holds a PyPI copy, the adapter reports `infra_error` and every case fails;
+put `packages/zuspec-ir-core/src` first on `PYTHONPATH`.
+
+Never edit a corpus model to make pssc pass. A disagreement is settled by the
+LRM. If pssc is wrong, the entry goes in `expected/bc.toml` with its owning
+defect.
+
+The adapters write `outcome.json` and, on a rejection, `diagnostics.json`
+(`adapters/diagnostics.py`, from pssparser's markers). Negative tests pass only
+with an error on the right line, so an error that loses its marker shows up as
+UNLOCATED. `test_handoff_roundtrip.py` runs the corpus's vendor hand-off
+(`packages/pss-corpus/HANDOFF.md`: export a bundle, run an adapter over it as
+a separate command, import) with bc playing the vendor, and requires the same
+verdicts as the in-process run.
 
 ## Changing the AST
 Schema for the AST is in `ast`. It is processed by `packages/pyastbuilder`.
