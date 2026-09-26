@@ -101,11 +101,17 @@ def test_component_one_class(gen):
     # ONE class named after the component: export impl + import redirect + factory
     assert ("class dma_engine_c #(type IMP_T = dma_engine_c_import_if) "
             "implements dma_engine_c_if, dma_engine_c_import_if;") in sv
-    # register model built with `this` as the bus (accesses route back to m_imp)
+    # register model built with `this` as the bus (accesses route back to
+    # m_imp): at 0 by construction, then at `base` by the model's constructor,
+    # whose empty body keeps the flat convention
+    assert "m_regs = new(this, 0);" in sv
     assert "m_regs = new(this, base);" in sv
     # factory returns the export handle
     assert "static function dma_engine_c_if create(IMP_T imp, addr_handle_t base);" in sv
-    assert "dma_engine_c #(IMP_T) self = new(imp, base);" in sv
+    # construction, then the model's constructor, then PSS construction (D3)
+    assert ("dma_engine_c #(IMP_T) self = new(imp);\n"
+            "      self.ctor(base);\n"
+            "      self.pss_do_init();") in sv
     # no separate impl / adapter / factory classes
     assert "_impl" not in sv
     assert "_imp_adapter_c" not in sv

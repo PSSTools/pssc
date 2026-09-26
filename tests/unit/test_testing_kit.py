@@ -288,9 +288,15 @@ def test_differential_of_a_target_against_itself_is_empty(registered):
     assert testing.diff_from_baseline("op-model-c", "op-model-c") == {}
 
 
-def test_differential_falls_back_to_files_without_a_section_map():
+def test_differential_falls_back_to_files_without_a_section_map(monkeypatch):
     """A target that publishes no sections is still comparable -- at file
-    granularity, which is what `op-model-sv` and `op-model-cpp` get."""
+    granularity, which is what `op-model-cpp` gets.
+
+    `op-model-cpp` is the only such target left, so `op-model-sv` is given
+    back the base class's empty section map to stand in for a second one."""
+    from pssc import targets
+    monkeypatch.setattr(type(targets.get("op-model-sv")), "sections",
+                        OpModelTarget.sections)
     diffs = testing.diff_from_baseline("op-model-cpp", "op-model-sv")
     assert diffs and all(":" not in k for k in diffs)
     assert diffs.get("dma_engine.hpp") == "added"

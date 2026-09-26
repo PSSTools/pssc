@@ -164,10 +164,10 @@ package wb_dma_c_pkg;
   typedef enum {WB_DMA_INT_A = 0, WB_DMA_INT_B = 1} wb_dma_int_bank_e;
 
   typedef struct {
-    bit present;
-    bit ars;
-    bit ed;
-    bit cbuf;
+    bit present = 1;
+    bit ars = 1;
+    bit ed = 1;
+    bit cbuf = 1;
   } wb_dma_ch_caps_s;
 
   typedef struct {
@@ -333,7 +333,7 @@ package wb_dma_c_pkg;
      *
      * :param cfg: what to program before arming
      */
-    pure virtual task transfer_single(output wb_dma_status_e status, input wb_dma_ch_cfg_s cfg);
+    pure virtual task transfer_single(output wb_dma_status_e status, ref wb_dma_ch_cfg_s cfg);
 
     /**
      * Run a descriptor chain to completion and report how it ended.
@@ -457,7 +457,7 @@ package wb_dma_c_pkg;
      * :param cfg: what to program; capability-gated fields are skipped when the
      *             channel was built without the capability
      */
-    pure virtual task configure_channel(input wb_dma_ch_cfg_s cfg);
+    pure virtual task configure_channel(ref wb_dma_ch_cfg_s cfg);
 
     /**
      * Decode one read of CHn_CSR into a status. The unguarded primitive both
@@ -653,7 +653,7 @@ package wb_dma_c_pkg;
      *
      * :param cfg: what to program before arming
      */
-    pure virtual task transfer_single_start(input wb_dma_ch_cfg_s cfg);
+    pure virtual task transfer_single_start(ref wb_dma_ch_cfg_s cfg);
 
     /**
      * Wait until the device may have progressed.
@@ -815,7 +815,7 @@ package wb_dma_c_pkg;
      * :param prev: the descriptor to link from; null/zero means "head of list"
      * :param desc: the descriptor contents; the caller's copy is not modified
      */
-    pure virtual task write_descriptor(output addr_handle_t status, input addr_handle_t at, input addr_handle_t prev, input wb_dma_desc_s desc);
+    pure virtual task write_descriptor(output addr_handle_t status, input addr_handle_t at, input addr_handle_t prev, ref wb_dma_desc_s desc);
 
     pure virtual function wb_dma_ch_c_if ch(int index);
     pure virtual function int ch_size();
@@ -823,9 +823,28 @@ package wb_dma_c_pkg;
 
   // ----- Import API (root: wb_dma_c) -----
   interface class wb_dma_c_import_if extends pss_mem_if;
-    // Blocking: return when the device may have progressed.
-    // MUST NOT wait on an interrupt alone -- see the yield contract.
-    pure virtual task yield_();
+  endclass
+
+  // ----- Component base: wb_dma_c -----
+  // Common base of every component class: the import API, and PSS
+  // construction (LRM 20.1.2) as one hook per step.
+  virtual class wb_dma_c_component;
+    protected wb_dma_c_import_if m_imp;
+
+    function new(wb_dma_c_import_if imp);
+      m_imp = imp;
+    endfunction
+
+    virtual function void pss_init_down(); endfunction
+    virtual function void pss_init_subs(); endfunction
+    virtual function void pss_init_up(); endfunction
+
+    function void pss_do_init();
+      pss_init_down();
+      pss_init_subs();
+      pss_init_up();
+    endfunction
+
   endclass
 
   // ----- Implementation: wb_dma_ch_c -----
@@ -865,8 +884,7 @@ package wb_dma_c_pkg;
    * makes the core trustworthy without a second regression: every SystemVerilog
    * run drives the core through the end-to-end wrappers.
    */
-  class wb_dma_ch_c implements wb_dma_ch_c_if;
-    protected wb_dma_c_import_if m_imp;
+  class wb_dma_ch_c extends wb_dma_c_component implements wb_dma_ch_c_if;
     protected wb_dma_ch_regs_c m_regs;
     // Which channel this is, in ``dma_req_i``/``dma_ack_o`` and INT_SRC bit
     // numbering.
@@ -884,14 +902,29 @@ package wb_dma_c_pkg;
     channel_c #(bit, 1) inflight;
     channel_c #(bit, 1) wake;
 
-    function new(wb_dma_c_import_if bus, int id, addr_handle_t bank);
-      m_imp = bus;
+    function new(wb_dma_c_import_if imp);
+      super.new(imp);
       inflight = new();
       wake = new();
       m_caps.present = 1;
       m_caps.ars = 1;
       m_caps.ed = 1;
       m_caps.cbuf = 1;
+      m_regs = new(m_imp, 0);
+    endfunction
+
+    /**
+     * Bind this channel's register bank.
+     *
+     * Called from ``wb_dma_c::initialize()``, itself called from the
+     * environment's ``init_down`` exec: component attributes are mutable only
+     * during initialization, and ``set_handle()`` is only legal from an init
+     * exec.
+     *
+     * :param id:   this channel's index, stored as :pss:field:`chan`
+     * :param bank: handle to this channel's register bank
+     */
+    function void initialize(int id, addr_handle_t bank);
       m_chan = id;
       m_regs = new(m_imp, bank);
     endfunction
@@ -997,7 +1030,7 @@ package wb_dma_c_pkg;
      *
      * :param cfg: what to program before arming
      */
-    virtual task transfer_single(output wb_dma_status_e status, input wb_dma_ch_cfg_s cfg);
+    virtual task transfer_single(output wb_dma_status_e status, ref wb_dma_ch_cfg_s cfg);
       transfer_single_start(cfg);
       wait_completion(status);
       return;
@@ -1156,7 +1189,7 @@ package wb_dma_c_pkg;
      * :param cfg: what to program; capability-gated fields are skipped when the
      *             channel was built without the capability
      */
-    virtual task configure_channel(input wb_dma_ch_cfg_s cfg);
+    virtual task configure_channel(ref wb_dma_ch_cfg_s cfg);
       wb_dma_sz_s sz;
       wb_dma_csr_s csr;
       m_regs.adr0.write_val(cfg.src);
@@ -1437,7 +1470,7 @@ package wb_dma_c_pkg;
      *
      * :param cfg: what to program before arming
      */
-    virtual task transfer_single_start(input wb_dma_ch_cfg_s cfg);
+    virtual task transfer_single_start(ref wb_dma_ch_cfg_s cfg);
       if (!(inflight.try_put(1))) begin
         $display("wb_dma: transfer_single_start() on a channel that already has an operation in progress");
         return;
@@ -1550,14 +1583,49 @@ package wb_dma_c_pkg;
     protected int m_pri_levels;
     protected wb_dma_ch_c m_ch[4];
 
-    function new(IMP_T imp, addr_handle_t base);
+    protected function new(IMP_T imp);
       m_imp = imp;
       m_num_ch = 4;
       m_pri_levels = 4;
+      m_regs = new(this, 0);
+      foreach (m_ch[i]) m_ch[i] = new(this);
+    endfunction
+
+    /**
+     * Bind the whole register file.
+     *
+     * Called from the integrating environment's ``init_down`` exec, which is
+     * where the address space that owns ``base`` is built. Each channel gets
+     * its own handle rather than being nested in one device-wide group: that is
+     * what keeps the per-channel operations index-free.
+     *
+     * Bank offsets come from the GENERATED group, so the base and the stride
+     * are stated once, in ``src/rdl/wb_dma.rdl``, and this loop cannot disagree
+     * with the register model it binds. Note that
+     * ``get_offset_of_instance_array()`` returns -1 for an unknown instance
+     * name, so ``"bank"`` is load-bearing: rename that instance in the RDL and
+     * every channel binds to a wild address rather than failing here.
+     *
+     * :param base: handle to the device's MMIO window
+     */
+    function void initialize(addr_handle_t base);
       m_regs = new(this, base);
       for (int i = 0; i < 4; i++) begin
-        m_ch[i] = new(this, i, (base + (64'h20 + 64'h20 * i)));
+        m_ch[i].initialize(i, (base + (64'h20 + 64'h20 * i)));
       end
+    endfunction
+
+    virtual function void pss_init_down(); endfunction
+    virtual function void pss_init_up(); endfunction
+
+    function void pss_do_init();
+      pss_init_down();
+      pss_init_subs();
+      pss_init_up();
+    endfunction
+
+    virtual function void pss_init_subs();
+      foreach (m_ch[i]) m_ch[i].pss_do_init();
     endfunction
 
     /**
@@ -1585,10 +1653,10 @@ package wb_dma_c_pkg;
       wb_dma_intmsk_s vec;
       vec.ch = channel_mask;
       case (bank)
-        0: begin
+        WB_DMA_INT_A: begin
           m_regs.int_msk_a.write(vec);
         end
-        1: begin
+        WB_DMA_INT_B: begin
           m_regs.int_msk_b.write(vec);
         end
       endcase
@@ -1629,7 +1697,7 @@ package wb_dma_c_pkg;
         if (gcsr.pause == pause) begin
           break;
         end
-        m_imp.yield_();
+        #0;
       end
     endtask
 
@@ -1681,7 +1749,7 @@ package wb_dma_c_pkg;
      * :param prev: the descriptor to link from; null/zero means "head of list"
      * :param desc: the descriptor contents; the caller's copy is not modified
      */
-    virtual task write_descriptor(output addr_handle_t status, input addr_handle_t at, input addr_handle_t prev, input wb_dma_desc_s desc);
+    virtual task write_descriptor(output addr_handle_t status, input addr_handle_t at, input addr_handle_t prev, ref wb_dma_desc_s desc);
       wb_dma_desc_s d;
       bit [31:0] csr_word;
       // Deep copy: `desc` is the caller's struct (aggregates pass by handle)
@@ -1719,7 +1787,6 @@ package wb_dma_c_pkg;
       return 4;
     endfunction
 
-    virtual task yield_(); m_imp.yield_(); endtask
     virtual task write8(addr_handle_t addr, bit [7:0] data); m_imp.write8(addr, data); endtask
     virtual task read8(addr_handle_t addr, output bit [7:0] data); m_imp.read8(addr, data); endtask
     virtual task write16(addr_handle_t addr, bit [15:0] data); m_imp.write16(addr, data); endtask
@@ -1729,7 +1796,9 @@ package wb_dma_c_pkg;
     virtual task write64(addr_handle_t addr, bit [63:0] data); m_imp.write64(addr, data); endtask
     virtual task read64(addr_handle_t addr, output bit [63:0] data); m_imp.read64(addr, data); endtask
     static function wb_dma_c_if create(IMP_T imp, addr_handle_t base);
-      wb_dma_c #(IMP_T) self = new(imp, base);
+      wb_dma_c #(IMP_T) self = new(imp);
+      self.initialize(base);
+      self.pss_do_init();
       return self;
     endfunction
   endclass

@@ -87,9 +87,14 @@ def test_all_operations_exported(sv):
 
 def test_no_interface_class_is_empty(sv):
     """An interface class immediately followed by `endclass` is the signature of
-    a projection that produced nothing."""
+    a projection that produced nothing. The import API is the exception that
+    proves it: it extends `pss_mem_if`, which declares every primitive, and a
+    model with no `import` functions adds nothing to it."""
+    import re
     assert "interface class" in sv
-    assert "_if;\n  endclass" not in sv
+    empty = re.findall(r"interface class (\w+)(?: extends \w+)?;\n  endclass", sv)
+    assert empty == ["wb_dma_c_import_if"], empty
+    assert "interface class wb_dma_c_import_if extends pss_mem_if;" in sv
 
 
 # --- sub-components --------------------------------------------------------
@@ -108,30 +113,56 @@ def test_subcomponent_class_not_parameterized(sv):
     leak its parameter into the root's accessor return type, and the export API
     would stop being a plain handle."""
     assert_generated(sv,
-                     has=["class wb_dma_ch_c implements wb_dma_ch_c_if;",
+                     has=["class wb_dma_ch_c extends wb_dma_c_component "
+                          "implements wb_dma_ch_c_if;",
                           "class wb_dma_c #(type IMP_T = wb_dma_c_import_if)"],
                      has_not=["class wb_dma_ch_c #("])
 
 
 def test_subcomponent_declared_before_the_root_that_builds_it(sv):
     """SV has no forward references inside a package."""
-    assert sv.index("class wb_dma_ch_c implements") < sv.index("class wb_dma_c #(")
+    sub = sv.index("class wb_dma_ch_c extends")
+    assert sub < sv.index("class wb_dma_c #(")
     assert sv.index("interface class wb_dma_c_import_if") < \
-        sv.index("class wb_dma_ch_c implements")
+        sv.index("virtual class wb_dma_c_component;") < sub
 
 
 # --- construction and address binding --------------------------------------
 
-def test_ctor_takes_base(sv):
+def test_construction_is_split_from_the_ctor(sv):
+    """`new()` takes only the import API (design D2); the model's constructor
+    is a method `create()` runs, then PSS construction (D3)."""
     assert_generated(sv, has=[
         "static function wb_dma_c_if create(IMP_T imp, addr_handle_t base);",
-        "function new(IMP_T imp, addr_handle_t base);",
+        "protected function new(IMP_T imp);",
+        "function void initialize(addr_handle_t base);",
+        "      self.initialize(base);\n      self.pss_do_init();",
+        "function new(wb_dma_c_import_if imp);\n      super.new(imp);",
+    ], has_not=["function new(IMP_T imp, addr_handle_t base);"])
+
+
+def test_every_subcomponent_is_constructed(sv):
+    """SV-3: every instance exists after `new()`, whether or not a model
+    constructor is ever called for it -- and register groups sit at 0 until one
+    binds them."""
+    assert_generated(sv, has=[
+        "foreach (m_ch[i]) m_ch[i] = new(this);",
+        "m_regs = new(this, 0);",
+        "m_regs = new(m_imp, 0);",
     ])
 
 
-def test_init_lowered_to_construction(sv):
-    """`foreach (ch[i]) ch[i].\\init(i, make_handle_from_handle(base, ...))`
-    becomes a bounded loop of constructions with the address folded."""
+def test_pss_construction_reaches_the_subcomponents(sv):
+    assert_generated(sv, has=[
+        "virtual class wb_dma_c_component;",
+        "foreach (m_ch[i]) m_ch[i].pss_do_init();",
+    ])
+
+
+def test_init_lowered_to_method_calls(sv):
+    """`foreach (ch[i]) ch[i].initialize(i, make_handle_from_handle(base, ...))`
+    becomes a bounded loop of calls to the already-built children, with the
+    address folded."""
     assert_generated(sv, has=[
         "m_regs = new(this, base);",
         "for (int i = 0; i < 4; i++) begin",
@@ -145,8 +176,8 @@ def test_init_lowered_to_construction(sv):
         # hand-written package this model used to carry produced
         # `base + 32 + (i * 32)`, which is the same arithmetic and is why the
         # value is checked below rather than only the text.
-        "m_ch[i] = new(this, i, (base + (64'h20 + 64'h20 * i)));",
-    ])
+        "m_ch[i].initialize(i, (base + (64'h20 + 64'h20 * i)));",
+    ], has_not=["m_ch[i] = new(this, i,"])
 
 
 def test_channel_offsets_are_the_rdl_geometry(sv):
@@ -158,19 +189,19 @@ def test_channel_offsets_are_the_rdl_geometry(sv):
     fold that changed the arithmetic fails here even if the text was refreshed.
     """
     import re
-    m = re.search(r"m_ch\[i\] = new\(this, i, \(base \+ \((.*?)\)\)\);", sv)
-    assert m, "channel construction not found"
+    m = re.search(r"m_ch\[i\]\.initialize\(i, \(base \+ \((.*?)\)\)\);", sv)
+    assert m, "channel binding not found"
     expr = m.group(1).replace("64'h", "0x").replace("'h", "0x")
     for i in range(4):
         assert eval(expr, {"i": i}) == 0x20 + 0x20 * i, (expr, i)
 
 
 def test_channel_binds_its_own_bank(sv):
-    """Each channel's register group is bound to the handle it was constructed
-    with -- the per-channel bank is the reason the model has a component tree at
-    all."""
+    """Each channel's register group is bound to the handle its constructor
+    was given -- the per-channel bank is the reason the model has a component
+    tree at all."""
     assert_generated(sv, has=[
-        "function new(wb_dma_c_import_if bus, int id, addr_handle_t bank);",
+        "function void initialize(int id, addr_handle_t bank);",
         "m_regs = new(m_imp, bank);",
     ])
 
@@ -184,16 +215,10 @@ def test_field_defaults_emitted(sv):
 
 # --- body constructs -------------------------------------------------------
 
-def test_yield_maps_to_import_task(sv):
-    assert_generated(sv, has=["m_imp.yield_();",
-                              "pure virtual task yield_();",
-                              "virtual task yield_(); m_imp.yield_(); endtask"])
-
-
-def test_yield_contract_is_stated_in_the_output(sv):
-    """The `yield` contract's violation is a hang, not an error, so the
-    obligation is written where an implementer will meet it."""
-    assert "MUST NOT wait on an interrupt alone" in sv
+def test_yield_is_a_zero_delay(sv):
+    """PSS `yield` lets other threads run: in SystemVerilog, `#0`. The
+    platform supplies nothing for it, so the import API does not declare it."""
+    assert_generated(sv, has=["#0;"], has_not=["yield_"])
 
 
 def test_task_results_return_through_output_arguments(sv):
@@ -235,7 +260,9 @@ def test_forever_and_break(sv):
 
 
 def test_struct_arg_signature(sv):
-    assert "pure virtual task configure_channel(input wb_dma_ch_cfg_s cfg);" in sv
+    """A struct parameter is passed by reference (LRM 20.3.2): `ref`, not an
+    `input` copy the caller would never see a change to."""
+    assert "pure virtual task configure_channel(ref wb_dma_ch_cfg_s cfg);" in sv
 
 
 def test_packed_and_unpacked_structs(sv):

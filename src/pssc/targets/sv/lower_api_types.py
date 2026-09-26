@@ -34,12 +34,16 @@ def _is_packed(struct_dtype) -> bool:
 
 
 def collect_api_types(components, reg_value_structs=(),
-                      ctor_names=None) -> Tuple[List[object], List[object]]:
+                      ctor_names=None,
+                      bodies=()) -> Tuple[List[object], List[object]]:
     """``(enums, structs)`` mentioned by ``components``' exported API.
 
     Structs come back in dependency order (a nested struct before the struct
     that holds it), because SV requires a type to be declared before use.
     ``reg_value_structs`` are skipped: the register model already emits them.
+    ``bodies`` are further functions whose signatures and locals count --
+    exported actions and package-scope functions, which are no component's
+    declared functions.
     """
     skip = {id(s) for s in reg_value_structs}
     enums: List[object] = []
@@ -81,6 +85,12 @@ def collect_api_types(components, reg_value_structs=(),
                 visit(a.annotation)
             for s in (fn.body or []):
                 _visit_stmt(s, visit)
+    for fn in bodies:
+        visit(fn.returns)
+        for a in (fn.args.args if fn.args else []):
+            visit(a.annotation)
+        for s in (fn.body or []):
+            _visit_stmt(s, visit)
 
     return enums, structs
 
@@ -92,6 +102,9 @@ def _visit_stmt(s, visit):
         visit(s.annotation)
     for attr in ("body", "orelse"):
         for inner in (getattr(s, attr, None) or []):
+            _visit_stmt(inner, visit)
+    for case in (getattr(s, "cases", None) or []):
+        for inner in (getattr(case, "body", None) or []):
             _visit_stmt(inner, visit)
 
 
@@ -111,7 +124,10 @@ def sv_member_type(dtype) -> str:
     cn = _dt_name(dtype)
     if cn == _DT_INT:
         bits = int(getattr(dtype, "bits", 32) or 32)
-        return "bit" if bits == 1 else f"bit [{bits - 1}:0]"
+        sign = " signed" if getattr(dtype, "signed", False) else ""
+        if sign and bits == 32:
+            return "int"
+        return f"bit{sign}" if bits == 1 else f"bit{sign} [{bits - 1}:0]"
     if cn in (_DT_ENUM, _DT_STRUCT):
         return _strip_pkg(dtype.name)
     raise ValueError(f"unsupported SV struct member type {cn}")
@@ -127,15 +143,24 @@ def emit_struct(struct_dtype) -> str:
         fields = list(reversed(fields))
     lines = [f"  typedef struct{' packed' if packed else ''} {{"]
     for f in fields:
-        lines.append(f"    {sv_member_type(f.datatype)} {f.name};")
+        # A field initializer is part of the type (7.8): a local declared
+        # without one starts with it. An unpacked SV struct member can carry
+        # one; a packed struct's cannot, and keeps its zero.
+        init = getattr(f, "initial_value", None)
+        dflt = ""
+        if (not packed and init is not None and _dt_name(init) == "ExprConstant"
+                and isinstance(init.value, (bool, int))):
+            dflt = f" = {int(init.value)}"
+        lines.append(f"    {sv_member_type(f.datatype)} {f.name}{dflt};")
     lines.append(f"  }} {name};")
     return "\n".join(lines)
 
 
-def lower_api_types(components, reg_value_structs=(), ctor_names=None) -> str:
+def lower_api_types(components, reg_value_structs=(), ctor_names=None,
+                    bodies=()) -> str:
     """Package-body text for the enums and structs the API mentions."""
     enums, structs = collect_api_types(components, reg_value_structs,
-                                       ctor_names)
+                                       ctor_names, bodies)
     if not enums and not structs:
         return ""
     parts = ["  // ----- Data types used by the export API. -----"]

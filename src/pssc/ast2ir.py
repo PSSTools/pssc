@@ -3212,6 +3212,7 @@ class AstToIrTranslator:
         # Get parameters
         params = []
         defaults = []
+        const_params: List[str] = []
         vararg: Optional[ir.Arg] = None
         for i in range(prototype.numParameters()):
             param = prototype.getParameter(i)
@@ -3227,6 +3228,8 @@ class AstToIrTranslator:
                 if param_type:
                     is_varargs = param.getIs_varargs() if hasattr(param, 'getIs_varargs') else False
                     arg_node = ir.Arg(arg=param_name, annotation=param_type)
+                    if getattr(param, 'getIs_const', None) and param.getIs_const():
+                        const_params.append(param_name)
                     if is_varargs:
                         vararg = arg_node
                     else:
@@ -3267,6 +3270,10 @@ class AstToIrTranslator:
             is_target=is_target,
             doc=ast_doc(function),
         )
+        if const_params:
+            # `const` (LRM 20.2.3) is part of the signature. `ir.Arg` has no
+            # field for it, so the function carries the names.
+            ir_func.metadata["const_params"] = tuple(const_params)
 
         return ir_func
 
@@ -4180,6 +4187,10 @@ class AstToIrTranslator:
         for i in range(expr.numElems() if hasattr(expr, 'numElems') else 0):
             elem = expr.getElem(i)
             name_node = elem.getName()
+            # `.a` is an ExprRefName wrapping the ExprId; str() of the node
+            # is its Python repr, which named every field '<...object at ..>'.
+            if isinstance(name_node, pss_ast.ExprRefName):
+                name_node = name_node.getId()
             field_name = name_node.getId() if isinstance(name_node, pss_ast.ExprId) else str(name_node)
             val_ir = self._translate_expression(ctx, elem.getValue())
             if val_ir is not None:

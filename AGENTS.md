@@ -378,6 +378,11 @@ listed test that starts passing fails the suite, so the list cannot go stale.
 direnv exec . ../python/bin/python -m pytest tests/compliance
 ```
 
+The same tests run on op-model-py (`test_compliance_op_model_py.py`) and on
+op-model-sv (`test_compliance_op_model_sv.py`, marked `sim`: each test is a
+Verilator build of the generated package plus a testbench the adapter writes
+from `--emit-manifest`). Each has its own strict `expected/<target>.toml`.
+
 It needs the **checkout** of zuspec-ir-core (`ScCoroutine.fields`). If the venv
 holds a PyPI copy, the adapter reports `infra_error` and every case fails;
 put `packages/zuspec-ir-core/src` first on `PYTHONPATH`.

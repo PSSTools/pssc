@@ -179,11 +179,13 @@ component pss_top { target function int g() { return 3; } }"""))
 def test_inheriting_generates_what_writing_it_out_does(tmp_path, target):
     """For every op-model target, a derived component is the component with
     its base's members written into it -- base members first."""
+    # Each call's result goes to a local first: a value-returning operation is
+    # a task in op-model-sv, callable only where its result is assigned (SV-2).
     derived = """
 component base_c {
   int a = 5;
   target function int f(int x) { return x + a; }
-  target function int h(int x) { return f(x) + 100; }
+  target function int h(int x) { int y = f(x); return y + 100; }
 }
 component pss_top : base_c {
   int b = 7;
@@ -193,7 +195,7 @@ component pss_top : base_c {
 component pss_top {
   int a = 5;
   int b = 7;
-  target function int h(int x) { return f(x) + 100; }
+  target function int h(int x) { int y = f(x); return y + 100; }
   target function int f(int x) { return x * 10 + b; }
 }"""
     (tmp_path / "d").mkdir()
@@ -265,15 +267,20 @@ def test_super_and_shadowing_generate_what_writing_them_out_does(tmp_path,
                                                                   target):
     """The base's `f` and `a` become private members of the derived
     component; nothing else about it changes, on any op-model target."""
+    # Each call's result goes to a local first: a value-returning operation is
+    # a task in op-model-sv, callable only where its result is assigned (SV-2).
     derived = """
 component base_c {
   int a = 5;
-  target function int f(int x) { return x + a + g(); }
+  target function int f(int x) { int k = g(); return x + a + k; }
   target function int g() { return 1; }
 }
 component pss_top : base_c {
   int a = 100;
-  target function int f(int x) { return super.f(x) * 1000 + a + super.a; }
+  target function int f(int x) {
+    int s = super.f(x);
+    return s * 1000 + a + super.a;
+  }
   target function int g() { return 2; }
 }"""
     written = """
@@ -281,10 +288,11 @@ component pss_top {
   int _pss_super_base_c_a = 5;
   int a = 100;
   target function int _pss_super_base_c_f(int x) {
-    return x + _pss_super_base_c_a + g();
+    int k = g(); return x + _pss_super_base_c_a + k;
   }
   target function int f(int x) {
-    return _pss_super_base_c_f(x) * 1000 + a + _pss_super_base_c_a;
+    int s = _pss_super_base_c_f(x);
+    return s * 1000 + a + _pss_super_base_c_a;
   }
   target function int g() { return 2; }
 }"""

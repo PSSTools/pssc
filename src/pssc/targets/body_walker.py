@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import dataclasses as dc
 import re
-from typing import Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from .comments import LINE, append_trailing, comment_lines
 from .progseq_model import _dt_name
@@ -185,10 +185,22 @@ class BodyWalker:
         return self.stmts(body, ind)
 
     def stmts(self, body, ind: int) -> List[str]:
+        token = self.enter_block(body)
         out: List[str] = []
         for s in body:
             out += self.stmt(s, ind)
-        return out
+        return self.leave_block(token, out)
+
+    def enter_block(self, body) -> Any:
+        """Called before a block's statements are emitted, with the block.
+        Whatever it returns is handed to `leave_block`. A language whose
+        blocks constrain where something may be written (SV declares locals
+        only at the top of one) arranges it here; the default does nothing."""
+        return None
+
+    def leave_block(self, token, lines: List[str]) -> List[str]:
+        """The block's emitted lines, as they are to appear."""
+        return lines
 
     def stmt(self, s, ind: int) -> List[str]:
         """Emit *s*, wrapped in whatever the PSS source wrote around it.

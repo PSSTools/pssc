@@ -1,4 +1,4 @@
-"""Lower a component's ``init`` solve function into a generated constructor.
+"""Lower a component's op-model constructor (``init``) to an SV method.
 
 A PSS operation model binds its address map in an `init` (or `ctor`) solve
 function that the integrating environment calls from `exec init_down`:
@@ -11,11 +11,13 @@ function that the integrating environment calls from `exec init_down`:
         }
     }
 
-There is no environment in generated SV, so this becomes the constructor: the
-register groups are built against their handles and each sub-component is
-constructed with the arguments the model passes it. The device's own address
-arithmetic is what places everything, so the map stays stated once, in the
-model, rather than being re-derived by each backend.
+It becomes a method of the component class, run after construction: `new()`
+has already built every sub-component and put every register group at address
+0 (design D2), so here the register groups are REBUILT against their handles
+and each sub-component's own constructor method is called with the arguments
+the model passes it (D3). The device's own address arithmetic is what places
+everything, so the map stays stated once, in the model, rather than being
+re-derived by each backend.
 
 **Anything not recognised raises.** An `init` is address binding; a statement
 this cannot lower is a binding that would silently not happen, and a component
@@ -45,10 +47,10 @@ def _self_attr_name(e) -> Optional[str]:
 def lower_init(ctor, *, members: Dict[str, str], reg_groups: List[str],
                subs: Dict[str, SubComp], bus: str,
                expr: Callable[[object], str], indent: int = 3) -> List[str]:
-    """Return the SV constructor-body lines for ``ctor``.
+    """Return the SV method-body lines for ``ctor``.
 
     ``members`` maps a PSS field name to its generated member name, ``bus`` is
-    the expression the register model and sub-components are wired to, and
+    the expression a rebuilt register group is wired to, and
     ``expr`` renders an IR expression (supplied by the caller so this module
     stays free of expression lowering).
     """
@@ -72,11 +74,11 @@ def _stmt(s, members, reg_groups, subs, bus, expr, ind) -> List[str]:
                 if name in reg_groups:
                     handle = expr(call.args[0]) if call.args else bus
                     return [f"{pad}{members[name]} = new({bus}, {handle});"]
-            # sub.<ctor>(args) on a scalar instance
+            # sub.<ctor>(args) on a scalar instance: already built by new()
             name = _self_attr_name(fn.value)
             if name in subs and not subs[name].is_array:
-                args = ", ".join([bus] + [expr(a) for a in call.args])
-                return [f"{pad}{members[name]} = new({args});"]
+                args = ", ".join(expr(a) for a in call.args)
+                return [f"{pad}{members[name]}.{fn.attr}({args});"]
 
     if cn == "StmtAssign":
         target = s.targets[0]
@@ -94,7 +96,7 @@ def _stmt(s, members, reg_groups, subs, bus, expr, ind) -> List[str]:
 
 
 def _foreach(s, members, reg_groups, subs, bus, expr, ind) -> List[str]:
-    """`foreach (ch[i]) { ch[i].init(...); }` -> an indexed construction loop."""
+    """`foreach (ch[i]) { ch[i].init(...); }` -> an indexed loop of calls."""
     pad = "  " * ind
     iter_name = _self_attr_name(getattr(s, "iter", None))
     if iter_name not in subs or not subs[iter_name].is_array:
@@ -105,7 +107,7 @@ def _foreach(s, members, reg_groups, subs, bus, expr, ind) -> List[str]:
     if sub.size is None or sub.size < 0:
         raise InitLoweringError(
             f"sub-component array '{iter_name}' has an unknown size, so the "
-            f"constructor loop cannot be bounded")
+            f"loop cannot be bounded")
 
     idx = getattr(getattr(s, "target", None), "name", "i")
     body: List[str] = []
@@ -114,8 +116,9 @@ def _foreach(s, members, reg_groups, subs, bus, expr, ind) -> List[str]:
                 and _dt_name(inner.expr.func) == "ExprAttribute"
                 and _dt_name(inner.expr.func.value) == "ExprSubscript"
                 and _self_attr_name(inner.expr.func.value.value) == iter_name):
-            args = ", ".join([bus] + [expr(a) for a in inner.expr.args])
-            body.append(f"{pad}  {members[iter_name]}[{idx}] = new({args});")
+            args = ", ".join(expr(a) for a in inner.expr.args)
+            attr = inner.expr.func.attr
+            body.append(f"{pad}  {members[iter_name]}[{idx}].{attr}({args});")
         else:
             body += _stmt(inner, members, reg_groups, subs, bus, expr, ind + 1)
 

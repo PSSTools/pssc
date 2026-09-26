@@ -245,7 +245,13 @@ def test_the_two_emitters_render_the_same_statement_kinds():
 
     c_stmts = {k for k in clp._BodyEmitter.hooks() if k.startswith("Stmt")}
     sv_stmts = {k for k in svlp._BodyEmitter.hooks() if k.startswith("Stmt")}
-    assert c_stmts == sv_stmts == _C_STMT_KINDS
+    assert c_stmts == _C_STMT_KINDS
+    # `super;` is legal only in an exec block, and SV renders `exec init_down`
+    # / `init_up` where C refuses them (`supports_init_blocks`). That is a
+    # difference in what the targets ACCEPT, not in how the walk is shared.
+    # So is `repeat` (`StmtFor`): SV renders it, which the compliance tier's
+    # loop tests need; C does not yet.
+    assert sv_stmts == _C_STMT_KINDS | {"StmtSuper", "StmtFor"}
 
 
 def test_the_two_emitters_indent_differently():

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 from .op_model import OpModelTarget
 
@@ -31,6 +31,19 @@ class ProgSeqTarget(OpModelTarget):
         "HAVE_EVENT_WAIT": True,
         "HAVE_RUNTIME_SOLVER": True,
     }
+
+    # `exec init_down`/`init_up` are the component classes' construction hooks,
+    # run by `pss_do_init()` after the root's constructor (design D3, D4).
+    supports_init_blocks = True
+
+    # An exported action (`--export-action`) is a task of the component it
+    # runs in, on that component's export interface.
+    supports_entries = True
+
+    # Package-scope functions are package tasks and functions: `target` and
+    # unqualified ones tasks, `solve` ones SV functions (`sv.lower_progseq
+    # .is_task`).
+    supports_package_functions = True
 
     def add_args(self, parser: argparse.ArgumentParser) -> None:
         # `--root`, `--ctor-name` and `--no-core-copy` come from
@@ -60,15 +73,30 @@ class ProgSeqTarget(OpModelTarget):
         from .progseq_gen import SV_CORE_PKG
         return [SV_CORE_PKG]
 
-    def emit(self, model, opts: argparse.Namespace) -> List[Path]:
+    #: The backend class that assembles the package. Resolved late so importing
+    #: this module does not drag the whole lowering in.
+    backend_cls = None
+
+    @classmethod
+    def backend_class(cls):
+        from .sv.backend import SvOpModelBackend
+        return cls.backend_cls or SvOpModelBackend
+
+    def backend_for(self, opts: argparse.Namespace):
+        """The backend instance this run generates through."""
         root_name = getattr(opts, "progseq_root", None)
-        pkg_name = getattr(opts, "progseq_package", None) or f"{root_name}_pkg"
-        from .progseq_gen import generate
+        pkg_name = (getattr(opts, "progseq_package", None)
+                    or (f"{root_name}_pkg" if root_name else ""))
+        return self.backend_class()(
+            pkg_name, getattr(opts, "progseq_reg_fields", "named"))
+
+    def sections(self, model, opts: argparse.Namespace) -> Dict[str, str]:
+        return self.backend_for(opts).sections(model)
+
+    def emit(self, model, opts: argparse.Namespace) -> List[Path]:
         # COMPILATION ORDER, not creation order. The returned list is what a
         # build system hands the compiler (dv-flow's `classify_outputs`
         # preserves it), and the generated package uses `addr_handle_t` and
         # `pss_mem_if` from the core package -- so the core comes first.
         return (self.install_core(model, opts)
-                + generate(model, pkg_name,
-                           reg_fields=getattr(opts, "progseq_reg_fields",
-                                              "named")))
+                + self.backend_for(opts).generate(model))
