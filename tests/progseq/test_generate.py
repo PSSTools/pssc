@@ -75,7 +75,8 @@ def test_imports_core(gen):
 
 def test_export_api(gen):
     sv = _read(gen, "dma_regs_pkg.sv")
-    assert "interface class dma_engine_c_if;" in sv
+    # The context API: the model's exports.
+    assert "interface class dma_engine_c_ctxt_if;" in sv
     # int return -> output status; explicit input after output
     assert "pure virtual task mem_to_mem_copy(output int status, input int channel," in sv
     # SV keyword renamed
@@ -88,7 +89,7 @@ def test_operations_folded_into_component(gen):
     assert "_impl" not in sv
     assert "virtual task configure_channel(" in sv
     # register read uses the task-output form
-    assert "m_regs.channels[channel].CSR.read(csr);" in sv
+    assert "regs.channels[channel].CSR.read(csr);" in sv
     # repeat{}while -> forever .. break
     assert "forever begin" in sv
     assert "if (!(csr.DONE == 0)) break;" in sv
@@ -97,21 +98,24 @@ def test_operations_folded_into_component(gen):
 def test_component_one_class(gen):
     sv = _read(gen, "dma_regs_pkg.sv")
     # import interface extends the core seam
-    assert "interface class dma_engine_c_import_if extends pss_mem_if;" in sv
-    # ONE class named after the component: export impl + import redirect + factory
-    assert ("class dma_engine_c #(type IMP_T = dma_engine_c_import_if) "
-            "implements dma_engine_c_if, dma_engine_c_import_if;") in sv
-    # register model built with `this` as the bus (accesses route back to
-    # m_imp): at 0 by construction, then at `base` by the model's constructor,
-    # whose empty body keeps the flat convention
-    assert "m_regs = new(this, 0);" in sv
-    assert "m_regs = new(this, base);" in sv
-    # factory returns the export handle
-    assert "static function dma_engine_c_if create(IMP_T imp, addr_handle_t base);" in sv
+    assert "interface class dma_engine_c_imp_if extends pss_mem_if;" in sv
+    # ONE class named after the component, and a factory that is the import
+    # redirect and the context (design D5, D9)
+    assert "class dma_engine_c extends dma_engine_c_component;" in sv
+    assert ("class dma_engine_c_root #(type Timp = dma_engine_c_imp_if) "
+            "implements dma_engine_c_imp_if, dma_engine_c_ctxt_if;") in sv
+    # register model built over the import API (the factory, which forwards
+    # to the platform): at 0 by construction, then at `base` by the model's
+    # constructor, whose empty body keeps the flat convention
+    assert "regs = new(pss_imp, 0);" in sv
+    assert "regs = new(pss_imp, base);" in sv
+    # factory returns the context handle
+    assert ("static function dma_engine_c_ctxt_if create(Timp imp, "
+            "addr_handle_t base);") in sv
     # construction, then the model's constructor, then PSS construction (D3)
-    assert ("dma_engine_c #(IMP_T) self = new(imp);\n"
-            "      self.ctor(base);\n"
-            "      self.pss_do_init();") in sv
+    assert ("dma_engine_c_root #(Timp) model = new(imp);\n"
+            "      model.pss_root.ctor(base);\n"
+            "      model.pss_root.pss_do_init();") in sv
     # no separate impl / adapter / factory classes
     assert "_impl" not in sv
     assert "_imp_adapter_c" not in sv
@@ -137,6 +141,7 @@ def test_a_declaration_initializer_is_not_discarded(tmp_path):
         "component pss_top {\n"
         "    target function void f() { int x = 5; int y = x + 1; }\n"
         "    action A { exec body { comp.f(); } }\n"
+        "    export target function f;\n"
         "}\n")
     out = tmp_path / "out"
     driver.compile([str(src)], target="sv-progseq", output_dir=str(out),

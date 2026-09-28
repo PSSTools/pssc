@@ -42,8 +42,9 @@ def _load(out):
 
 #: Targets that render inheritance by FLATTENING it (`comp_inherit`): a
 #: derived component is its base's members written into it. The others render
-#: it natively (`native_inheritance`) and are held to running the same.
-_FLATTENED = ["op-model-c", "op-model-sv"]
+#: it natively (`native_inheritance`) and are held to running the same
+#: (`test_op_model_inherit_native.py`). C waits on a function table.
+_FLATTENED = ["op-model-c"]
 
 
 def _messages(bus):
@@ -179,8 +180,8 @@ component pss_top { target function int g() { return 3; } }"""))
 def test_inheriting_generates_what_writing_it_out_does(tmp_path, target):
     """For every op-model target, a derived component is the component with
     its base's members written into it -- base members first."""
-    # Each call's result goes to a local first: a value-returning operation is
-    # a task in op-model-sv, callable only where its result is assigned (SV-2).
+    # Each call's result goes to a local first, as op-model-sv once needed
+    # (SV-2); kept, since it is the same model either way.
     derived = """
 component base_c {
   int a = 5;
@@ -267,8 +268,8 @@ def test_super_and_shadowing_generate_what_writing_them_out_does(tmp_path,
                                                                   target):
     """The base's `f` and `a` become private members of the derived
     component; nothing else about it changes, on any op-model target."""
-    # Each call's result goes to a local first: a value-returning operation is
-    # a task in op-model-sv, callable only where its result is assigned (SV-2).
+    # Each call's result goes to a local first, as op-model-sv once needed
+    # (SV-2); kept, since it is the same model either way.
     derived = """
 component base_c {
   int a = 5;

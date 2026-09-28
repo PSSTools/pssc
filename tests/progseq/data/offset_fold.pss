@@ -98,4 +98,13 @@ component fold_top_c {
         w.value = v;
         regs.gcsr.write(w);
     }
+
+    // A bank's status, through the tree: what exercises a bank's binding.
+    target function bit[32] read_bank_stat(int b) {
+        return bank[b].read_stat();
+    }
+
+    // The model's API (an extension to LRM 20.4.2: instance functions).
+    export target function set_gcsr;
+    export target function read_bank_stat;
 }

@@ -9,9 +9,10 @@ Built as a class, for the reasons `c/backend.py` and `py/backend.py` are:
   (`targets/sections.py`) rather than by re-deriving the whole file.
 
 SV has no forward references inside a package, so the section ORDER is part of
-the output being correct, not a matter of taste: export interfaces, then the
-import interface, then the component base that holds it, then sub-component
-classes, then the root that builds them.
+the output being correct, not a matter of taste: the import and context
+interfaces, then the component base that holds the import API, then one class
+per component type -- each base before what extends it, each child before what
+contains it -- then the factory that builds the tree.
 
 Like `PyOpModelBackend`, this carries no `@overridable` marks and is NOT a
 published surface.
@@ -23,10 +24,9 @@ from typing import Dict, List
 
 from ..sections import Section
 from .lower_api_types import lower_api_types
-from .lower_progseq import (emit_component, emit_component_base,
-                            emit_import_api, emit_package_functions,
-                            emit_subcomponent_class,
-                            lower_component_api)
+from .lower_progseq import (emit_component_base, emit_component_class,
+                            emit_context_api, emit_factory, emit_import_api,
+                            emit_package_functions)
 from .lower_reg_model import lower_register_model
 from .reg_field_names import FieldNamer
 
@@ -59,11 +59,11 @@ class SvOpModelBackend(object):
             Section("reg_model", self.emit_reg_model),
             Section("api_types", self.emit_api_types),
             Section("functions", self.emit_functions),
-            Section("export_apis", self.emit_export_apis),
             Section("import_api", self.emit_import_api),
+            Section("context_api", self.emit_context_api),
             Section("component_base", self.emit_component_base),
             Section("components", self.emit_components),
-            Section("root", self.emit_root),
+            Section("factory", self.emit_factory),
             Section("package_close", self.emit_package_close),
         ]
 
@@ -133,19 +133,16 @@ class SvOpModelBackend(object):
                                        model.ctor_names),
                 ""]
 
-    def emit_export_apis(self, model) -> List[str]:
-        """One export interface per regular component, children first."""
-        lines: List[str] = []
-        for comp in model.components:
-            lines.append(f"  // ----- Programming API: {comp.name} -----")
-            lines.append(lower_component_api(comp.dtype, model.ctor_names,
-                                             model.entries_of(comp)))
-            lines.append("")
-        return lines
-
     def emit_import_api(self, model) -> List[str]:
-        return [f"  // ----- Import API (root: {model.tree.name}) -----",
-                emit_import_api(model.root, model.ctor_names),
+        return ["  // ----- Import API: what the platform supplies -----",
+                emit_import_api(model.root, model.ctor_names, model.ctx),
+                ""]
+
+    def emit_context_api(self, model) -> List[str]:
+        """What the platform can call: the root's exported functions and the
+        exported actions (design D9, D11, D12)."""
+        return ["  // ----- Context API: what the platform calls -----",
+                emit_context_api(model.root, model.exports, model.entries),
                 ""]
 
     def emit_component_base(self, model) -> List[str]:
@@ -155,23 +152,20 @@ class SvOpModelBackend(object):
                 ""]
 
     def emit_components(self, model) -> List[str]:
-        """Every non-root component's class, children first."""
+        """One class per component type (`model.classes`): each base before
+        what derives from it, each child before what contains it, the root
+        last."""
         lines: List[str] = []
-        for comp in model.components:
-            if comp.dtype is model.root:
-                continue
-            lines.append(f"  // ----- Implementation: {comp.name} -----")
-            lines.append(emit_subcomponent_class(
-                comp.dtype, model.root, self.namer(model, comp.dtype),
-                model.ctor_names, model.entries_of(comp), model.ctx))
+        for comp in model.classes:
+            lines.append(f"  // ----- Component: {comp.name} -----")
+            lines.append(emit_component_class(model, comp,
+                                              self.namer(model, comp)))
             lines.append("")
         return lines
 
-    def emit_root(self, model) -> List[str]:
-        return [f"  // ----- Component handle/factory: {model.tree.name} -----",
-                emit_component(model.root, self.namer(model, model.root),
-                               model.ctor_names, model.entries_of(model.root),
-                               model.ctx),
+    def emit_factory(self, model) -> List[str]:
+        return [f"  // ----- Factory and root context: {model.tree.name} -----",
+                emit_factory(model),
                 ""]
 
     def emit_package_close(self, model) -> List[str]:

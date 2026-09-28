@@ -24,7 +24,7 @@ The ranking is a proposal.
 
 | ID | Pri | Issue | Targets | Class |
 |---|---|---|---|---|
-| [SV-1](#sv-1-inheritance-is-flattened) | P0 | Inheritance is flattened | SV | Wrong shape (and invalid) |
+| [SV-1](#sv-1-inheritance-is-flattened) | ~~P0~~ | ~~Inheritance is flattened~~ Fixed: native classes, `extends`, `super.f()` (plan P5) | SV | Wrong shape (and invalid) |
 | [SV-2](#sv-2-value-returning-calls-inside-expressions-are-not-hoisted) | P0 | Value-returning calls inside expressions are not hoisted. Fixed for SV (hoisted to temporaries); C coroutines open | SV, C (coroutines) | Invalid, unreported |
 | [SV-3](#sv-3-sub-components-are-only-constructed-by-a-pss-constructor) | ~~P0~~ | ~~Sub-components are only constructed by a PSS constructor~~ Fixed (plan P2) | SV | Silent-wrong |
 | [SV-4](#sv-4-repeat-is-not-lowered) | ~~P1~~ | ~~`repeat` is not lowered~~ Fixed | SV | Refused |

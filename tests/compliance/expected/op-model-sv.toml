@@ -34,30 +34,6 @@ reason = "op-model-sv gap: no executor delegation (supports_executor_delegation)
 verdict = "UNSUPPORTED"
 reason = "op-model-sv gap: no executor delegation (supports_executor_delegation), so the executor tap's set_executor/overrides are refused"
 
-[expected."comp.array.001"]
-verdict = "FAIL"
-reason = "op-model-sv gap: a sub-component's attribute read through its instance (`sub.a`, `ch[i].id`) is emitted with its PSS name, not the member's (`m_a`), and members are protected"
-
-[expected."comp.attr.struct.001"]
-verdict = "FAIL"
-reason = "op-model-sv gap: a sub-component's attribute read through its instance (`sub.a`, `ch[i].id`) is emitted with its PSS name, not the member's (`m_a`), and members are protected"
-
-[expected."comp.func.calls.001"]
-verdict = "FAIL"
-reason = "op-model-sv gap: a sub-component's attribute read through its instance (`sub.a`, `ch[i].id`) is emitted with its PSS name, not the member's (`m_a`), and members are protected"
-
-[expected."comp.init.order.001"]
-verdict = "FAIL"
-reason = "op-model-sv gap: a sub-component's attribute read through its instance (`sub.a`, `ch[i].id`) is emitted with its PSS name, not the member's (`m_a`), and members are protected"
-
-[expected."comp.init.solve_fn.001"]
-verdict = "FAIL"
-reason = "op-model-sv gap: a sub-component's attribute read through its instance (`sub.a`, `ch[i].id`) is emitted with its PSS name, not the member's (`m_a`), and members are protected"
-
-[expected."comp.instances.001"]
-verdict = "FAIL"
-reason = "op-model-sv gap: a sub-component's attribute read through its instance (`sub.a`, `ch[i].id`) is emitted with its PSS name, not the member's (`m_a`), and members are protected"
-
 [expected."proc.compile_if.001"]
 verdict = "UNSUPPORTED"
 reason = "op-model-sv gap: message() argument typing (expr_types.py) does not resolve a package constant, so %n cannot be checked (same gap as op-model-py)"

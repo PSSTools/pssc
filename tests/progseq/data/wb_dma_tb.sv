@@ -113,12 +113,13 @@ module top;
     automatic addr_handle_t       base = 64'h4000_0000;
     automatic dma_mock_bus_c      bus  = new(base);
     automatic int                 errors = 0;
-    dma_engine_c_if dma;
+    dma_engine_c_ctxt_if dma;
     int                 status;
 
-    // Construct through the component handle's create(): duck-typed import
-    // object (IMP_T overridden to the mock) + the root ctor's base argument.
-    dma = dma_engine_c#(dma_mock_bus_c)::create(bus, base);
+    // Construct through the factory's create(): duck-typed import object
+    // (Timp overridden to the mock) + the root ctor's base argument. What
+    // comes back is the context API: the model's exported functions.
+    dma = dma_engine_c_root#(dma_mock_bus_c)::create(bus, base);
 
     // 1) configure_channel: sets PRIORITY/MODE/SRC/DST, leaves CH_EN clear.
     dma.configure_channel(5, 7, 1, 1, 0);

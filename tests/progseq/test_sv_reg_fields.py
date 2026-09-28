@@ -9,7 +9,7 @@ asking the register model which field has those bits, so that
 
 reaches SystemVerilog as
 
-    m_regs.csr.write_field(WB_DMA_CSR_ars, 32'(enable))
+    regs.csr.write_field(WB_DMA_CSR_ars, 32'(enable))
 
 rather than as `write_val_masked(64, (32'(enable) & 1) << 6)`.
 
@@ -41,7 +41,7 @@ from pssc.targets.sv.reg_field_names import const_name, const_prefix, unplace
 from pssc.reg_field_resolve import FieldSlice
 
 from .codetext import code_only
-from .op_model import OP_MODEL as _MODEL, op_model_sources
+from .op_model import OP_MODEL as _MODEL, op_model_sv_sources
 
 
 #: Transcribed BY HAND from src/pss/wb_dma_ch_c/wb_dma_ch_regs_c.pss -- field
@@ -58,7 +58,8 @@ _CSR_FIELDS = {
 
 
 def _sources():
-    return op_model_sources()
+    # With the environment's exports: op-model-sv takes its API from them.
+    return op_model_sv_sources()
 
 
 def _gen(tmp, reg_fields="named"):
@@ -162,10 +163,10 @@ def test_all_five_call_sites_are_named(sv):
     the generated component -- a site left behind would be a silent
     half-conversion."""
     for frag in (
-        "m_regs.csr.write_field(WB_DMA_CSR_ars, 32'(enable));",
-        "m_regs.csr.write_field(WB_DMA_CSR_stop, 1);",
-        "m_regs.csr.write_field(WB_DMA_CSR_use_ed, 1);",
-        "m_regs.csr.write_field(WB_DMA_CSR_ch_en, 1);",
+        "regs.csr.write_field(WB_DMA_CSR_ars, 32'(enable));",
+        "regs.csr.write_field(WB_DMA_CSR_stop, 1);",
+        "regs.csr.write_field(WB_DMA_CSR_use_ed, 1);",
+        "regs.csr.write_field(WB_DMA_CSR_ch_en, 1);",
     ):
         assert frag in sv, frag
     assert "write_val_masked(" not in sv
@@ -196,10 +197,10 @@ def test_folded_reproduces_the_pre_naming_output(folded):
     """`--sv-reg-fields=folded` is the escape hatch, and it has to actually
     escape: the literal pairs, and no field constant in any call."""
     text = (folded[0] / "wb_dma_c_pkg.sv").read_text()
-    for frag in ("m_regs.csr.write_val_masked(64, (32'(enable) & 1) << 6);",
-                 "m_regs.csr.write_val_masked(512, 512);",
-                 "m_regs.csr.write_val_masked(128, 128);",
-                 "m_regs.csr.write_val_masked(1, 1);"):
+    for frag in ("regs.csr.write_val_masked(64, (32'(enable) & 1) << 6);",
+                 "regs.csr.write_val_masked(512, 512);",
+                 "regs.csr.write_val_masked(128, 128);",
+                 "regs.csr.write_val_masked(1, 1);"):
         assert frag in text, frag
     assert ".write_field(" not in text
 
@@ -297,7 +298,7 @@ def test_mask_lookup_is_exact_set_equality():
     assert ctx.errors == [], ctx.errors
     comp = ctx.type_map["wb_dma_ch_c"]
 
-    # The `m_regs.csr` receiver, taken from a real folded call rather than
+    # The `regs.csr` receiver, taken from a real folded call rather than
     # hand-built, so a change in how paths are represented fails here too.
     recv = None
     for fn in comp.functions:

@@ -610,6 +610,7 @@ component pss_top {{
     {p}message(NONE, "hi");
     {q}write32(h, 5);
   }}
+  export target function g;
 }}"""
     texts = []
     for k, (p, q) in enumerate([("", ""), ("std_pkg::", "addr_reg_pkg::")]):

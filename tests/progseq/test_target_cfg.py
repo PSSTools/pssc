@@ -195,6 +195,7 @@ _MODEL = textwrap.dedent("""
 
     component widget_c {
         function void arm() { }
+        export target function arm;
 
         compile if (m_cfg_pkg::HAS_EVENT_WAIT) {
             function void wait_done() { }

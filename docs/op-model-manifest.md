@@ -64,6 +64,7 @@ most of the reason to have one.
 | `ctor_names` | [string] | which `solve function` names meant "constructor" for this run |
 | `settings` | object | the target's ABI-affecting options (see below) |
 | `imports` | [function] | declared `import target/solve function`s, sorted by name |
+| `exports` | [function] | the root component's exported functions (`export target function f;` in its body, an extension of LRM 20.4.2), in declaration order |
 | `value_structs` | [struct] | packed register value structs, de-duplicated |
 | `components` | [component] | the walked tree, **children before parents** |
 | `files` | [file] | what was produced, **in emission order** |

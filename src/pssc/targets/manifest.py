@@ -184,6 +184,9 @@ def build(model, *, target: str, settings: Optional[Dict[str, Any]] = None,
         "settings": dict(settings or {}),
         "imports": [_function(fn) for fn in
                     (model.imports[k] for k in sorted(model.imports))],
+        # The root's exported functions: with the exported actions, what a
+        # target that takes its API from exports puts on it.
+        "exports": [_function(fn) for fn in getattr(model, "exports", ())],
         "value_structs": _value_structs(model),
         "components": [_component(n, model) for n in model.components],
         "files": [{"name": Path(p).name,

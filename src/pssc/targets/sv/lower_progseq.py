@@ -227,7 +227,7 @@ class _BodyEmitter(BodyWalker):
         #: types every argument as `int`.
         self.ctx = ctx
         self._types = None
-        #: This compile's constructor names -- see `_operations`.
+        #: This compile's constructor names, from the model (never ambient).
         self.ctor_names = ctor_names
         # Restores field names to the folded masks `reg_rmw` produced. None
         # disables it, and every call site then emits the literal pair it
@@ -237,8 +237,23 @@ class _BodyEmitter(BodyWalker):
         # rename map for SV-keyword args
         self.arg_rename = {a.arg: mangle(a.arg) for a in args}
         self.arg_names = set(self.arg_rename)
-        # component field name -> member ref (reg-group fields become m_<name>)
-        self.member_of = member_of  # dict: field_name -> "m_<field>"
+        # component field name -> member name: its PSS name, SV-keyword safe.
+        self.member_of = member_of
+        #: The class this one extends, when inheritance is rendered natively:
+        #: `super.f(...)` is a call of ITS `f`. None for a class with no user
+        #: base.
+        self.super_base = None
+        #: Names of the locals the body declares. A field of the same name is
+        #: then written `this.<name>`: SV would take the local, as PSS does
+        #: for a bare name -- but the IR's `self.x` means the field.
+        self.local_names = _local_names(getattr(fn, "body", None))
+        #: What the import API supplies: the memory primitives and the
+        #: model's import functions.
+        self.imp_names = frozenset(
+            [m for m, _, _ in _MEM_PRIMS]
+            + [f.name for f in (getattr(ctx, "import_functions", None) or [])])
+        self.own_fn_names = frozenset(
+            f.name for f in (getattr(comp, "functions", None) or []))
         # Register-group fields by PSS name, so a `regs.get_offset_of_*()` call
         # can be resolved to the group whose offsets answer it (see _fold_offset).
         self.reg_group_of = {
@@ -606,6 +621,10 @@ class _BodyEmitter(BodyWalker):
             return None
         if _dt_name(f.value) == "TypeExprRefSelf":
             return self.op_fns.get(f.attr)
+        if _dt_name(f.value) == "TypeExprRefSuper":
+            return next((g for g in self._super_fns(f.attr)
+                         if func_kind(g, self.ctor_names)
+                         is FuncKind.EXPORT_OP), None)
         # An operation of a sub-component, reached through its instance.
         t = self.types.type_of(f.value)
         if t is None or t.kind != "comp" or t.dtype is None:
@@ -625,11 +644,19 @@ class _BodyEmitter(BodyWalker):
             return None
         if _dt_name(f.value) == "TypeExprRefSelf":
             owner = self.comp
+        elif _dt_name(f.value) == "TypeExprRefSuper":
+            return next(iter(self._super_fns(f.attr)), None)
         else:
             t = self.types.type_of(f.value)
             owner = t.dtype if (t is not None and t.kind == "comp") else None
         return next((g for g in (getattr(owner, "functions", None) or [])
                      if g.name == f.attr), None)
+
+    def _super_fns(self, name: str) -> List[object]:
+        """The functions ``super.<name>`` may name: the base class's, as
+        completed (so a function it inherits is there too)."""
+        return [g for g in (getattr(self.super_base, "functions", None) or [])
+                if g.name == name and exec_kind(g) is None]
 
     def _check_callable(self, call) -> None:
         """Refuse a task called from solve context: an SV function cannot
@@ -695,6 +722,12 @@ class _BodyEmitter(BodyWalker):
     def type_expr_ref_self(self, e) -> str:
         return "this"
 
+    def type_expr_ref_super(self, e) -> str:
+        # `super.f(...)` and `super.x` are SystemVerilog's own: the base
+        # class's `f`, statically, and the base class's `x`, which a derived
+        # class's field of the same name hides and does not replace (17.1).
+        return "super"
+
     def expr_attribute(self, e) -> str:
         base = e.value
         if _dt_name(base) == "TypeExprRefSelf":
@@ -703,7 +736,14 @@ class _BodyEmitter(BodyWalker):
             if e.attr in self.arg_names:
                 return self.arg_rename[e.attr]
             if e.attr in self.member_of:
-                return self.member_of[e.attr]
+                m = self.member_of[e.attr]
+                return f"this.{m}" if m in self.local_names else m
+            if e.attr in self.imp_names and e.attr not in self.own_fn_names:
+                # The platform's: a memory primitive or an import function,
+                # reached through the import API every class holds. The
+                # component's own function of that name comes first
+                # (`validate_calls.ops_for_call`).
+                return f"{IMP_MEMBER}.{e.attr}"
             return e.attr
         return f"{self.expr(base)}.{e.attr}"
 
@@ -1117,6 +1157,10 @@ class _BodyEmitter(BodyWalker):
             if md.get("super"):
                 return [f"{pad}{md['super']}();"]
             return [f"{pad}// super: no base action declares an exec body"]
+        if exec_kind(self.fn) in INIT_EXEC_KINDS and self.super_base is not None:
+            # Natively, the base class's hook of the same kind: its blocks of
+            # this kind, or the empty hook every class has.
+            return [f"{pad}super.pss_{exec_kind(self.fn)}();"]
         if exec_kind(self.fn) not in INIT_EXEC_KINDS or "super" not in md:
             raise ValueError(
                 f"'super;' in '{getattr(self.fn, 'name', '?')}' has no "
@@ -1384,6 +1428,26 @@ def _enum_first(dtype, types) -> Optional[int]:
     return int(first) if int(first) != 0 else None
 
 
+def _local_names(body) -> frozenset:
+    """Every local variable name ``body`` declares or refers to."""
+    found = set()
+
+    def walk(n):
+        if isinstance(n, (list, tuple)):
+            for x in n:
+                walk(x)
+            return
+        if not dc.is_dataclass(n) or isinstance(n, (type, ir.DataType)):
+            return
+        if _dt_name(n) == "ExprRefLocal":
+            found.add(mangle(n.name))
+        for f in dc.fields(n):
+            walk(getattr(n, f.name))
+
+    walk(body or [])
+    return frozenset(found)
+
+
 def _has_continue(body) -> bool:
     """Does ``body`` hold a `continue` for THIS loop (not a nested one's)?"""
     for st in body or []:
@@ -1458,43 +1522,27 @@ class _ExprOnly(_BodyEmitter):
 # (P6a.T5): which solve function is the constructor is the compile's answer,
 # and an emitter that asks the process gets whichever compile set it last.
 
-def _operations(comp, ctor_names=None) -> List[object]:
-    return [fn for fn in comp.functions
-            if func_kind(fn, ctor_names) == FuncKind.EXPORT_OP]
+#: The import API every component class holds (in the component base), and
+#: the factory's handle to the platform object. Generated names take the
+#: `pss_` prefix: a component's members are its PSS names, and SV has one
+#: namespace per class for properties and methods alike.
+IMP_MEMBER = "pss_imp"
 
+#: The factory's handle to the root component instance.
+ROOT_MEMBER = "pss_root"
 
-def _reg_group_members(comp) -> Dict[str, str]:
-    """Map reg-group field name -> SV member name (``m_<name>``)."""
-    return {f.name: f"m_{f.name}" for f in comp.fields if field_is_reg_group(f)}
+#: The component-side task an exported action's body becomes (design D12).
+ACTION_PREFIX = "pss_action_"
 
 
 def _members(comp) -> Dict[str, str]:
-    """Map EVERY component field to its generated member name.
+    """Map every field of ``comp`` -- inherited ones included -- to its
+    member name: its PSS name, escaped only if it is an SV keyword.
 
-    All of them, not just the register groups: an operation body may read a
-    plain attribute (`chan`, `caps.ars`) as readily as a register, and a field
-    missing from this map is emitted as a bare identifier that resolves to
-    nothing.
-
-    CHANNELS KEEP THEIR PSS NAME, with no `m_` prefix, because they are the one
-    kind of field another component reaches THROUGH an instance handle. The
-    interrupt-notify shape is exactly this:
-
-        foreach (ch[i]) { ch[i].wake.try_put(1); }   // PSS
-        foreach (m_ch[i]) m_ch[i].wake.try_put(1);   // SV
-
-    The trailing `.wake` there is a member path on a *different* object, so it
-    is emitted from the PSS field name and cannot be renamed -- only the head of
-    the path goes through this map. Naming the declaration `m_wake` produced
-    code that referred to both `m_wake` and `.wake` for one field.
-
-    The cost is that a channel shares a namespace with task-local names and
-    operation arguments; an operation argument named after a channel would
-    shadow it. Nothing checks that, and the `m_` prefix is what protects every
-    other field from it.
-    """
-    return {f.name: (f.name if field_is_channel(f) else f"m_{f.name}")
-            for f in comp.fields}
+    A member is reached as PSS reaches it (`sub.a`, `ch[i].wake`), so it is
+    public and named as declared. A local that shadows it is handled where
+    the reference is written (`_BodyEmitter.expr_attribute`)."""
+    return {f.name: mangle(f.name) for f in (getattr(comp, "fields", None) or [])}
 
 
 def _data_fields(comp) -> List[object]:
@@ -1512,44 +1560,6 @@ def _data_fields(comp) -> List[object]:
     return out
 
 
-def emit_export_api(comp, ctor_names=None, entries=()) -> str:
-    """The export interface class: one pure virtual task per operation, plus an
-    accessor per sub-component instance.
-
-    Sub-components are exposed as **methods**, not as members, because an SV
-    interface class cannot declare data. An array becomes `ch(int index)` plus
-    `ch_size()`; a scalar instance becomes a bare `sub()`. The accessor returns
-    the sub-component's own *interface* type, which is why sub-component classes
-    are not parameterized (see `emit_subcomponent_class`).
-    """
-    cls = f"{_strip_pkg(comp.name)}_if"
-    lines = doc_block(getattr(comp, "doc", None), "  ") + [
-        f"  interface class {cls};"]
-    for fn in _operations(comp, ctor_names):
-        # The interface is the API surface a caller reads and the
-        # implementation is what someone debugging reads, so the doc block goes
-        # on both. This is the one place a comment is deliberately duplicated.
-        blank_line(lines)
-        lines += doc_block(getattr(fn, "doc", None), "    ")
-        lines.append(f"    pure virtual task {mangle(fn.name)}({_signature(fn)});")
-    for entry in entries:
-        blank_line(lines)
-        lines.append(f"    // Exported action `{entry.action}`.")
-        lines.append(f"    pure virtual task {mangle(entry.name)}();")
-    for sub in sub_components(comp):
-        # One blank before each sub-component's accessors, not between them:
-        # `ch()` and `ch_size()` are one member's plumbing, not two entries.
-        blank_line(lines)
-        sub_if = f"{_strip_pkg(sub.dtype.name)}_if"
-        if sub.is_array:
-            lines.append(f"    pure virtual function {sub_if} {mangle(sub.name)}(int index);")
-            lines.append(f"    pure virtual function int {mangle(sub.name)}_size();")
-        else:
-            lines.append(f"    pure virtual function {sub_if} {mangle(sub.name)}();")
-    lines.append("  endclass")
-    return "\n".join(lines)
-
-
 def _ctor(comp, ctor_names=None):
     for fn in comp.functions:
         if func_kind(fn, ctor_names) == FuncKind.CONSTRUCTOR:
@@ -1557,16 +1567,33 @@ def _ctor(comp, ctor_names=None):
     return None
 
 
-def lower_component_api(comp, ctor_names=None, entries=()) -> str:
-    """Export interface for a regular component, as package-body text.
+# --- names -----------------------------------------------------------------
 
-    The implementation is folded into the component class itself (see
-    `emit_component`), so there is no separate `<comp>_impl`.
-    """
-    return emit_export_api(comp, ctor_names, entries)
+def _root_name(root) -> str:
+    return _strip_pkg(root.name)
 
 
-# --- import API, adapter, factory (Phase 5) --------------------------------
+def component_base_name(root) -> str:
+    """The generated base class every component class extends (design D8)."""
+    return f"{_root_name(root)}_component"
+
+
+def imp_if_name(root) -> str:
+    """The import API: what the platform supplies."""
+    return f"{_root_name(root)}_imp_if"
+
+
+def ctxt_if_name(root) -> str:
+    """The export API the platform holds: the root's context (design D9)."""
+    return f"{_root_name(root)}_ctxt_if"
+
+
+def factory_name(root) -> str:
+    """The class that builds the tree and is the root context (design D5)."""
+    return f"{_root_name(root)}_root"
+
+
+# --- import API -------------------------------------------------------------
 
 # The core memory-access ABI: (method, data-type, is_read). Frozen to match
 # pssc_reg_pkg::pss_mem_if.
@@ -1578,45 +1605,141 @@ _MEM_PRIMS = [
 ]
 
 
-def emit_import_api(root, ctor_names=None) -> str:
-    """``interface class <root>_import_if extends pss_mem_if`` plus any
-    engine-specific import functions (none for the WB DMA engine)."""
-    cls = f"{_strip_pkg(root.name)}_import_if"
-    lines = [f"  interface class {cls} extends pss_mem_if;"]
-    for fn in root.functions:
-        k = func_kind(fn, ctor_names)
-        if k == FuncKind.IMPORT_TASK:
-            lines.append(f"    pure virtual task {mangle(fn.name)}({_signature(fn)});")
-        elif k == FuncKind.IMPORT_SOLVE:
-            ret = sv_type(fn.returns) if fn.returns is not None else "void"
-            lines.append(f"    pure virtual function {ret} {mangle(fn.name)}({_signature(fn)});")
+def _import_fns(ctx, ctor_names=None) -> List[object]:
+    """The model's `import` functions, in declaration order."""
+    return [fn for fn in (getattr(ctx, "import_functions", None) or [])
+            if func_kind(fn, ctor_names) in (FuncKind.IMPORT_TASK,
+                                             FuncKind.IMPORT_SOLVE)]
+
+
+def _import_proto(fn, ctor_names=None) -> str:
+    """``task f(...)`` or ``function T f(...)``: an import function's SV
+    prototype, without `pure virtual`."""
+    if func_kind(fn, ctor_names) is FuncKind.IMPORT_TASK:
+        return f"task {mangle(fn.name)}({_signature(fn)})"
+    ret = sv_type(fn.returns) if fn.returns is not None else "void"
+    params = ", ".join(f"input {sv_type(a.annotation)} {mangle(a.arg)}"
+                       for a in fn.args.args)
+    return f"function {ret} {mangle(fn.name)}({params})"
+
+
+def emit_import_api(root, ctor_names=None, ctx=None) -> str:
+    """``interface class <root>_imp_if extends pss_mem_if``, plus the
+    model's `import` functions."""
+    lines = [f"  interface class {imp_if_name(root)} extends pss_mem_if;"]
+    for fn in _import_fns(ctx, ctor_names):
+        lines.append(f"    pure virtual {_import_proto(fn, ctor_names)};")
     lines.append("  endclass")
     return "\n".join(lines)
 
 
-def _member_decls(comp, members: Dict[str, str], subs: Dict[str, SubComp]) -> List[str]:
-    """Declarations for a component's register groups, data and sub-components."""
+# --- export API --------------------------------------------------------------
+
+def emit_context_api(root, exports=(), entries=()) -> str:
+    """``interface class <root>_ctxt_if``: what the platform can call.
+
+    The root's exported functions (`export target function f;`, an
+    extension -- `export_function.py`) and the exported actions, each under
+    its PSS name. Nothing else is on it: a target function nobody exported is
+    the model's own (design D11)."""
+    lines = doc_block(getattr(root, "doc", None), "  ") + [
+        f"  interface class {ctxt_if_name(root)};"]
+    for fn in exports:
+        blank_line(lines)
+        lines += doc_block(getattr(fn, "doc", None), "    ")
+        lines.append(f"    pure virtual task {mangle(fn.name)}({_signature(fn)});")
+    for entry in entries:
+        blank_line(lines)
+        lines.append(f"    // Exported action `{entry.action}`.")
+        lines.append(f"    pure virtual task {mangle(entry.name)}();")
+    lines.append("  endclass")
+    return "\n".join(lines)
+
+
+# --- the component base -----------------------------------------------------
+
+#: The construction hooks, in the order `pss_do_init` runs them.
+_HOOKS = ("pss_init_down", "pss_init_subs", "pss_init_up")
+
+
+def emit_component_base(root) -> str:
+    """The common base of every component class (design D4, D8).
+
+    It holds the import API and PSS construction (LRM 20.1.2): this
+    component's `init_down`, then every sub-component's whole construction,
+    then its `init_up` -- one hook per step, each overridden only by a class
+    that has something to put there.
+    """
+    imp = imp_if_name(root)
+    return "\n".join([
+        "  // Common base of every component class: the import API, and PSS",
+        "  // construction (LRM 20.1.2) as one hook per step.",
+        f"  virtual class {component_base_name(root)};",
+        f"    protected {imp} {IMP_MEMBER};",
+        "",
+        f"    function new({imp} imp);",
+        f"      {IMP_MEMBER} = imp;",
+        "    endfunction",
+        "",
+    ] + [f"    virtual function void {h}(); endfunction" for h in _HOOKS] + [
+        "",
+        "    function void pss_do_init();",
+        "      pss_init_down();",
+        "      pss_init_subs();",
+        "      pss_init_up();",
+        "    endfunction",
+        "  endclass",
+    ])
+
+
+# --- component classes ------------------------------------------------------
+
+class _View(object):
+    """A component-shaped object with only what a class DECLARES: the member
+    walks (`sub_components`, `_data_fields`, ...) read it as they would the
+    component."""
+
+    def __init__(self, comp, fields, functions):
+        self.name = comp.name
+        self.doc = getattr(comp, "doc", None)
+        self.fields = list(fields)
+        self.functions = list(functions)
+        self.super = None
+
+
+def declared_view(ctx, comp):
+    """``(base, view)``: ``comp``'s user base component (or None) and what
+    ``comp`` itself declares (`comp_inherit.declared`)."""
+    from ..comp_inherit import declared
+    dec = declared(ctx, comp)
+    if dec is None:
+        return None, comp
+    return dec.base, _View(comp, dec.fields, dec.functions)
+
+
+def _member_decls(view, subs: Dict[str, SubComp]) -> List[str]:
+    """The declared members, in declaration order: register groups, data,
+    channels and sub-components, each under its PSS name and public."""
+    data = {id(f) for f in _data_fields(view)}
+    chans = {id(f) for f in channel_fields(view)}
     lines: List[str] = []
-    for f in comp.fields:
+    for f in view.fields:
+        name = mangle(f.name)
         if field_is_reg_group(f):
-            lines.append(f"    protected {_strip_pkg(f.datatype.name)} {members[f.name]};")
-    for f in _data_fields(comp):
-        lines += comment_lines(getattr(f, "doc", None), "    ")
-        lines.append(f"    protected {sv_type(f.datatype)} {members[f.name]};")
-    # Channels are PUBLIC, deliberately. Every other member is `protected`
-    # because the export interface is the supported surface; a channel is
-    # reached by name from the owning component's siblings and parent (see
-    # `_members`), which `protected` would reject at compile time.
-    for f in channel_fields(comp):
-        lines.append(f"    {sv_type(f.datatype)} {members[f.name]};")
-    for sub in subs.values():
-        cls = _strip_pkg(sub.dtype.name)
-        dim = f"[{sub.size}]" if sub.is_array else ""
-        lines.append(f"    protected {cls} {members[sub.name]}{dim};")
+            lines.append(f"    {_strip_pkg(f.datatype.name)} {name};")
+        elif f.name in subs:
+            sub = subs[f.name]
+            dim = f"[{sub.size}]" if sub.is_array else ""
+            lines.append(f"    {_strip_pkg(sub.dtype.name)} {name}{dim};")
+        elif id(f) in data:
+            lines += comment_lines(getattr(f, "doc", None), "    ")
+            lines.append(f"    {sv_type(f.datatype)} {name};")
+        elif id(f) in chans:
+            lines.append(f"    {sv_type(f.datatype)} {name};")
     return lines
 
 
-def _field_defaults(comp, members: Dict[str, str], subs: Dict[str, SubComp]) -> List[str]:
+def _field_defaults(view, members: Dict[str, str]) -> List[str]:
     """Assign PSS field initializers, before the address binding runs.
 
     A default is part of a field's meaning: `wb_dma_ch_caps_s` declares every
@@ -1625,14 +1748,11 @@ def _field_defaults(comp, members: Dict[str, str], subs: Dict[str, SubComp]) -> 
     """
     lines: List[str] = []
     # Channels first: an unconstructed channel handle is null, and a null
-    # dereference in SV is a run-time error at the first `get`/`try_put`, long
-    # after the construction that should have happened. Nothing else in the
-    # constructor depends on them, so they go at the top where they cannot be
-    # skipped by an early return in a hand-written `init`.
-    for f in channel_fields(comp):
+    # dereference in SV is a run-time error at the first `get`/`try_put`.
+    for f in channel_fields(view):
         lines.append(f"      {members[f.name]} = new();")
-    be = _ExprOnly(members, comp=comp)
-    for f in _data_fields(comp):
+    be = _ExprOnly(members, comp=view)
+    for f in _data_fields(view):
         if f.initial_value is not None:
             lines.append(f"      {members[f.name]} = {be.expr(f.initial_value)};")
             continue
@@ -1646,107 +1766,52 @@ def _field_defaults(comp, members: Dict[str, str], subs: Dict[str, SubComp]) -> 
     return lines
 
 
-def component_base_name(root) -> str:
-    """The generated base class every component class extends (design D8)."""
-    return f"{_strip_pkg(root.name)}_component"
-
-
-def emit_component_base(root) -> str:
-    """The common base of every non-root component class (design D4, D8).
-
-    It holds the import API and PSS construction (LRM 20.1.2): this
-    component's `init_down`, then every sub-component's whole construction,
-    then its `init_up` -- one hook per step, each overridden only by a class
-    that has something to put there. The `pss_` prefix keeps the hooks clear
-    of PSS functions: SV has one method namespace per class.
-    """
-    name = component_base_name(root)
-    bus_if = f"{_strip_pkg(root.name)}_import_if"
-    return "\n".join([
-        "  // Common base of every component class: the import API, and PSS",
-        "  // construction (LRM 20.1.2) as one hook per step.",
-        f"  virtual class {name};",
-        f"    protected {bus_if} m_imp;",
-        "",
-        f"    function new({bus_if} imp);",
-        "      m_imp = imp;",
-        "    endfunction",
-        "",
-    ] + _empty_hooks(()) + [""] + _DO_INIT + [
-        "  endclass",
-    ])
-
-
-#: The construction hooks, in the order `pss_do_init` runs them.
-_HOOKS = ("pss_init_down", "pss_init_subs", "pss_init_up")
-
-#: The one method that runs PSS construction, defined once per hierarchy.
-_DO_INIT = [
-    "    function void pss_do_init();",
-    "      pss_init_down();",
-    "      pss_init_subs();",
-    "      pss_init_up();",
-    "    endfunction",
-    "",
-]
-
-
-def _empty_hooks(defined) -> List[str]:
-    """Empty definitions of the hooks not in ``defined``."""
-    return [f"    virtual function void {h}(); endfunction"
-            for h in _HOOKS if h not in defined]
-
-
-def _defined_hooks(comp, subs) -> set:
-    """The hooks `_init_hook_defs` gives ``comp`` a body for."""
-    defined = {f"pss_{k}" for k in INIT_EXEC_KINDS if _init_blocks(comp, k)}
-    if subs:
-        defined.add("pss_init_subs")
-    return defined
-
-
-def _construct_body(comp, members, subs, *, bus: str) -> List[str]:
-    """The body of `new()`, after the import API is stored (design D2).
+def _construct_body(view, members, subs) -> List[str]:
+    """The body of `new()`, after `super.new(imp)` (design D2).
 
     Fields at their defaults, channels built, register groups at address 0,
     and EVERY sub-component instance constructed -- whether or not the model
     has a constructor for it (SV-3). Where each register group really lives is
-    `initialize`'s business, which runs after this.
+    `initialize`'s business, which runs after this. Only what this class
+    declares: its base's `new` did the rest.
     """
-    lines = _field_defaults(comp, members, subs)
-    for f in comp.fields:
+    lines = _field_defaults(view, members)
+    for f in view.fields:
         if field_is_reg_group(f):
-            lines.append(f"      {members[f.name]} = new({bus}, 0);")
+            lines.append(f"      {members[f.name]} = new({IMP_MEMBER}, 0);")
     for sub in subs.values():
         m = members[sub.name]
         if sub.is_array:
-            lines.append(f"      foreach ({m}[i]) {m}[i] = new({bus});")
+            lines.append(f"      foreach ({m}[i]) {m}[i] = new({IMP_MEMBER});")
         else:
-            lines.append(f"      {m} = new({bus});")
+            lines.append(f"      {m} = new({IMP_MEMBER});")
     return lines
 
 
-def _initialize_def(comp, ctor, members, subs, *, bus: str) -> List[str]:
+def _initialize_def(comp, ctor, members, *, super_base=None) -> List[str]:
     """The op-model constructor, as a method (design D3). Not virtual: every
-    caller uses its member's declared type.
+    caller uses its member's declared type, so a derived class may declare
+    one with another signature and still reach its base's through `super`.
 
     With a body, that body IS the address binding and is lowered statement by
     statement (`lower_init`). An EMPTY body keeps the flat convention the
-    backends share: every register group sits at the first argument.
+    backends share: every register group -- inherited ones too -- sits at the
+    first argument.
     """
-    if ctor is None:
-        return []
     params = ", ".join(f"{sv_type(a.annotation)} {mangle(a.arg)}"
                        for a in ctor.args.args)
     reg_groups = [f.name for f in comp.fields if field_is_reg_group(f)]
+    subs = {s.name: s for s in sub_components(comp)}
     if ctor.body:
         from .lower_init import lower_init
         be = _ExprOnly(members, ctor=ctor, comp=comp)
+        be.super_base = super_base
         body = lower_init(ctor, members=members, reg_groups=reg_groups,
-                          subs=subs, bus=bus, expr=be.expr, indent=3)
+                          subs=subs, bus=IMP_MEMBER, expr=be.expr, indent=3)
     elif ctor.args.args:
         base = mangle(ctor.args.args[0].arg)
-        body = [f"      {members[g]} = new({bus}, {base});" for g in reg_groups]
+        body = [f"      {members[g]} = new({IMP_MEMBER}, {base});"
+                for g in reg_groups]
     else:
         body = []
     lines = doc_block(getattr(ctor, "doc", None), "    ")
@@ -1757,47 +1822,61 @@ def _initialize_def(comp, ctor, members, subs, *, bus: str) -> List[str]:
     return lines
 
 
-def _init_blocks(comp, kind: str) -> List[object]:
-    return [fn for fn in (comp.functions or [])
-            if exec_kind(fn) == kind
-            and SUPER_BLOCK not in (fn.metadata or {})]
+def _inherited_ctor_def(comp, view, ctor, members) -> List[str]:
+    """A derived class that declares register groups and no constructor of
+    its own: the base's constructor, then this class's groups bound the way
+    an empty constructor binds them (at the first argument). Without it the
+    groups it adds would stay at address 0."""
+    own = [f.name for f in view.fields if field_is_reg_group(f)]
+    if ctor is None or not own:
+        return []
+    params = ", ".join(f"{sv_type(a.annotation)} {mangle(a.arg)}"
+                       for a in ctor.args.args)
+    fwd = ", ".join(mangle(a.arg) for a in ctor.args.args)
+    addr = mangle(ctor.args.args[0].arg) if ctor.args.args else "0"
+    return ([
+        "    // The PSS constructor is the base's; this class binds its own",
+        "    // register groups after it.",
+        f"    function void {mangle(ctor.name)}({params});",
+        f"      super.{mangle(ctor.name)}({fwd});"]
+        + [f"      {members[g]} = new({IMP_MEMBER}, {addr});" for g in own]
+        + ["    endfunction", ""])
 
 
-def _super_blocks(comp) -> List[object]:
-    return [fn for fn in (comp.functions or [])
-            if SUPER_BLOCK in (fn.metadata or {})]
+def _emitter(fn, comp, members, base, namer, ctor_names, ctx):
+    be = _BodyEmitter(fn, comp, members, namer=namer, ctor_names=ctor_names,
+                      ctx=ctx)
+    be.super_base = base
+    return be
 
 
-def _init_hook_defs(comp, members, subs, namer=None,
+def _init_hook_defs(comp, view, base, members, subs, namer=None,
                     ctor_names=None, ctx=None) -> List[str]:
-    """The construction hooks this component has something to put in.
+    """The construction hooks this class has something to put in.
 
     `pss_init_down`/`pss_init_up` hold its `exec` blocks of that kind, in
-    source order (LRM 20.1 d); `pss_init_subs` runs each sub-component's whole
-    construction, in declaration order. A base's blocks that `super;` reaches
-    (the flattened view) are private methods of their own.
+    source order (LRM 20.1 d); a class that declares none inherits its base's
+    (Table 27), and `super;` in one is `super.pss_init_down()`.
+    `pss_init_subs` runs its base's sub-components first, then each of its
+    own, in declaration order.
     """
     lines: List[str] = []
-
-    def block_body(fns, method):
-        body = []
-        for fn in fns:
-            be = _BodyEmitter(fn, comp, members, namer=namer,
-                              ctor_names=ctor_names, ctx=ctx)
-            body += be.stmts(fn.body, 3)
-        lines.append(f"    {method}")
-        lines.extend(body)
+    for kind in INIT_EXEC_KINDS:
+        blocks = [fn for fn in view.functions
+                  if exec_kind(fn) == kind
+                  and SUPER_BLOCK not in (fn.metadata or {})]
+        if not blocks:
+            continue
+        lines.append(f"    virtual function void pss_{kind}();")
+        for fn in blocks:
+            be = _emitter(fn, comp, members, base, namer, ctor_names, ctx)
+            lines += be.stmts(fn.body, 3)
         lines.append("    endfunction")
         lines.append("")
-
-    for fn in _super_blocks(comp):
-        block_body([fn], f"function void {fn.name}();")
-    for kind in INIT_EXEC_KINDS:
-        blocks = _init_blocks(comp, kind)
-        if blocks:
-            block_body(blocks, f"virtual function void pss_{kind}();")
     if subs:
         lines.append("    virtual function void pss_init_subs();")
+        if base is not None:
+            lines.append("      super.pss_init_subs();")
         for sub in subs.values():
             m = members[sub.name]
             if sub.is_array:
@@ -1805,23 +1884,6 @@ def _init_hook_defs(comp, members, subs, namer=None,
             else:
                 lines.append(f"      {m}.pss_do_init();")
         lines.append("    endfunction")
-        lines.append("")
-    return lines
-
-
-def _operation_defs(comp, members: Dict[str, str], namer=None,
-                    ctor_names=None, ctx=None) -> List[str]:
-    """Export operations. `virtual`, not plain -- they implement the export
-    interface's pure virtuals, and stricter simulators require the override."""
-    lines: List[str] = []
-    for fn in _operations(comp, ctor_names):
-        be = _BodyEmitter(fn, comp, members, namer=namer,
-                          ctor_names=ctor_names, ctx=ctx)
-        blank_line(lines)
-        lines += doc_block(getattr(fn, "doc", None), "    ")
-        lines.append(f"    virtual task {mangle(fn.name)}({_signature(fn)});")
-        lines += be.stmts(fn.body, 3)
-        lines.append("    endtask")
         lines.append("")
     return lines
 
@@ -1861,35 +1923,264 @@ def _routine(fn, be, name: str, prefix: str, pad: str) -> List[str]:
     return lines
 
 
-def _solve_fn_defs(comp, members: Dict[str, str], namer=None,
-                   ctor_names=None, ctx=None) -> List[str]:
-    """The component's `solve function`s (the constructor aside): SV
-    functions, called from solve context -- another solve function, the
-    constructor, an `exec init_*` block -- and returning their value."""
+def _method_defs(comp, view, base, members, namer=None, ctor_names=None,
+                 ctx=None) -> List[str]:
+    """The functions this class declares -- `solve` ones as SV functions,
+    `target` and unqualified ones as tasks -- all `virtual`: component
+    functions are virtual (a base's code calling `f` runs the override)."""
     lines: List[str] = []
-    for fn in comp.functions:
-        if func_kind(fn, ctor_names) is not FuncKind.EXPORT_SOLVE:
+    for fn in view.functions:
+        if func_kind(fn, ctor_names) not in (FuncKind.EXPORT_OP,
+                                             FuncKind.EXPORT_SOLVE):
             continue
-        be = _BodyEmitter(fn, comp, members, namer=namer,
-                          ctor_names=ctor_names, ctx=ctx)
+        be = _emitter(fn, comp, members, base, namer, ctor_names, ctx)
         blank_line(lines)
         lines += _routine(fn, be, mangle(fn.name), "virtual ", "    ")
         lines.append("")
     return lines
 
 
+def _overrides_ok(comp, view, base, ctor_names=None) -> None:
+    """Refuse a virtual override whose prototype differs from its base's
+    (design D10): SystemVerilog requires them to match, and PSS lets a
+    derived function shadow one of another signature. The constructor is
+    not virtual, so it may differ."""
+    if base is None:
+        return
+    inherited = {f.name: f for f in (base.functions or [])
+                 if exec_kind(f) is None}
+    for fn in view.functions:
+        if func_kind(fn, ctor_names) not in (FuncKind.EXPORT_OP,
+                                             FuncKind.EXPORT_SOLVE):
+            continue
+        b = inherited.get(fn.name)
+        if b is None or func_kind(b, ctor_names) is FuncKind.CONSTRUCTOR:
+            continue
+        def ret(f):
+            return sv_type(f.returns) if f.returns is not None else "void"
+        if (is_task(fn) != is_task(b) or _signature(fn) != _signature(b)
+                or ret(fn) != ret(b)):
+            raise ValueError(
+                f"'{_strip_pkg(comp.name)}::{fn.name}' shadows "
+                f"'{_strip_pkg(base.name)}::{fn.name}' with a different "
+                f"signature; op-model-sv renders component functions as "
+                f"virtual methods, which must match their base's prototype")
+
+
+def _entry_defs(comp, entries, members, base, namer=None, ctor_names=None,
+                ctx=None) -> List[str]:
+    """Exported actions (`--export-action`) that run in this component, each
+    a task: no arguments, no result (`export_action.py`). The factory's
+    method of the entry's name calls it (design D12). The base actions'
+    bodies its `super;` reaches are private tasks of their own, so their
+    locals and a `return` in one stay their own."""
+    lines: List[str] = []
+    for entry in entries:
+        for k, fn in enumerate(entry.functions):
+            be = _emitter(fn, comp, members, base, namer, ctor_names, ctx)
+            blank_line(lines)
+            if k == 0:
+                lines.append(f"    // Exported action `{entry.action}`.")
+                lines.append(f"    virtual task {ACTION_PREFIX}{entry.name}();")
+            else:
+                lines.append(f"    // `super;` of `{entry.action}`: the body "
+                             f"of `{fn.metadata.get('super_of', '?')}`.")
+                lines.append(f"    protected task {fn.name}();")
+            lines += be.stmts(fn.body, 3)
+            lines.append("    endtask")
+            lines.append("")
+    return lines
+
+
+def emit_component_class(model, comp, namer=None) -> str:
+    """One PSS component type as one SV class (design D1).
+
+    It extends its PSS base's class, or the generated component base, and
+    declares only what the component declares; the rest is its base's, and
+    `super.f(...)`, `super.x` and `super;` are SystemVerilog's own. Members
+    are public and keep their PSS names, so another component reaches them
+    as PSS does (`sub.a`, `ch[i].wake`). `new(imp)` takes only the import
+    API, so a derived class's `super.new(imp)` is always expressible (D2);
+    the model's constructor is a method (D3).
+    """
+    root, ctx, ctor_names = model.root, model.ctx, model.ctor_names
+    base, view = declared_view(ctx, comp)
+    _overrides_ok(comp, view, base, ctor_names)
+    members = _members(comp)
+    subs = {s.name: s for s in sub_components(view)}
+    parent = (_strip_pkg(base.name) if base is not None
+              else component_base_name(root))
+
+    lines = doc_block(getattr(comp, "doc", None), "  ") + [
+        f"  class {_strip_pkg(comp.name)} extends {parent};"]
+    decls = _member_decls(view, subs)
+    lines += decls + ([""] if decls else [])
+    lines += [f"    function new({imp_if_name(root)} imp);",
+              "      super.new(imp);"]
+    lines += _construct_body(view, members, subs)
+    lines += ["    endfunction", ""]
+
+    own_ctor = _ctor(view, ctor_names)
+    if own_ctor is not None:
+        lines += _initialize_def(comp, own_ctor, members, super_base=base)
+    elif base is not None:
+        lines += _inherited_ctor_def(comp, view, _ctor(comp, ctor_names),
+                                     members)
+    lines += _init_hook_defs(comp, view, base, members, subs, namer,
+                             ctor_names, ctx)
+    lines += _method_defs(comp, view, base, members, namer, ctor_names, ctx)
+    lines += _entry_defs(comp, model.entries_of(comp), members, base, namer,
+                         ctor_names, ctx)
+    while lines and lines[-1] == "":
+        lines.pop()
+    lines.append("  endclass")
+    return "\n".join(lines)
+
+
+# --- the factory ------------------------------------------------------------
+
+def _entry_path(model, entry) -> str:
+    """The expression, from the factory, of the one component instance an
+    exported action runs in.
+
+    The root's own entry runs in the root. Elsewhere, it is matched with the
+    instance of its component type -- and with several, one is chosen at
+    random per call (design D12), which is not generated yet: refused, so the
+    choice is never made silently."""
+    if model.is_root(entry.comp):
+        return ROOT_MEMBER
+    paths: List[str] = []
+
+    def walk(comp, path):
+        for sub in sub_components(comp):
+            here = [f"{path}.{mangle(sub.name)}[{i}]" for i in range(sub.size)]                 if sub.is_array else [f"{path}.{mangle(sub.name)}"]
+            for p in here:
+                if sub.dtype is entry.comp:
+                    paths.append(p)
+                walk(sub.dtype, p)
+
+    walk(model.root, ROOT_MEMBER)
+    if len(paths) != 1:
+        raise ValueError(
+            f"exported action '{entry.action}' runs in "
+            f"'{_strip_pkg(entry.comp.name)}', which has {len(paths)} "
+            f"instances under the root; op-model-sv calls an exported action "
+            f"in exactly one instance for now")
+    return paths[0]
+
+
+def _check_context_names(model) -> None:
+    """The factory implements the context API AND the import API, in one SV
+    method namespace (design D14): refuse a clash rather than emit a class
+    with two methods of one name."""
+    taken: Dict[str, str] = {"create": "the factory's create()",
+                             "new": "the factory's constructor"}
+    for m, _, _ in _MEM_PRIMS:
+        taken[m] = f"the memory primitive '{m}'"
+    for fn in _import_fns(model.ctx, model.ctor_names):
+        taken[mangle(fn.name)] = f"the import function '{fn.name}'"
+    for what, name in ([("exported function", fn.name) for fn in model.exports]
+                       + [("exported action", e.name) for e in model.entries]):
+        other = taken.get(mangle(name))
+        if other is not None:
+            raise ValueError(
+                f"{what} '{name}' has the name of {other}: both are methods "
+                f"of {factory_name(model.root)}; rename one")
+        taken[mangle(name)] = f"the {what} '{name}'"
+
+
+def emit_factory(model) -> str:
+    """``<root>_root #(Timp)``: builds the tree, and is the root context.
+
+    The one class that knows the platform's type (design D5). It implements
+    the import API by forwarding to the platform object, and hands ITSELF to
+    the tree, so no component class is parameterized. `create()` runs the
+    root's constructor with its arguments, then PSS construction (D3), and
+    returns the context API (D9)."""
+    _check_context_names(model)
+    root = model.root
+    name = factory_name(root)
+    rcls = _root_name(root)
+    imp_if = imp_if_name(root)
+    ctor = _ctor(root, model.ctor_names)
+    args = list(ctor.args.args) if ctor is not None else []
+    params = "".join(f", {sv_type(a.annotation)} {mangle(a.arg)}" for a in args)
+    fwd = ", ".join(mangle(a.arg) for a in args)
+
+    lines = [
+        f"  class {name} #(type Timp = {imp_if}) implements {imp_if}, "
+        f"{ctxt_if_name(root)};",
+        f"    protected Timp {IMP_MEMBER};",
+        f"    protected {rcls} {ROOT_MEMBER};",
+        "",
+        "    // Only create() builds a model.",
+        "    protected function new(Timp imp);",
+        f"      {IMP_MEMBER} = imp;",
+        f"      {ROOT_MEMBER} = new(this);",
+        "    endfunction",
+        "",
+        f"    static function {ctxt_if_name(root)} create(Timp imp{params});",
+        f"      {name} #(Timp) model = new(imp);",
+    ]
+    if ctor is not None:
+        lines.append(f"      model.{ROOT_MEMBER}.{mangle(ctor.name)}({fwd});")
+    lines += [
+        f"      model.{ROOT_MEMBER}.pss_do_init();",
+        "      return model;",
+        "    endfunction",
+    ]
+
+    for fn in model.exports:
+        out = ["status"] if fn.returns is not None else []
+        call = ", ".join(out + [mangle(a.arg) for a in fn.args.args])
+        lines += ["",
+                  f"    // Exported function `{fn.name}`, run on the root.",
+                  f"    virtual task {mangle(fn.name)}({_signature(fn)});",
+                  f"      {ROOT_MEMBER}.{mangle(fn.name)}({call});",
+                  "    endtask"]
+    for entry in model.entries:
+        lines += ["",
+                  f"    // Exported action `{entry.action}`.",
+                  f"    virtual task {mangle(entry.name)}();",
+                  f"      {_entry_path(model, entry)}.{ACTION_PREFIX}{entry.name}();",
+                  "    endtask"]
+
+    # The import API, forwarded to the platform object.
+    lines.append("")
+    for meth, dt, is_read in _MEM_PRIMS:
+        data = f"output {dt} data" if is_read else f"{dt} data"
+        lines.append(
+            f"    virtual task {meth}(addr_handle_t addr, {data}); "
+            f"{IMP_MEMBER}.{meth}(addr, data); endtask")
+    for fn in _import_fns(model.ctx, model.ctor_names):
+        names = [mangle(a.arg) for a in fn.args.args]
+        if func_kind(fn, model.ctor_names) is FuncKind.IMPORT_TASK:
+            call = ", ".join((["status"] if fn.returns is not None else [])
+                             + names)
+            lines.append(f"    virtual {_import_proto(fn, model.ctor_names)}; "
+                         f"{IMP_MEMBER}.{mangle(fn.name)}({call}); endtask")
+        else:
+            ret = "return " if fn.returns is not None else ""
+            lines.append(f"    virtual {_import_proto(fn, model.ctor_names)}; "
+                         f"{ret}{IMP_MEMBER}.{mangle(fn.name)}"
+                         f"({', '.join(names)}); endfunction")
+    lines.append("  endclass")
+    return "\n".join(lines)
+
+
+# --- package functions --------------------------------------------------------
+
 def emit_package_functions(functions, ctx=None, ctor_names=None) -> str:
     """Package-scope functions the model calls (`pkg_functions.py`), as
     `automatic` package tasks and functions -- automatic, because a PSS
     function may recurse. A package function has no component, so one that
-    reaches the platform (a memory primitive, `yield`) is refused: nothing
+    reaches the platform (a memory primitive, an import) is refused: nothing
     here gives it the import API yet."""
     lines: List[str] = []
     for fn in functions:
         be = _BodyEmitter(fn, None, {}, ctor_names=ctor_names, ctx=ctx)
         text = _routine(fn, be, pkg_function_name(fn), "automatic ", "  ")
-        if any("m_imp." in l or any(f"{m}(" in l for m, _, _ in _MEM_PRIMS)
-               for l in text[1:]):
+        if any(f"{IMP_MEMBER}." in l for l in text[1:]):
             raise ValueError(
                 f"package function '{pf.qualified_name(fn)}' reaches the "
                 f"platform; op-model-sv does not pass package functions the "
@@ -1901,183 +2192,3 @@ def emit_package_functions(functions, ctx=None, ctor_names=None) -> str:
                 for l in text]
         lines += text
     return "\n".join(lines)
-
-
-def _entry_defs(comp, entries, members: Dict[str, str], namer=None,
-                ctor_names=None, ctx=None) -> List[str]:
-    """Exported actions (`--export-action`), each a task of the component it
-    runs in: no arguments, no result (`export_action.py`). The base actions'
-    bodies its `super;` reaches are private tasks of their own, so their
-    locals and a `return` in one stay their own."""
-    lines: List[str] = []
-    for entry in entries:
-        for k, fn in enumerate(entry.functions):
-            be = _BodyEmitter(fn, comp, members, namer=namer,
-                              ctor_names=ctor_names, ctx=ctx)
-            blank_line(lines)
-            if k == 0:
-                lines.append(f"    // Exported action `{entry.action}`.")
-                lines.append(f"    virtual task {mangle(fn.name)}();")
-            else:
-                lines.append(f"    // `super;` of `{entry.action}`: the body "
-                             f"of `{fn.metadata.get('super_of', '?')}`.")
-                lines.append(f"    protected task {fn.name}();")
-            lines += be.stmts(fn.body, 3)
-            lines.append("    endtask")
-            lines.append("")
-    return lines
-
-
-def _accessor_defs(comp, members: Dict[str, str], subs: Dict[str, SubComp]) -> List[str]:
-    """Implementations of the interface's sub-component accessors."""
-    lines: List[str] = []
-    for sub in subs.values():
-        sub_if = f"{_strip_pkg(sub.dtype.name)}_if"
-        m = members[sub.name]
-        nm = mangle(sub.name)
-        if sub.is_array:
-            lines.append(f"    virtual function {sub_if} {nm}(int index);")
-            lines.append(f"      return {m}[index];")
-            lines.append(f"    endfunction")
-            lines.append(f"    virtual function int {nm}_size();")
-            lines.append(f"      return {sub.size};")
-            lines.append(f"    endfunction")
-        else:
-            lines.append(f"    virtual function {sub_if} {nm}();")
-            lines.append(f"      return {m};")
-            lines.append(f"    endfunction")
-        lines.append("")
-    return lines
-
-
-def emit_subcomponent_class(comp, root, namer=None, ctor_names=None,
-                            entries=(), ctx=None) -> str:
-    """A non-root component's implementation class.
-
-    Deliberately **not** parameterized. Only the root carries `#(type IMP_T)`,
-    because the root's accessors return sub-component interface handles: if a
-    sub-component class were parameterized, its parameter would leak into the
-    root's interface, and the export API would stop being a plain handle type.
-
-    It extends the generated component base, which holds the import API --
-    the root's import interface, so a sub-component can both reach memory and
-    use the root's other import functions. `new()` takes only that, so every
-    class is constructible the same way (design D2); the model's constructor
-    is a method (D3).
-    """
-    name = _strip_pkg(comp.name)
-    api = f"{name}_if"
-    bus_if = f"{_strip_pkg(root.name)}_import_if"
-    members = _members(comp)
-    subs = {s.name: s for s in sub_components(comp)}
-
-    lines = doc_block(getattr(comp, "doc", None), "  ") + [
-        f"  class {name} extends {component_base_name(root)} implements {api};",
-    ]
-    lines += _member_decls(comp, members, subs)
-    lines.append("")
-    lines.append(f"    function new({bus_if} imp);")
-    lines.append(f"      super.new(imp);")
-    lines += _construct_body(comp, members, subs, bus="m_imp")
-    lines.append("    endfunction")
-    lines.append("")
-    lines += _initialize_def(comp, _ctor(comp, ctor_names), members, subs,
-                             bus="m_imp")
-    lines += _init_hook_defs(comp, members, subs, namer, ctor_names, ctx)
-    lines += _solve_fn_defs(comp, members, namer, ctor_names, ctx)
-    lines += _operation_defs(comp, members, namer, ctor_names, ctx)
-    lines += _entry_defs(comp, entries, members, namer, ctor_names, ctx)
-    lines += _accessor_defs(comp, members, subs)
-    lines.append("  endclass")
-    return "\n".join(lines)
-
-
-def emit_component(root, namer=None,
-                   ctor_names=None, entries=(), ctx=None) -> str:
-    """The component class, named after the component itself -- one class that is
-
-      * the **export implementation** (`implements <comp>_if`, the operations),
-      * the **import redirect** (`implements <comp>_import_if`, forwarding each
-        primitive to the user object `m_imp`), and
-      * the **factory** (static `create()`).
-
-    It holds the register model and the sub-components, constructed with
-    ``this`` as the bus: because the class is-a ``pss_mem_if`` (via the import
-    interface), register accesses route ``m_regs -> this.write32/read32 ->
-    m_imp`` to the user object. ``IMP_T`` defaults to the component's
-    ``import_if``; override it to wire a signature-compatible (duck-typed)
-    object that does not formally implement it.
-
-    It does not extend the component base: its `m_imp` is the user object,
-    of type ``IMP_T``. It carries the construction hooks itself instead.
-    """
-    name = _strip_pkg(root.name)
-    api = f"{name}_if"
-    import_if = f"{name}_import_if"
-    members = _members(root)
-    subs = {s.name: s for s in sub_components(root)}
-
-    ctor = _ctor(root, ctor_names)
-    ctor_params = ""
-    fwd = ""
-    if ctor is not None and ctor.args.args:
-        ps = [f"{sv_type(a.annotation)} {mangle(a.arg)}" for a in ctor.args.args]
-        names = [mangle(a.arg) for a in ctor.args.args]
-        ctor_params = ", " + ", ".join(ps)
-        fwd = ", ".join(names)
-
-    lines = doc_block(getattr(root, "doc", None), "  ") + [
-        f"  class {name} #(type IMP_T = {import_if}) implements {api}, {import_if};",
-        f"    protected IMP_T m_imp;",
-    ]
-    lines += _member_decls(root, members, subs)
-    lines.append("")
-
-    # Construction only: `create()` runs the model's constructor and then
-    # PSS construction, in that order (design D3).
-    lines.append(f"    protected function new(IMP_T imp);")
-    lines.append(f"      m_imp = imp;")
-    lines += _construct_body(root, members, subs, bus="this")
-    lines.append("    endfunction")
-    lines.append("")
-    lines += _initialize_def(root, ctor, members, subs, bus="this")
-    # No base to inherit the empty hooks or `pss_do_init` from.
-    empty = _empty_hooks(_defined_hooks(root, subs))
-    lines += empty + ([""] if empty else []) + _DO_INIT
-    lines += _init_hook_defs(root, members, subs, namer, ctor_names, ctx)
-
-    lines += _solve_fn_defs(root, members, namer, ctor_names, ctx)
-    lines += _operation_defs(root, members, namer, ctor_names, ctx)
-    lines += _entry_defs(root, entries, members, namer, ctor_names, ctx)
-    lines += _accessor_defs(root, members, subs)
-
-    # import redirect: forward each memory-access primitive to the user object.
-    for meth, dt, is_read in _MEM_PRIMS:
-        if is_read:
-            lines.append(
-                f"    virtual task {meth}(addr_handle_t addr, output {dt} data); "
-                f"m_imp.{meth}(addr, data); endtask")
-        else:
-            lines.append(
-                f"    virtual task {meth}(addr_handle_t addr, {dt} data); "
-                f"m_imp.{meth}(addr, data); endtask")
-
-    # static factory entry point -> returns the export-interface handle.
-    lines += [
-        f"    static function {api} create(IMP_T imp{ctor_params});",
-        f"      {name} #(IMP_T) self = new(imp);",
-    ]
-    if ctor is not None:
-        lines.append(f"      self.{mangle(ctor.name)}({fwd});")
-    lines += [
-        f"      self.pss_do_init();",
-        f"      return self;",
-        f"    endfunction",
-        f"  endclass",
-    ]
-    return "\n".join(lines)
-
-
-def lower_root_glue(root) -> str:
-    """Import interface + the merged component class for the root component."""
-    return "\n\n".join([emit_import_api(root), emit_component(root)])

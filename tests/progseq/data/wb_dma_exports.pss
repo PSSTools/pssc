@@ -1,0 +1,17 @@
+// The WB DMA operation model's API, as an environment declares it.
+//
+// The device tree (fw-wb-dma `src/pss`, copied to examples/op_model/pss/)
+// exports nothing: which operations an integration hands its platform is the
+// integration's choice, like everything else its README keeps out of the
+// device. op-model-sv takes its API from exports only (design D11), so the
+// tests that generate SV from the model present it with this file.
+//
+// Exporting an instance function is an extension to LRM 20.4.2 (pssparser
+// PSS120): each runs on the root instance the platform calls it through.
+extend component wb_dma_c {
+    export target function configure_interrupt_routing;
+    export target function notify_irq;
+    export target function pause_engine;
+    export target function read_descriptor_residual;
+    export target function write_descriptor;
+}

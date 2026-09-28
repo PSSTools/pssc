@@ -97,7 +97,7 @@ module top;
   import pssc_reg_pkg::*;
   import pss_top_pkg::*;
 
-  class plat_c implements pss_top_import_if;
+  class plat_c implements pss_top_imp_if;
     virtual task write8(addr_handle_t addr, bit [7:0] data); endtask
     virtual task read8(addr_handle_t addr, output bit [7:0] data); data = 0; endtask
     virtual task write16(addr_handle_t addr, bit [15:0] data); endtask
@@ -115,7 +115,7 @@ module top;
 
   initial begin
     plat_c plat = new();
-    pss_top_if dut = pss_top#(plat_c)::create(plat, 64'h4000_0000);
+    pss_top_ctxt_if dut = pss_top_root#(plat_c)::create(plat, 64'h4000_0000);
     dut.run();
     $finish;
   end
@@ -130,11 +130,17 @@ _EXPECTED = (["W 40000000 1"] + ["R 40000004"] * 3
              + ["W 40000100 2"] + ["R 40000104"] * 3 + ["W 40000100 0"])
 
 
+#: What the testbench calls. op-model-sv takes its API from exports, so the
+#: environment exports the root's `run` -- as an extension, which leaves each
+#: model as the PSS it is about.
+_EXPORT_RUN = "\nextend component pss_top { export target function run; }\n"
+
+
 def _build_and_run(tmp_path, model: str, tb: str) -> str:
-    """Generate ``model`` rooted at `pss_top`, build it with ``tb``, run it,
-    and return what it printed."""
+    """Generate ``model`` rooted at `pss_top`, with its `run` exported, build
+    it with ``tb``, run it, and return what it printed."""
     src = tmp_path / "model.pss"
-    src.write_text(model)
+    src.write_text(model + _EXPORT_RUN)
     out = tmp_path / "gen"
     ns = argparse.Namespace(progseq_root="pss_top",
                             progseq_package="pss_top_pkg",

@@ -65,6 +65,23 @@ def ast_doc(node: Any) -> Optional[str]:
 
 
 @dataclasses.dataclass(frozen=True)
+class Export:
+    """One `export target function f;` (LRM 20.4.2).
+
+    ``scope`` is the qualified name of the component whose body (or
+    `extend`) declares the export, or None at package scope. ``function`` is
+    the name as written: the linker bound it in that scope and checked it
+    names a function, so looking it up by name in that component -- after
+    inheritance is completed, when a base's functions are there too -- finds
+    what the linker found. An instance function is an extension (pssparser's
+    PSS120): it runs on the instance the environment calls it through.
+    """
+    scope: Optional[str]
+    function: str
+    where: str = ""
+
+
+@dataclasses.dataclass(frozen=True)
 class _GenericRef:
     """A generic constraint declaration visible from some referencing type.
 
@@ -128,6 +145,11 @@ class AstToIrContext:
         # so these have no IR type to live on; without this map they were
         # dropped, and every call to one reached the backend unresolvable.
         self.functions: Dict[str, ir.Function] = {}
+        # `export target function f;` declarations (20.4.2), in source order.
+        # An IR type has nowhere to carry them, and an export names a function
+        # declared elsewhere -- in a component, possibly a base's -- so the
+        # declaring scope is recorded beside the name. See `Export`.
+        self.exports: List["Export"] = []
         # PSS name -> IR name for a local that shadows an outer one (20.7.1). A
         # nested block is flattened into its parent's statement list, so the
         # inner declaration gets a fresh name for the extent of its block.
@@ -483,6 +505,8 @@ class AstToIrTranslator:
                 self._translate_typedef(ctx, child)
             elif isinstance(child, pss_ast.FunctionImportProto):
                 self._translate_import_proto(ctx, child)
+            elif isinstance(child, pss_ast.ExportFunction):
+                self._record_export(ctx, child, None, namespace_prefix)
             elif isinstance(child, pss_ast.Field):
                 # A package- or global-scope field is a `static const`. Its
                 # value is folded so it can size an array: `wb_dma_ch_c
@@ -490,6 +514,21 @@ class AstToIrTranslator:
                 # as `size=-1`, or nothing downstream can emit the accessors or
                 # unroll the constructor loop.
                 self._record_const(ctx, child, namespace_prefix)
+
+    @staticmethod
+    def _record_export(ctx: AstToIrContext, node, scope: Optional[str],
+                       namespace_prefix: str = "") -> None:
+        """Record ``export target function f;`` on ``ctx.exports``. Nothing
+        is translated: the function is declared, and translated, elsewhere.
+        At package scope the name is qualified the way `ctx.functions` keys
+        a package function."""
+        rn = node.getName()
+        fid = rn.getId() if rn is not None else None
+        if fid is None:
+            return
+        ctx.exports.append(Export(scope=scope,
+                                  function=f"{namespace_prefix}{fid.getId()}",
+                                  where=_ast_where(node)))
 
     def _record_template_params(self, ctx: AstToIrContext, decl) -> None:
         """Note the template parameter names a type declaration introduces.
@@ -667,6 +706,8 @@ class AstToIrTranslator:
                 func = self._translate_function(ctx, child)
                 if func:
                     target_ir.functions.append(func)
+            elif isinstance(child, pss_ast.ExportFunction):
+                self._record_export(ctx, child, qualified_name)
             elif isinstance(child, pss_ast.Action):
                 # Nested action -- registered under its qualified name, with the
                 # enclosing component recorded as its parent.

@@ -209,495 +209,11 @@ package wb_dma_c_pkg;
     wb_dma_desc_csr_s csr;
   } wb_dma_desc_s;
 
-  // ----- Programming API: wb_dma_ch_c -----
-  /**
-   * The per-channel MMIO operation model (§3).
-   *
-   * Every operation the processor initiates against ONE DMA channel lives here.
-   * The engine-global operations live on :pss:comp:`wb_dma_c`, which owns an
-   * array of these.
-   *
-   * **Why per-channel components rather than a `chan` parameter.** The completion
-   * condition is a channel register, so making the channel an instance rather
-   * than an index keeps every access in the operation code index-free
-   * (``regs.csr.read()``), which is both clearer and safer than indexing a
-   * register array with a runtime value. It also matches the review decision that
-   * a waking thread reads its own channel's status register (§3.1.1). The cost is
-   * that each channel binds its own top-level register group.
-   *
-   * **Two layers, and every target gets both.**
-   *
-   * ``core``
-   *     ``configure_channel``, ``set_auto_restart``, ``set_software_pointer``,
-   *     ``transfer_single_start``, ``transfer_list_start``,
-   *     ``stop_channel_start``, ``check_completion``. Arm-and-return plus a
-   *     single-read poll; nothing here ever waits. The low-level driver API.
-   *
-   * ``end-to-end``
-   *     ``wait_completion``, ``transfer_single``, ``transfer_list``,
-   *     ``stop_channel``. Each is a ``*_start()`` followed by
-   *     ``repeat { probe_status; wait_hint }``.
-   *
-   * What varies between profiles is one function body -- ``wait_hint()``, which
-   * either suspends on :pss:field:`wake` or spins with ``yield``. Nothing else
-   * reads ``HAS_EVENT_WAIT`` except ``notify_irq()``, the event producer.
-   *
-   * The end-to-end layer adds no device knowledge, only the loop. That is what
-   * makes the core trustworthy without a second regression: every SystemVerilog
-   * run drives the core through the end-to-end wrappers.
-   */
-  interface class wb_dma_ch_c_if;
-
-    /**
-     * Block until the operation running on this channel reaches a terminal state.
-     *
-     * *§3.1.* Not an operation in its own right: it is the ONE place in this tree
-     * that waits for a completion, and therefore the whole of what the end-to-end
-     * operations add over their ``*_start()`` halves. Present on every profile --
-     * these functions do not need a scheduler, they need a way to wait, and that
-     * choice is made once, in ``wait_hint()``.
-     *
-     * Waiting is realised as ``repeat { probe_status; wait_hint }``, where
-     * ``probe_status()`` is the same single CSR read ``check_completion()`` uses.
-     * Nothing is edge-triggered: the condition is re-read from the device on every
-     * iteration, waking threads test their own conditions, and a spurious wake is
-     * harmless. That is what makes the loop correct whether ``wait_hint()``
-     * suspends on an interrupt or merely spins -- the two differ in what a lap
-     * costs, not in what the loop concludes. **The wake is a hint; CHn_CSR is the
-     * event.**
-     *
-     * That sharing is the argument for the whole start/wait split. The
-     * non-blocking core is not a second implementation to be kept in step with
-     * this one -- it is the body of this one, hoisted. A SystemVerilog regression
-     * that only ever calls ``transfer_single()`` still executes every register
-     * access a firmware caller will make, in the same order, so the two paths
-     * cannot drift. That is why there is no second regression for the firmware
-     * profile.
-     *
-     * **The side-effect problem (§3.1.1).** ``probe_status()`` runs an unbounded
-     * number of times and it consumes state: reading CHn_CSR clears ERR and the
-     * three interrupt-source bits. It is safe because the value is captured by the
-     * same read that observes it, the loop exits holding it, and AT MOST ONE
-     * OPERATION PER CHANNEL AT A TIME makes the polling thread the sole consumer.
-     * ``stop_channel()`` is the one deliberate exception.
-     *
-     * **The guard is released here** because an operation is over when its
-     * completion has been reported, which is this return. Releasing here rather
-     * than in each caller keeps the claim and the release one fact in two places
-     * instead of one in three.
-     *
-     * A stale ``wake`` token costs one read, exactly, and only on the event-wait
-     * profile: the loop probes BEFORE it ever waits, and ``wake``'s depth of 1
-     * caps the leftover at one, so the worst case is probe, wait-immediate, probe,
-     * wait-blocks. There is deliberately no drain step at entry -- it would cost
-     * the same read it saves.
-     *
-     * .. warning::
-     *    On the event-wait profile the routing prerequisite is load-bearing. A
-     *    test that never called ``configure_interrupt_routing()`` raises no
-     *    interrupt, so nothing calls ``notify_irq()``, so this blocks forever.
-     *    Blind posting softens it -- any ONE routed channel's interrupt wakes
-     *    every waiter -- so a partially routed test still makes progress and a
-     *    test that routes nothing deadlocks. That is intended: a hang is a more
-     *    honest result than a green test whose completion path was never real. If
-     *    you are debugging a hang here, check INT_MSK_A/B before you look at the
-     *    DMA. A polling profile has no such exposure, because ``wait_hint()``
-     *    spins -- the routing requirement belongs to the wait primitive, not to
-     *    this operation.
-     */
-    pure virtual task wait_completion(output wb_dma_status_e status);
-
-    /**
-     * Run one transfer to completion and report how it ended.
-     *
-     * *§3.2 group 1, end-to-end.* Completes when the channel's DONE (or ERR)
-     * interrupt has been observed and the CHn_CSR read has returned the status and
-     * cleared the source. Waits for channel DONE or ERR -- this is the core driver
-     * FSM: submit, RUNNING, completion.
-     *
-     * The body is the two halves, named. All of the device knowledge -- what to
-     * program, in what order, which write arms the channel -- is in
-     * ``transfer_single_start()``; all of the waiting is in ``wait_completion()``.
-     * This function contributes the composition and the return type.
-     *
-     * .. warning::
-     *    Two callers' obligations this signature does not encode, both stated in
-     *    full on ``transfer_single_start()``. With
-     *    ``mode == WB_DMA_HW_HANDSHAKE`` this call cannot complete on its own:
-     *    something must be calling ``request_chunk()`` on the matching
-     *    ``wb_dma_hs_c`` concurrently (§2.2). With ``cfg.auto_restart`` this call
-     *    is DELIBERATELY NON-TERMINATING: another thread must clear ARS or abort
-     *    the channel. It is a blocking read on a stream that ends when someone
-     *    closes it, so an ARS transfer must never be the only operation a scenario
-     *    waits on.
-     *
-     * :param cfg: what to program before arming
-     */
-    pure virtual task transfer_single(output wb_dma_status_e status, ref wb_dma_ch_cfg_s cfg);
-
-    /**
-     * Run a descriptor chain to completion and report how it ended.
-     *
-     * *§3.2 group 3, end-to-end.* Completes when a descriptor with EOL set has
-     * been processed -- the engine stops, sets DONE in CHn_CSR, and raises the
-     * channel interrupt. Waits for EOL DONE, plus optional intermediate wakes:
-     * RUNNING has internal structure here, being per-descriptor progress inside
-     * one outstanding request.
-     *
-     * The four-step arming procedure of §3.3 lives in ``transfer_list_start()``,
-     * along with the note about which configuration a descriptor does NOT carry
-     * and must therefore come from a prior ``configure_channel()``.
-     *
-     * Unlike ``transfer_single()`` this completion is unconditional: ARS is
-     * documented as meaningless and ignored with external descriptors (§3.3). Two
-     * end-to-end operations differing only in completion contract is why neither
-     * subsumes the other -- and the difference is entirely in the arming half, not
-     * in the wait, which is why both share one ``wait_completion()``.
-     *
-     * :param head: head of the descriptor chain, as returned when the list was
-     *              built; must be reachable from interface 0
-     */
-    pure virtual task transfer_list(output wb_dma_status_e status, input addr_handle_t head);
-
-    /**
-     * Abort whatever is running on this channel and wait for the abort to land.
-     *
-     * *§3.2 group 1, end-to-end.* Completes when STOP has been written, the
-     * channel has aborted, ERR is set, and the error interrupt (if enabled) has
-     * been raised. Waits for channel ERR -- an abort path that completes the SAME
-     * outstanding request from a second entry point.
-     *
-     * An abort is reported as an ERROR, not as a clean stop. Note the consequence
-     * for the scenario layer: the aborted ``transfer_single()`` also returns, with
-     * ``WB_DMA_ERROR``. Two end-to-end operations complete off one event.
-     *
-     * **It has its own loop rather than calling** ``wait_completion()``. By
-     * definition it aborts a transfer that is still running, so it violates the
-     * one-operation-per-channel rule that makes the polling read safe.
-     * ``stop_channel_start()`` claims no token, so this function holds none -- and
-     * ``wait_completion()`` ends by RELEASING one, which would take the aborted
-     * transfer's. Hence the loop below: identical to ``wait_completion()``'s
-     * except that it does not touch the guard. The duplication is five lines and
-     * it is the honest shape; a "do not release" flag would hide the one place in
-     * this model where two operations legitimately share a channel.
-     *
-     * See ``stop_channel_start()`` for what that sharing costs -- which read
-     * consumes the ERR is not determined by this model -- and for open item §6.5.
-     */
-    pure virtual task stop_channel(output wb_dma_status_e status);
-
-    /**
-     * Poll whether the operation running on this channel has finished.
-     *
-     * The non-blocking half of every end-to-end operation, present on every
-     * profile -- this is what firmware polls. Completes immediately: one
-     * register read, one answer. It never suspends and never spins; the caller
-     * supplies the loop.
-     *
-     * **The contract is narrower than it looks.**
-     *
-     * 1. An operation must have been STARTED on this channel, by one of
-     *    ``transfer_single_start()`` or ``transfer_list_start()``.
-     * 2. Once this returns anything other than ``WB_DMA_PENDING``, the operation
-     *    is over. DO NOT CALL AGAIN until the next ``*_start()``.
-     *
-     * Both rules exist because reading CHn_CSR is destructive: ERR and the three
-     * interrupt-source bits are read-to-clear, so this call CONSUMES the
-     * completion it reports. A second call after DONE does not re-report DONE --
-     * it reads a channel whose status has already been taken and answers PENDING
-     * forever. That failure is invisible from the device side, because a stale
-     * read and a live one look identical.
-     *
-     * **How the guard works.** :pss:field:`inflight` holds one token for the
-     * life of an operation. This takes it, reads, and puts it back only if the
-     * answer was PENDING:
-     *
-     * ``try_get`` fails
-     *     Rule 1 or rule 2 has been broken. Report it.
-     * ``WB_DMA_PENDING``
-     *     Restore the token; the operation continues.
-     * ``WB_DMA_DONE`` / ``WB_DMA_ERROR``
-     *     Leave it taken; the operation is over.
-     *
-     * Take-and-restore rather than a peek because ``channel_c`` has no peek
-     * (§21.9.1 offers get/put/try_get/try_put and nothing else). It is safe
-     * under the one-operation-per-channel rule that already governs this model:
-     * the polling thread is the only one entitled to that token.
-     *
-     * .. note::
-     *    "Report it" is weaker than it should be. This stdlib has no runtime
-     *    ``error()``, so a violation is a message at ``NONE`` verbosity -- the
-     *    loudest thing available, and still only a message. A runtime that wants
-     *    it fatal should bind the model's message sink to one; the text is
-     *    deliberately distinctive so it can be matched. Returning
-     *    ``WB_DMA_ERROR`` was considered and rejected: it would make a
-     *    PROGRAMMING error indistinguishable from a DEVICE error. It answers
-     *    PENDING instead, because the state needed for an honest answer was
-     *    consumed by whoever broke the rule.
-     */
-    pure virtual task check_completion(output wb_dma_status_e status);
-
-    /**
-     * Program a channel's registers from a config, without arming it.
-     *
-     * *§3.2 group 1, configuration.* Completes when CHn_SZ / A0 / AM0 / A1 /
-     * AM1 and the RW bits of CHn_CSR reflect ``cfg``; the channel is NOT
-     * enabled. Waits for nothing -- straight-line stores, no driver state,
-     * callable from any context including with a lock held.
-     *
-     * Kept alongside ``transfer_single()``, which takes the same config and
-     * subsumes this for the common case, for exactly one reason:
-     * ``transfer_list()`` needs CHK_SZ programmed BEFORE the chain is armed
-     * (§3.3), and a descriptor carries no chunk size.
-     *
-     * The CSR is written whole rather than read-modify-written, because at this
-     * point nothing is running on the channel and a read would consume the
-     * read-to-clear status bits for no reason.
-     *
-     * :param cfg: what to program; capability-gated fields are skipped when the
-     *             channel was built without the capability
-     */
-    pure virtual task configure_channel(ref wb_dma_ch_cfg_s cfg);
-
-    /**
-     * Decode one read of CHn_CSR into a status. The unguarded primitive both
-     * layers are built from.
-     *
-     * Not an operation, and not the API: no in-progress guard, no blocking, no
-     * loop. It exists because the guard and the decode are separable concerns
-     * and exactly one caller needs the decode without the guard.
-     *
-     * ``check_completion()``
-     *     Guard plus this. The non-blocking API; firmware calls it.
-     *
-     * ``wait_completion()``
-     *     This, in a loop, under a wake. The guard would be wrong inside a loop
-     *     -- it is claimed once by the ``*_start()`` and released once by the
-     *     operation that started it, not taken and put back on every poll.
-     *
-     * ``stop_channel()``
-     *     This, in a loop, holding no token. Stop is the documented exemption
-     *     from the one-operation-per-channel rule, so it has none to release.
-     *
-     * ERR is tested before DONE because the two are not exclusive: an aborted
-     * transfer can retire with both set, and a stop that lands on an
-     * already-completed channel certainly does. Reporting ERROR is the
-     * conservative reading -- a scenario that expected DONE learns something
-     * went wrong, where the reverse order would hide it.
-     *
-     * .. warning::
-     *    Callers outside this component should use ``check_completion()``. PSS
-     *    has no visibility control, so this cannot be enforced -- but reaching
-     *    past the guard opts out of the only detector for the read-to-clear
-     *    hazard, and the read is a side effect every time.
-     */
-    pure virtual task probe_status(output wb_dma_status_e status);
-
-    /**
-     * Set or clear the channel's auto-restart bit.
-     *
-     * *§3.2 group 1, configuration.* Completes when ARS has been updated; waits
-     * for nothing.
-     *
-     * Distinct from ``configure_channel()`` because clearing ARS mid-flight is
-     * the documented way to terminate an auto-restarting channel (§3.2.1),
-     * invoked on its own against a live channel from a parallel scenario branch.
-     * Rewriting the whole register bank to do that would be wrong.
-     *
-     * It is therefore the TERMINATING EVENT for an auto-restarting
-     * ``transfer_single()``: once ARS is clear, the in-flight iteration retires
-     * and DONE asserts.
-     *
-     * .. warning::
-     *    A read-modify-write against a live channel, so it shares the hazard
-     *    described on ``stop_channel_start()``: the read consumes any pending
-     *    read-to-clear status. Enabling ARS before arming is unaffected;
-     *    disabling it mid-flight is the exposed case.
-     *
-     * :param enable: 1 to auto-restart on completion, 0 to stop after the
-     *                current iteration
-     */
-    pure virtual task set_auto_restart(input bit enable);
-
-    /**
-     * Publish how far a software reader has drained a FIFO in memory.
-     *
-     * *§3.2 group 1, configuration.* Completes when CHn_SWPTR has been updated
-     * -- a channel stalled on the old pointer may resume as a side effect.
-     * Waits for nothing.
-     *
-     * The consumer side of a FIFO in memory (§3.5): the DMA stalls rather than
-     * overrun the software reader, and publishing a new pointer un-stalls it. So
-     * this is invoked repeatedly during a live transfer, always concurrent with
-     * a ``transfer_single()``.
-     *
-     * Note what that implies about scope: the FIFO's DATA is read on the test
-     * writer's own memory path. This operation only publishes how far that
-     * reader has got.
-     *
-     * Requires ``caps.cbuf``, and only means anything with a circular-buffer
-     * address mask programmed on the same channel.
-     *
-     * :param ptr:    the new software pointer
-     * :param enable: whether the pointer is honoured at all
-     */
-    pure virtual task set_software_pointer(input bit [30:0] ptr, input bit enable);
-
-    /**
-     * Write STOP to abort whatever is running on this channel, and return.
-     *
-     * *§3.2 group 1.* The non-blocking half of ``stop_channel()``, present on
-     * every profile. Completes when STOP has been written -- the abort itself
-     * has not necessarily happened yet. Waits for nothing.
-     *
-     * An abort is reported as an ERROR, not as a clean stop: the device sets ERR
-     * on a STOP write (§3.2.2). That is carried into the contract verbatim.
-     *
-     * **This claims no** :pss:field:`inflight` **token, deliberately.** By
-     * definition it aborts a transfer that is still running, so the channel it
-     * targets is already holding one. Claiming would report the one case the
-     * model explicitly permits as a violation. Stop is the documented exemption
-     * from the one-operation-per-channel rule, and the exemption is now visible
-     * in the code rather than only in a comment.
-     *
-     * **Two consequences a firmware caller must know.**
-     *
-     * The ``write_field`` below IS a read-modify-write: the LRM defines the
-     * field-wise write as one (§21.14.1), so the CHn_CSR read is there even
-     * though the call no longer spells it out, and it still clears ERR and the
-     * interrupt sources. That read happens BEFORE STOP is written, so it can
-     * only consume status that was already there -- the abort's own ERR is set
-     * afterwards and is still seen by the aborted transfer's poll. What it can
-     * lose is a completion that landed in the instant before the abort.
-     *
-     * Who reports the abort is NOT determined by this model. The aborted
-     * transfer polls the same CSR, and whichever read lands first consumes the
-     * ERR. On the non-blocking profile the loser's ``check_completion()``
-     * answers PENDING forever -- a firmware hang rather than an action that does
-     * not retire.
-     *
-     * There is no ``check_completion()`` pairing for stop: it holds no token, so
-     * it has nothing to poll with. A caller aborts, then keeps polling the
-     * TRANSFER it aborted, which is the operation that owns the completion.
-     *
-     * .. note::
-     *    Open question (§6.5): is write-1-to-STOP acknowledged before or after
-     *    the current WISHBONE cycle retires? That decides whether an abort can
-     *    be considered delivered on return, which matters post-silicon.
-     */
-    pure virtual task stop_channel_start();
-
-    /**
-     * Point a channel at a descriptor list and arm it, returning with the chain
-     * running.
-     *
-     * *§3.2 group 3.* The non-blocking half of ``transfer_list()``, present on
-     * every profile. Completes when the channel points at the list, external
-     * descriptors are enabled, and the channel is armed. Waits for nothing.
-     *
-     * §3.3's four-step arming procedure IS this function's body, except step 2
-     * (chunk size), which must come from a prior ``configure_channel()`` because
-     * it outlives any single descriptor. A descriptor carries only src, dst,
-     * tot_sz, the increment flags, the interface selects and EOL; mode,
-     * priority, ARS, the address masks and CHK_SZ stay whatever the channel
-     * registers hold.
-     *
-     * Unlike ``transfer_single_start()``, this one always has a completion: ARS
-     * is documented as meaningless and ignored with external descriptors (§3.3),
-     * so ``check_completion()`` is guaranteed to answer DONE or ERROR
-     * eventually. Two end-to-end operations differing only in completion
-     * contract is why neither subsumes the other -- and the difference was never
-     * in the wait.
-     *
-     * Requires ``caps.ed``. Unlike the other capability-gated operations this
-     * reports rather than returning quietly, because it has a completion
-     * contract: a silent return would leave the caller waiting for a chain that
-     * was never armed.
-     *
-     * :param head: head of the descriptor chain; must be reachable from
-     *              interface 0
-     */
-    pure virtual task transfer_list_start(input addr_handle_t head);
-
-    /**
-     * Program a channel and arm it, returning with the transfer running.
-     *
-     * *§3.2 group 1.* The non-blocking half of ``transfer_single()``, present on
-     * every profile. Completes when the channel is programmed and armed -- NOT
-     * when the transfer has moved anything. Waits for nothing.
-     *
-     * Program, arm, return. The caller then polls ``check_completion()`` until
-     * it answers something other than PENDING, or calls ``transfer_single()``,
-     * which is exactly this plus the wait. All of the device knowledge is here;
-     * the end-to-end layer adds only the loop. That is why a SystemVerilog
-     * regression that never calls this directly still tests it.
-     *
-     * **Two callers' obligations this signature does not encode.**
-     *
-     * ``mode == WB_DMA_HW_HANDSHAKE``: the transfer cannot complete on its own.
-     * Something must be calling ``request_chunk()`` on the matching
-     * ``wb_dma_hs_c`` concurrently (§2.2). Splitting arm from wait does not help
-     * here -- the missing thing is a second initiator, not a second thread.
-     *
-     * ``cfg.auto_restart``: the transfer has NO completion event. CSR bit 11
-     * sets DONE only once ARS is clear, so nothing this function starts will
-     * ever make ``check_completion()`` answer DONE. Someone must clear ARS
-     * (``set_auto_restart(0)``) or abort the channel (``stop_channel_start()``).
-     * In the end-to-end layer that is a thread that never returns; here it is a
-     * loop that never exits, which is a firmware hang rather than a stalled PSS
-     * action. Same defect, less visible.
-     *
-     * Claims :pss:field:`inflight` FIRST, before touching a register, so a start
-     * that would be the second on a live channel is reported without having
-     * corrupted the configuration of the first.
-     *
-     * :param cfg: what to program before arming
-     */
-    pure virtual task transfer_single_start(ref wb_dma_ch_cfg_s cfg);
-
-    /**
-     * Wait until the device may have progressed.
-     *
-     * The wait PRIMITIVE: the one function in this model whose body differs
-     * between execution targets, and the only thing
-     * ``wb_dma_cfg_pkg::HAS_EVENT_WAIT`` gates.
-     *
-     * **Contract: return when the device MAY have progressed.** Not "when it
-     * has" -- this reports nothing and decides nothing. Every caller is a loop
-     * that re-reads CHn_CSR afterwards and tests its own condition, so a
-     * spurious return costs one register read and a late return costs latency.
-     * Neither is a defect.
-     *
-     * This is the seam that lets the OPERATION SURFACE be profile-independent.
-     * The two ways to wait have different requirements:
-     *
-     * ``wake.get()``
-     *     Suspend until someone posts. Needs an event source (``notify_irq()``,
-     *     hence configured interrupt routing) and a runtime that can suspend a
-     *     caller. Costs nothing while waiting.
-     *
-     * ``yield``
-     *     Spin. Needs NOTHING -- every target can spin, including a bare-metal
-     *     single-threaded one. Costs the bus a read per iteration and, on a
-     *     threaded target, whatever the scheduler charges.
-     *
-     * Only the first is a capability, so that is what the flag asks about and
-     * this is where the answer is consumed. Every operation above it is written
-     * once and compiles on both. See ``docs/op-model-c-embedded-design.md``
-     * §5.4 and ``docs/target-cfg-contract.md``.
-     *
-     * .. warning::
-     *    ``yield`` is a hint to the SCHEDULER, not to the device, and a backend
-     *    spends it however its target charges for waiting. It must NOT be
-     *    implemented as a wait on this device's interrupt: that would
-     *    reintroduce the routing prerequisite this branch exists to avoid, and
-     *    would deadlock the one caller that has no interrupt to wait for. The
-     *    contract is stated in full in ``docs/op-model-export-design.md`` §4.4.
-     */
-    pure virtual task wait_hint();
+  // ----- Import API: what the platform supplies -----
+  interface class wb_dma_c_imp_if extends pss_mem_if;
   endclass
 
-  // ----- Programming API: wb_dma_c -----
+  // ----- Context API: what the platform calls -----
   /**
    * The MMIO operation model for the WISHBONE DMA/Bridge core (§3,
    * ``dma_mmio_c`` in the operation-model document).
@@ -723,7 +239,7 @@ package wb_dma_c_pkg;
    * * **bridge_access** -- the pass-through path is reachable only with a target
    *   on the far interface; omitted by review decision.
    */
-  interface class wb_dma_c_if;
+  interface class wb_dma_c_ctxt_if;
 
     /**
      * Route a set of channels to one of the two aggregate interrupt outputs.
@@ -816,23 +332,16 @@ package wb_dma_c_pkg;
      * :param desc: the descriptor contents; the caller's copy is not modified
      */
     pure virtual task write_descriptor(output addr_handle_t status, input addr_handle_t at, input addr_handle_t prev, ref wb_dma_desc_s desc);
-
-    pure virtual function wb_dma_ch_c_if ch(int index);
-    pure virtual function int ch_size();
-  endclass
-
-  // ----- Import API (root: wb_dma_c) -----
-  interface class wb_dma_c_import_if extends pss_mem_if;
   endclass
 
   // ----- Component base: wb_dma_c -----
   // Common base of every component class: the import API, and PSS
   // construction (LRM 20.1.2) as one hook per step.
   virtual class wb_dma_c_component;
-    protected wb_dma_c_import_if m_imp;
+    protected wb_dma_c_imp_if pss_imp;
 
-    function new(wb_dma_c_import_if imp);
-      m_imp = imp;
+    function new(wb_dma_c_imp_if imp);
+      pss_imp = imp;
     endfunction
 
     virtual function void pss_init_down(); endfunction
@@ -844,10 +353,9 @@ package wb_dma_c_pkg;
       pss_init_subs();
       pss_init_up();
     endfunction
-
   endclass
 
-  // ----- Implementation: wb_dma_ch_c -----
+  // ----- Component: wb_dma_ch_c -----
   /**
    * The per-channel MMIO operation model (§3).
    *
@@ -884,33 +392,33 @@ package wb_dma_c_pkg;
    * makes the core trustworthy without a second regression: every SystemVerilog
    * run drives the core through the end-to-end wrappers.
    */
-  class wb_dma_ch_c extends wb_dma_c_component implements wb_dma_ch_c_if;
-    protected wb_dma_ch_regs_c m_regs;
+  class wb_dma_ch_c extends wb_dma_c_component;
     // Which channel this is, in ``dma_req_i``/``dma_ack_o`` and INT_SRC bit
     // numbering.
     //
     // Integrator-facing identity: no operation here reads it, because each
     // channel reaches its own registers through :pss:field:`regs` rather than
     // by index. It is what an environment correlates a channel against.
-    protected int m_chan;
+    int chan;
     // Build-time capabilities.
     //
     // An absent capability makes the corresponding control bit silently ignored
     // by hardware, so operations consult this rather than assuming everything
     // is present.
-    protected wb_dma_ch_caps_s m_caps;
+    wb_dma_ch_caps_s caps;
+    wb_dma_ch_regs_c regs;
     channel_c #(bit, 1) inflight;
     channel_c #(bit, 1) wake;
 
-    function new(wb_dma_c_import_if imp);
+    function new(wb_dma_c_imp_if imp);
       super.new(imp);
       inflight = new();
       wake = new();
-      m_caps.present = 1;
-      m_caps.ars = 1;
-      m_caps.ed = 1;
-      m_caps.cbuf = 1;
-      m_regs = new(m_imp, 0);
+      caps.present = 1;
+      caps.ars = 1;
+      caps.ed = 1;
+      caps.cbuf = 1;
+      regs = new(pss_imp, 0);
     endfunction
 
     /**
@@ -925,8 +433,8 @@ package wb_dma_c_pkg;
      * :param bank: handle to this channel's register bank
      */
     function void initialize(int id, addr_handle_t bank);
-      m_chan = id;
-      m_regs = new(m_imp, bank);
+      chan = id;
+      regs = new(pss_imp, bank);
     endfunction
 
     /**
@@ -1192,13 +700,13 @@ package wb_dma_c_pkg;
     virtual task configure_channel(ref wb_dma_ch_cfg_s cfg);
       wb_dma_sz_s sz;
       wb_dma_csr_s csr;
-      m_regs.adr0.write_val(cfg.src);
-      m_regs.am0.write_val(cfg.src_mask);
-      m_regs.adr1.write_val(cfg.dst);
-      m_regs.am1.write_val(cfg.dst_mask);
+      regs.adr0.write_val(cfg.src);
+      regs.am0.write_val(cfg.src_mask);
+      regs.adr1.write_val(cfg.dst);
+      regs.am1.write_val(cfg.dst_mask);
       sz.tot_sz = cfg.tot_sz;
       sz.chk_sz = cfg.chk_sz;
-      m_regs.sz.write(sz);
+      regs.sz.write(sz);
       // CH_EN is what arms the channel, so it must not ride along with the
       // configuration write.
       csr.ch_en = 0;
@@ -1211,14 +719,14 @@ package wb_dma_c_pkg;
       csr.sz_wb = cfg.sz_wb;
       // Capability-gated. Hardware silently ignores these on a channel built
       // without the capability, so decline rather than pretend they took.
-      if (m_caps.ars) begin
+      if (caps.ars) begin
         csr.ars = cfg.auto_restart;
         csr.rest_en = cfg.hw_restart_en;
       end
       csr.ine_done = cfg.int_on_done;
       csr.ine_err = cfg.int_on_err;
       csr.ine_chk_done = cfg.int_on_chunk;
-      m_regs.csr.write(csr);
+      regs.csr.write(csr);
     endtask
 
     /**
@@ -1255,7 +763,7 @@ package wb_dma_c_pkg;
      */
     virtual task probe_status(output wb_dma_status_e status);
       wb_dma_csr_s csr;
-      m_regs.csr.read(csr);
+      regs.csr.read(csr);
       if (csr.err == 1) begin
         status = WB_DMA_ERROR;
         return;
@@ -1295,10 +803,10 @@ package wb_dma_c_pkg;
     virtual task set_auto_restart(input bit enable);
       // Silently ignored by hardware without ARS, so decline rather than
       // pretend.
-      if (!(m_caps.ars)) begin
+      if (!(caps.ars)) begin
         return;
       end
-      m_regs.csr.write_field(WB_DMA_CSR_ars, 32'(enable));
+      regs.csr.write_field(WB_DMA_CSR_ars, 32'(enable));
     endtask
 
     /**
@@ -1325,7 +833,7 @@ package wb_dma_c_pkg;
      */
     virtual task set_software_pointer(input bit [30:0] ptr, input bit enable);
       wb_dma_swptr_s sw;
-      if (!(m_caps.cbuf)) begin
+      if (!(caps.cbuf)) begin
         return;
       end
       // A whole-register write, not a read-modify-write: both fields are
@@ -1334,7 +842,7 @@ package wb_dma_c_pkg;
       // this runs against a live channel.
       sw.ptr = ptr;
       sw.en = enable;
-      m_regs.swptr.write(sw);
+      regs.swptr.write(sw);
     endtask
 
     /**
@@ -1380,7 +888,7 @@ package wb_dma_c_pkg;
      *    be considered delivered on return, which matters post-silicon.
      */
     virtual task stop_channel_start();
-      m_regs.csr.write_field(WB_DMA_CSR_stop, 1);
+      regs.csr.write_field(WB_DMA_CSR_stop, 1);
     endtask
 
     /**
@@ -1415,7 +923,7 @@ package wb_dma_c_pkg;
      */
     virtual task transfer_list_start(input addr_handle_t head);
       // Checked before claiming, so a declined start leaves no token behind.
-      if (!(m_caps.ed)) begin
+      if (!(caps.ed)) begin
         $display("wb_dma: transfer_list_start() on a channel built without external-descriptor support (caps.ed)");
         return;
       end
@@ -1426,14 +934,14 @@ package wb_dma_c_pkg;
       // Step 1: point the channel at the head of the list. The DMA fetches
       // descriptors from interface 0 regardless of which interface the data
       // moves on, so `head` must be IF0-reachable.
-      m_regs.desc.write_val(32'(head));
+      regs.desc.write_val(32'(head));
       // Steps 3 and 4, in that order and as TWO WRITES, deliberately: the
       // device requires them separate, and write_fields({"use_ed","ch_en"},
       // {1,1}) would coalesce them into one bus read-modify-write -- that is
       // what the plural form is for. Each of these is still a
       // read-modify-write in its own right (§21.14.1).
-      m_regs.csr.write_field(WB_DMA_CSR_use_ed, 1);
-      m_regs.csr.write_field(WB_DMA_CSR_ch_en, 1);
+      regs.csr.write_field(WB_DMA_CSR_use_ed, 1);
+      regs.csr.write_field(WB_DMA_CSR_ch_en, 1);
     endtask
 
     /**
@@ -1479,7 +987,7 @@ package wb_dma_c_pkg;
       // Arm. write_field is a read-modify-write (§21.14.1), so the
       // configuration just written survives; the read clears the read-to-clear
       // status bits, harmless here because the channel has not started yet.
-      m_regs.csr.write_field(WB_DMA_CSR_ch_en, 1);
+      regs.csr.write_field(WB_DMA_CSR_ch_en, 1);
     endtask
 
     /**
@@ -1536,10 +1044,9 @@ package wb_dma_c_pkg;
         wake.get(pssc_discard);
       end
     endtask
-
   endclass
 
-  // ----- Component handle/factory: wb_dma_c -----
+  // ----- Component: wb_dma_c -----
   /**
    * The MMIO operation model for the WISHBONE DMA/Bridge core (§3,
    * ``dma_mmio_c`` in the operation-model document).
@@ -1565,30 +1072,29 @@ package wb_dma_c_pkg;
    * * **bridge_access** -- the pass-through path is reachable only with a target
    *   on the far interface; omitted by review decision.
    */
-  class wb_dma_c #(type IMP_T = wb_dma_c_import_if) implements wb_dma_c_if, wb_dma_c_import_if;
-    protected IMP_T m_imp;
-    protected wb_dma_regs_c m_regs;
+  class wb_dma_c extends wb_dma_c_component;
+    wb_dma_regs_c regs;
+    wb_dma_ch_c ch[4];
     // How many channels this instance actually uses.
     //
     // Integrator-facing: operations should be issued only to
     // ``ch[0..num_ch-1]``. Nothing in this model enforces that -- the register
     // structure is sized at ``WB_DMA_MAX_CH`` regardless, so a stray
     // access reaches a bank the RTL may not implement.
-    protected int m_num_ch;
+    int num_ch;
     // Build-time ``pri_sel``: how many priority levels the part discriminates.
     //
     // Integrator-facing, and likewise unenforced. Legal values are 1, 4 and 8;
     // a ``wb_dma_ch_cfg_s.prio`` above this is not an error, it simply does not
     // discriminate.
-    protected int m_pri_levels;
-    protected wb_dma_ch_c m_ch[4];
+    int pri_levels;
 
-    protected function new(IMP_T imp);
-      m_imp = imp;
-      m_num_ch = 4;
-      m_pri_levels = 4;
-      m_regs = new(this, 0);
-      foreach (m_ch[i]) m_ch[i] = new(this);
+    function new(wb_dma_c_imp_if imp);
+      super.new(imp);
+      num_ch = 4;
+      pri_levels = 4;
+      regs = new(pss_imp, 0);
+      foreach (ch[i]) ch[i] = new(pss_imp);
     endfunction
 
     /**
@@ -1609,23 +1115,14 @@ package wb_dma_c_pkg;
      * :param base: handle to the device's MMIO window
      */
     function void initialize(addr_handle_t base);
-      m_regs = new(this, base);
+      regs = new(pss_imp, base);
       for (int i = 0; i < 4; i++) begin
-        m_ch[i].initialize(i, (base + (64'h20 + 64'h20 * i)));
+        ch[i].initialize(i, (base + (64'h20 + 64'h20 * i)));
       end
     endfunction
 
-    virtual function void pss_init_down(); endfunction
-    virtual function void pss_init_up(); endfunction
-
-    function void pss_do_init();
-      pss_init_down();
-      pss_init_subs();
-      pss_init_up();
-    endfunction
-
     virtual function void pss_init_subs();
-      foreach (m_ch[i]) m_ch[i].pss_do_init();
+      foreach (ch[i]) ch[i].pss_do_init();
     endfunction
 
     /**
@@ -1654,17 +1151,17 @@ package wb_dma_c_pkg;
       vec.ch = channel_mask;
       case (bank)
         WB_DMA_INT_A: begin
-          m_regs.int_msk_a.write(vec);
+          regs.int_msk_a.write(vec);
         end
         WB_DMA_INT_B: begin
-          m_regs.int_msk_b.write(vec);
+          regs.int_msk_b.write(vec);
         end
       endcase
     endtask
 
     virtual task notify_irq();
-      foreach (m_ch[i]) begin
-        void'(m_ch[i].wake.try_put(1));
+      foreach (ch[i]) begin
+        void'(ch[i].wake.try_put(1));
       end
     endtask
 
@@ -1691,9 +1188,9 @@ package wb_dma_c_pkg;
     virtual task pause_engine(input bit pause);
       wb_dma_gcsr_s gcsr;
       gcsr.pause = pause;
-      m_regs.csr.write(gcsr);
+      regs.csr.write(gcsr);
       forever begin
-        m_regs.csr.read(gcsr);
+        regs.csr.read(gcsr);
         if (gcsr.pause == pause) begin
           break;
         end
@@ -1722,7 +1219,7 @@ package wb_dma_c_pkg;
      */
     virtual task read_descriptor_residual(output bit [11:0] status, input addr_handle_t desc_ptr);
       bit [31:0] desc_csr;
-      read32(desc_ptr, desc_csr);
+      pss_imp.read32(desc_ptr, desc_csr);
       status = 12'(desc_csr);
       return;
     endtask
@@ -1766,41 +1263,72 @@ package wb_dma_c_pkg;
       csr_word |= 32'(d.csr.inc_dst) << 18;
       csr_word |= 32'(d.csr.inc_src) << 19;
       csr_word |= 32'(d.csr.eol) << 20;
-      write32(at, csr_word);
-      write32((at + 4), d.adr0);
-      write32((at + 8), d.adr1);
-      write32((at + 12), d.next);
+      pss_imp.write32(at, csr_word);
+      pss_imp.write32((at + 4), d.adr0);
+      pss_imp.write32((at + 8), d.adr1);
+      pss_imp.write32((at + 12), d.next);
       // Extend the list. The check is on the resolved address rather than a
       // handle comparison, because an address handle is opaque and not
       // usefully comparable.
       if (prev != 0) begin
-        write32((prev + 12), 32'(at));
+        pss_imp.write32((prev + 12), 32'(at));
       end
       status = (at + 16);
       return;
     endtask
+  endclass
 
-    virtual function wb_dma_ch_c_if ch(int index);
-      return m_ch[index];
-    endfunction
-    virtual function int ch_size();
-      return 4;
+  // ----- Factory and root context: wb_dma_c -----
+  class wb_dma_c_root #(type Timp = wb_dma_c_imp_if) implements wb_dma_c_imp_if, wb_dma_c_ctxt_if;
+    protected Timp pss_imp;
+    protected wb_dma_c pss_root;
+
+    // Only create() builds a model.
+    protected function new(Timp imp);
+      pss_imp = imp;
+      pss_root = new(this);
     endfunction
 
-    virtual task write8(addr_handle_t addr, bit [7:0] data); m_imp.write8(addr, data); endtask
-    virtual task read8(addr_handle_t addr, output bit [7:0] data); m_imp.read8(addr, data); endtask
-    virtual task write16(addr_handle_t addr, bit [15:0] data); m_imp.write16(addr, data); endtask
-    virtual task read16(addr_handle_t addr, output bit [15:0] data); m_imp.read16(addr, data); endtask
-    virtual task write32(addr_handle_t addr, bit [31:0] data); m_imp.write32(addr, data); endtask
-    virtual task read32(addr_handle_t addr, output bit [31:0] data); m_imp.read32(addr, data); endtask
-    virtual task write64(addr_handle_t addr, bit [63:0] data); m_imp.write64(addr, data); endtask
-    virtual task read64(addr_handle_t addr, output bit [63:0] data); m_imp.read64(addr, data); endtask
-    static function wb_dma_c_if create(IMP_T imp, addr_handle_t base);
-      wb_dma_c #(IMP_T) self = new(imp);
-      self.initialize(base);
-      self.pss_do_init();
-      return self;
+    static function wb_dma_c_ctxt_if create(Timp imp, addr_handle_t base);
+      wb_dma_c_root #(Timp) model = new(imp);
+      model.pss_root.initialize(base);
+      model.pss_root.pss_do_init();
+      return model;
     endfunction
+
+    // Exported function `configure_interrupt_routing`, run on the root.
+    virtual task configure_interrupt_routing(input wb_dma_int_bank_e bank, input bit [30:0] channel_mask);
+      pss_root.configure_interrupt_routing(bank, channel_mask);
+    endtask
+
+    // Exported function `notify_irq`, run on the root.
+    virtual task notify_irq();
+      pss_root.notify_irq();
+    endtask
+
+    // Exported function `pause_engine`, run on the root.
+    virtual task pause_engine(input bit pause);
+      pss_root.pause_engine(pause);
+    endtask
+
+    // Exported function `read_descriptor_residual`, run on the root.
+    virtual task read_descriptor_residual(output bit [11:0] status, input addr_handle_t desc_ptr);
+      pss_root.read_descriptor_residual(status, desc_ptr);
+    endtask
+
+    // Exported function `write_descriptor`, run on the root.
+    virtual task write_descriptor(output addr_handle_t status, input addr_handle_t at, input addr_handle_t prev, ref wb_dma_desc_s desc);
+      pss_root.write_descriptor(status, at, prev, desc);
+    endtask
+
+    virtual task write8(addr_handle_t addr, bit [7:0] data); pss_imp.write8(addr, data); endtask
+    virtual task read8(addr_handle_t addr, output bit [7:0] data); pss_imp.read8(addr, data); endtask
+    virtual task write16(addr_handle_t addr, bit [15:0] data); pss_imp.write16(addr, data); endtask
+    virtual task read16(addr_handle_t addr, output bit [15:0] data); pss_imp.read16(addr, data); endtask
+    virtual task write32(addr_handle_t addr, bit [31:0] data); pss_imp.write32(addr, data); endtask
+    virtual task read32(addr_handle_t addr, output bit [31:0] data); pss_imp.read32(addr, data); endtask
+    virtual task write64(addr_handle_t addr, bit [63:0] data); pss_imp.write64(addr, data); endtask
+    virtual task read64(addr_handle_t addr, output bit [63:0] data); pss_imp.read64(addr, data); endtask
   endclass
 
 endpackage

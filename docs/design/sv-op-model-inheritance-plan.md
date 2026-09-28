@@ -1,6 +1,6 @@
 # SV Op-Model: Native Inheritance — Implementation Plan
 
-Status: in progress, 2026-09-25. **P1 and P2 done**; P7's simulation harness started (`tests/progseq/test_sv_op_model_sim.py`). **The compliance tier runs on op-model-sv** (below, "Compliance first"), ahead of P3. Design: [SV Op-Model: Native Inheritance](sv-op-model-inheritance.md) (decisions D1–D14).
+Status: in progress, 2026-09-26. **P1, P2, P3 and P5 done**, P4 in part and P6 in its interim form (below, "Structure, 2026-09-26"). **The compliance tier runs on op-model-sv**: 80 of 91. Design: [SV Op-Model: Native Inheritance](sv-op-model-inheritance.md) (decisions D1–D14).
 
 ## Where op-model-sv starts
 
@@ -94,6 +94,23 @@ The corpus's executable tier runs on op-model-sv: `tests/compliance/adapters/pss
   - not an entry: activity, rand, action attributes (4);
   - executor delegation, which the tap tests need (4);
   - package constants in `%n` typing (2), and `get_offset_of_instance` matched by name (1).
+
+## Structure, 2026-09-26
+
+Decided (MSB):
+- **PSS names and PSS access.** A member keeps its PSS name and is public, and another component reaches it as PSS does (`sub.a`, `ch[i].wake`). This supersedes the `m_` names and `protected` members of the design's proposed shape. Generated members take the `pss_` prefix (`pss_imp`, `pss_root`, `pss_do_init`, `pss_action_<entry>`), because SV has one namespace per class for properties and methods alike.
+- **One class per PSS component type, extending its PSS base's class** (P5), with SV's own `super.f()`, `super.x` and `super.pss_init_down()`.
+- **Plain PSS first.** The API is the exported actions and the exported functions; an op model is a model with exported functions and possibly no exported actions.
+- **Exported functions are the root's instance functions, for now.** LRM 20.4.2 exports static functions only, and an exported function reaches components only through `executor()`; a global export calling `pss_top.f()` would need the root known at link time. The interim is an extension: `export target function f;` in a component's body may name an INSTANCE function, which runs on the instance the environment calls it through. pssparser reports it as PSS120 (a warning, still bound). Only the root's exports are accepted; a package export, or one in another component, is refused "not yet". Exported context functions are the future form, and need no root.
+
+As built:
+- pssparser: PSS120 in `TaskResolveRefs::visitExportFunction`. ast2ir records every export on `ctx.exports` (`ast2ir.Export`); `targets/export_function.py` resolves the root's against the completed root and refuses the rest, for every op-model target. `OpModel.exports`; the manifest's `exports`.
+- op-model-sv: `<root>_imp_if`, `<root>_ctxt_if` (exports, then exported actions), `<root>_component`, a class per `OpModel.classes` entry, and `<root>_root #(Timp)` implementing both interfaces. `assert_api_is_not_empty` counts exports and exported actions only (decision 1 below).
+- P4 in part: an exported action is `pss_action_<name>` on its component and `<name>` on the context. One whose component has more than one instance is refused; the random pick (decision 2) is not built.
+- D10 is enforced: a virtual override with another prototype is refused.
+- Memory primitives and import functions are called through `pss_imp`, in every class.
+- Tests: SV joins `test_op_model_inherit_native.py` (every case under Verilator, same trace as Python and C++). The WB DMA device exports nothing, so the SV tests present it with `tests/progseq/data/wb_dma_exports.pss`; the bundled `dma_engine` model exports its four operations.
+- Not yet: exported actions with parameters, `get_context` and per-executor contexts (D13), the D14 name clashes other than those refused.
 
 ## Decisions pending
 

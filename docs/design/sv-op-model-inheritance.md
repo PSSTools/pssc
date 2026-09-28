@@ -1,6 +1,6 @@
 # SV Op-Model: Native Inheritance
 
-Status: proposal for discussion, 2026-09-24. Revised after review (MSB): no interface classes, `imp` naming, the `initialize` convention, and a factory class (`pss_top_root`) separate from the component tree. Revised again (MSB): a two-level export API — a per-executor export API, and a root API that adds executor lookup and the exported actions.
+Status: implemented as revised, 2026-09-26: members keep their PSS names and are public (not `m_x`, not `protected`), and an exported function is, for now, an instance function of the root exported in its body (an extension to LRM 20.4.2). See the plan's "Structure, 2026-09-26". Originally a proposal for discussion, 2026-09-24. Revised after review (MSB): no interface classes, `imp` naming, the `initialize` convention, and a factory class (`pss_top_root`) separate from the component tree. Revised again (MSB): a two-level export API — a per-executor export API, and a root API that adds executor lookup and the exported actions.
 
 Related: [Op-Model Output Defects](op-model-output-defects.md). The relevant items are:
 - SV-1: inheritance is flattened.

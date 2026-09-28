@@ -17,13 +17,13 @@ from pssc.targets import op_model as om
 from pssc.targets.sections import Section, insert_after
 from pssc.targets.sv.backend import SvOpModelBackend
 
-from .op_model import op_model_sources
+from .op_model import op_model_sv_sources
 
 
 @pytest.fixture(scope="module")
 def ctx():
     tgt = targets.get("op-model-sv")
-    return driver.translate(op_model_sources(),
+    return driver.translate(op_model_sv_sources(),
                             prelude=tgt.prelude(argparse.Namespace()))
 
 
@@ -59,7 +59,7 @@ def test_the_package_is_exactly_its_sections(op_model):
 def test_sections_are_keyed_by_file(op_model):
     keys = list(SvOpModelBackend("wb_dma_c_pkg").sections(op_model))
     assert keys[0] == "wb_dma_c_pkg.sv:banner"
-    assert "wb_dma_c_pkg.sv:root" in keys
+    assert "wb_dma_c_pkg.sv:factory" in keys
 
 
 def test_package_name_defaults_to_the_root(op_model):

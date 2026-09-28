@@ -1,7 +1,10 @@
 """The operation model, generated end to end as a SystemVerilog package.
 
-This is the component-tree projection: sub-component accessors, an `init`
-lowered into the constructor, and the blocking `yield` contract. The flat model
+This is the component-tree projection: one class per component type with its
+members under their PSS names, an `init` lowered into a method, the exports as
+the context API, and `yield` as a zero delay. The model is presented with the
+environment's exports (`op_model_sv_sources`): the device tree declares none,
+and op-model-sv takes its API from exports only. The flat model
 in `src/pssc/testing/models` covers the same backend from the other
 direction, and both must keep working -- a change that fixes one and breaks the
 other is not progress.
@@ -22,7 +25,7 @@ import pytest
 
 from pssc import driver
 
-from .op_model import OP_MODEL as _MODEL, op_model_sources as _sources
+from .op_model import OP_MODEL as _MODEL, op_model_sv_sources as _sources
 
 
 def assert_generated(text, *, has=(), has_not=()):
@@ -73,16 +76,17 @@ def test_outputs_are_in_compilation_order(gen):
 
 # --- export API ------------------------------------------------------------
 
-def test_all_operations_exported(sv):
-    """The count defect A destroyed. Asserted on the generated text as well as
-    on the IR, because the two failed independently."""
-    for op in ("configure_interrupt_routing", "pause_engine",
+def test_the_exports_are_the_context_api(sv):
+    """The count defect A destroyed, restated for an API taken from exports:
+    every export is on the context interface and forwarded by the factory,
+    and an operation nobody exported is on neither (design D11)."""
+    for op in ("configure_interrupt_routing", "notify_irq", "pause_engine",
                "read_descriptor_residual", "write_descriptor"):
         assert f"pure virtual task {op}(" in sv, op
-    for op in ("configure_channel", "set_auto_restart", "set_software_pointer",
-               "stop_channel", "transfer_list", "transfer_single",
-               "wait_completion"):
-        assert f"pure virtual task {op}(" in sv, op
+        assert f"      pss_root.{op}(" in sv, op
+    for op in ("configure_channel", "transfer_single", "wait_completion"):
+        assert f"pure virtual task {op}(" not in sv, op
+        assert f"    virtual task {op}(" in sv, op
 
 
 def test_no_interface_class_is_empty(sv):
@@ -93,38 +97,42 @@ def test_no_interface_class_is_empty(sv):
     import re
     assert "interface class" in sv
     empty = re.findall(r"interface class (\w+)(?: extends \w+)?;\n  endclass", sv)
-    assert empty == ["wb_dma_c_import_if"], empty
-    assert "interface class wb_dma_c_import_if extends pss_mem_if;" in sv
+    assert empty == ["wb_dma_c_imp_if"], empty
+    assert "interface class wb_dma_c_imp_if extends pss_mem_if;" in sv
 
 
-# --- sub-components --------------------------------------------------------
+# --- component classes ------------------------------------------------------
 
-def test_array_accessor_emitted(sv):
+def test_members_keep_their_pss_names(sv):
+    """A member is reached as PSS reaches it (`ch[i].wake`, `sub.a`): its PSS
+    name, public. No accessors -- an accessor `ch()` beside a member `ch`
+    would be two members of one name."""
     assert_generated(sv, has=[
-        "pure virtual function wb_dma_ch_c_if ch(int index);",
-        "pure virtual function int ch_size();",
-        "virtual function wb_dma_ch_c_if ch(int index);",
-        "return m_ch[index];",
-    ])
+        "    wb_dma_regs_c regs;\n    wb_dma_ch_c ch[4];",
+        "    wb_dma_ch_regs_c regs;",
+        "    channel_c #(bit, 1) wake;",
+    ], has_not=[" m_ch", " m_regs", "protected wb_dma_regs_c",
+                 "protected wb_dma_ch_c ", "_if ch(int index)"])
 
 
-def test_subcomponent_class_not_parameterized(sv):
-    """Only the root takes `#(type IMP_T)`. A parameterized sub-component would
-    leak its parameter into the root's accessor return type, and the export API
-    would stop being a plain handle."""
+def test_no_component_class_is_parameterized(sv):
+    """Only the factory knows the platform's type (design D5): every
+    component class, the root included, takes the import API."""
     assert_generated(sv,
-                     has=["class wb_dma_ch_c extends wb_dma_c_component "
-                          "implements wb_dma_ch_c_if;",
-                          "class wb_dma_c #(type IMP_T = wb_dma_c_import_if)"],
-                     has_not=["class wb_dma_ch_c #("])
+                     has=["class wb_dma_ch_c extends wb_dma_c_component;",
+                          "class wb_dma_c extends wb_dma_c_component;",
+                          "class wb_dma_c_root #(type Timp = wb_dma_c_imp_if) "
+                          "implements wb_dma_c_imp_if, wb_dma_c_ctxt_if;"],
+                     has_not=["class wb_dma_ch_c #(", "class wb_dma_c #("])
 
 
-def test_subcomponent_declared_before_the_root_that_builds_it(sv):
-    """SV has no forward references inside a package."""
-    sub = sv.index("class wb_dma_ch_c extends")
-    assert sub < sv.index("class wb_dma_c #(")
-    assert sv.index("interface class wb_dma_c_import_if") < \
-        sv.index("virtual class wb_dma_c_component;") < sub
+def test_classes_are_declared_before_their_use(sv):
+    """SV has no forward references inside a package: the component base,
+    then a child before the parent that holds it, then the factory."""
+    assert sv.index("interface class wb_dma_c_imp_if") < \
+        sv.index("virtual class wb_dma_c_component;") < \
+        sv.index("class wb_dma_ch_c extends") < \
+        sv.index("class wb_dma_c extends") < sv.index("class wb_dma_c_root #(")
 
 
 # --- construction and address binding --------------------------------------
@@ -133,29 +141,31 @@ def test_construction_is_split_from_the_ctor(sv):
     """`new()` takes only the import API (design D2); the model's constructor
     is a method `create()` runs, then PSS construction (D3)."""
     assert_generated(sv, has=[
-        "static function wb_dma_c_if create(IMP_T imp, addr_handle_t base);",
-        "protected function new(IMP_T imp);",
+        "static function wb_dma_c_ctxt_if create(Timp imp, addr_handle_t base);",
+        "protected function new(Timp imp);",
         "function void initialize(addr_handle_t base);",
-        "      self.initialize(base);\n      self.pss_do_init();",
-        "function new(wb_dma_c_import_if imp);\n      super.new(imp);",
-    ], has_not=["function new(IMP_T imp, addr_handle_t base);"])
+        "      model.pss_root.initialize(base);\n"
+        "      model.pss_root.pss_do_init();",
+        "function new(wb_dma_c_imp_if imp);\n      super.new(imp);",
+    ], has_not=["function new(Timp imp, addr_handle_t base);"])
 
 
 def test_every_subcomponent_is_constructed(sv):
     """SV-3: every instance exists after `new()`, whether or not a model
     constructor is ever called for it -- and register groups sit at 0 until one
-    binds them."""
+    binds them. The tree reaches the platform through the factory, which
+    passes itself."""
     assert_generated(sv, has=[
-        "foreach (m_ch[i]) m_ch[i] = new(this);",
-        "m_regs = new(this, 0);",
-        "m_regs = new(m_imp, 0);",
+        "foreach (ch[i]) ch[i] = new(pss_imp);",
+        "regs = new(pss_imp, 0);",
+        "pss_root = new(this);",
     ])
 
 
 def test_pss_construction_reaches_the_subcomponents(sv):
     assert_generated(sv, has=[
         "virtual class wb_dma_c_component;",
-        "foreach (m_ch[i]) m_ch[i].pss_do_init();",
+        "foreach (ch[i]) ch[i].pss_do_init();",
     ])
 
 
@@ -164,7 +174,7 @@ def test_init_lowered_to_method_calls(sv):
     becomes a bounded loop of calls to the already-built children, with the
     address folded."""
     assert_generated(sv, has=[
-        "m_regs = new(this, base);",
+        "regs = new(pss_imp, base);",
         "for (int i = 0; i < 4; i++) begin",
         # Sub-expressions are bracketed: the IR tree says how the expression
         # groups, and SV precedence only sometimes agrees. Same arithmetic.
@@ -176,8 +186,8 @@ def test_init_lowered_to_method_calls(sv):
         # hand-written package this model used to carry produced
         # `base + 32 + (i * 32)`, which is the same arithmetic and is why the
         # value is checked below rather than only the text.
-        "m_ch[i].initialize(i, (base + (64'h20 + 64'h20 * i)));",
-    ], has_not=["m_ch[i] = new(this, i,"])
+        "ch[i].initialize(i, (base + (64'h20 + 64'h20 * i)));",
+    ], has_not=["ch[i] = new(pss_imp, i,"])
 
 
 def test_channel_offsets_are_the_rdl_geometry(sv):
@@ -189,7 +199,7 @@ def test_channel_offsets_are_the_rdl_geometry(sv):
     fold that changed the arithmetic fails here even if the text was refreshed.
     """
     import re
-    m = re.search(r"m_ch\[i\]\.initialize\(i, \(base \+ \((.*?)\)\)\);", sv)
+    m = re.search(r"ch\[i\]\.initialize\(i, \(base \+ \((.*?)\)\)\);", sv)
     assert m, "channel binding not found"
     expr = m.group(1).replace("64'h", "0x").replace("'h", "0x")
     for i in range(4):
@@ -202,15 +212,15 @@ def test_channel_binds_its_own_bank(sv):
     tree at all."""
     assert_generated(sv, has=[
         "function void initialize(int id, addr_handle_t bank);",
-        "m_regs = new(m_imp, bank);",
+        "regs = new(pss_imp, bank);",
     ])
 
 
 def test_field_defaults_emitted(sv):
     """A capability struct that defaults to all-false silently disables every
     operation gated on it, so the defaults have to survive."""
-    assert_generated(sv, has=["m_caps.ars = 1;", "m_caps.cbuf = 1;",
-                              "m_num_ch = 4;"])
+    assert_generated(sv, has=["caps.ars = 1;", "caps.cbuf = 1;",
+                              "num_ch = 4;"])
 
 
 # --- body constructs -------------------------------------------------------
@@ -226,7 +236,8 @@ def test_task_results_return_through_output_arguments(sv):
     value. Getting this wrong is a syntax error in one simulator and something
     subtly different in another."""
     assert_generated(sv,
-                     has=["wait_completion(status);", "read32(desc_ptr, desc_csr);"],
+                     has=["wait_completion(status);",
+                          "pss_imp.read32(desc_ptr, desc_csr);"],
                      has_not=["status = wait_completion();",
                               "desc_csr = read32(desc_ptr);"])
 
@@ -262,7 +273,7 @@ def test_forever_and_break(sv):
 def test_struct_arg_signature(sv):
     """A struct parameter is passed by reference (LRM 20.3.2): `ref`, not an
     `input` copy the caller would never see a change to."""
-    assert "pure virtual task configure_channel(ref wb_dma_ch_cfg_s cfg);" in sv
+    assert "virtual task configure_channel(ref wb_dma_ch_cfg_s cfg);" in sv
 
 
 def test_packed_and_unpacked_structs(sv):
@@ -294,11 +305,13 @@ def test_generated_package_lints_clean(gen):
 def test_zero_operation_model_is_an_error(tmp_path):
     """A model that projects to nothing must fail the build. Every front-end
     defect in this generator's history produced exactly this output and exited
-    0."""
+    0. With the API taken from exports, a model that has operations and
+    exports none projects to nothing too."""
     import argparse
     src = tmp_path / "empty.pss"
-    src.write_text("component empty_c { int x; }\n")
+    src.write_text("component empty_c { int x;\n"
+                   "  target function void f() { x = 1; } }\n")
     ns = argparse.Namespace(progseq_root="empty_c", progseq_package="empty_pkg",
                             output_dir=str(tmp_path))
-    with pytest.raises(ValueError, match="zero operations"):
+    with pytest.raises(ValueError, match="exports nothing"):
         driver.compile([str(src)], target="sv-progseq", opts=ns)

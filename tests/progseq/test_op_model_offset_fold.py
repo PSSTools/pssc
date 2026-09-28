@@ -74,7 +74,7 @@ def test_array_offset_folds_to_affine_expression(gen):
     64-bit base, which Verilator reports as WIDTHEXPAND alongside the error.
     """
     _, sv = gen
-    assert "m_bank[i].initialize(i, (base + (64'h10 + 64'h10 * i)));" in sv
+    assert "bank[i].initialize(i, (base + (64'h10 + 64'h10 * i)));" in sv
 
 
 def test_fold_agrees_with_the_register_model(gen):
@@ -83,7 +83,7 @@ def test_fold_agrees_with_the_register_model(gen):
     no longer stated once."""
     _, sv = gen
     group = re.search(r"bank\[i\] = new\(bus, base \+ 64'h(\w+) \+ i \* 64'h(\w+)\);", sv)
-    ctor = re.search(r"m_bank\[i\]\.initialize\(i, \(base \+ \(64'h(\w+) \+ 64'h(\w+) \* i\)\)\);", sv)
+    ctor = re.search(r"bank\[i\]\.initialize\(i, \(base \+ \(64'h(\w+) \+ 64'h(\w+) \* i\)\)\);", sv)
     assert group and ctor, sv
     assert group.groups() == ctor.groups()
 
@@ -98,7 +98,7 @@ def test_generated_package_elaborates(gen, tmp_path):
 module elab_top;
   import pssc_reg_pkg::*;
   import fold_top_pkg::*;
-  class imp implements fold_top_c_import_if;
+  class imp implements fold_top_c_imp_if;
     virtual task write8 (addr_handle_t a, bit[7:0] d); endtask
     virtual task read8  (addr_handle_t a, output bit[7:0] d); d='0; endtask
     virtual task write16(addr_handle_t a, bit[15:0] d); endtask
@@ -110,12 +110,12 @@ module elab_top;
   endclass
   initial begin
     imp                              i;
-    fold_top_c_if                    dut;
+    fold_top_c_ctxt_if               dut;
     bit [31:0]                       v;
     i   = new();
-    dut = fold_top_c #(fold_top_c_import_if)::create(i, 64'h0);
+    dut = fold_top_c_root #(fold_top_c_imp_if)::create(i, 64'h0);
     dut.set_gcsr(32'h1);
-    dut.bank(2).read_stat(v);
+    dut.read_bank_stat(v, 2);
   end
 endmodule
 """)

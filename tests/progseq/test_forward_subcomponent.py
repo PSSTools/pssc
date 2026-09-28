@@ -23,6 +23,7 @@ component pss_top {
   sub_c s;
   sub_c arr[2];
   target function void g() { message(NONE, "g"); }
+  export target function g;
 }
 """
 

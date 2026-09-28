@@ -43,7 +43,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
-from .op_model import op_model_sources, small_model_dir, small_model_sources
+from .op_model import (op_model_sources, op_model_sv_sources,
+                       small_model_dir, small_model_sources)
 
 _HERE = Path(__file__).resolve().parent
 
@@ -77,12 +78,18 @@ class Config:
     #: Why this config is in the set -- printed when it fails.
     rationale: str = ""
     #: Which model to generate from. `"op-model"` is the real WB DMA operation
-    #: model; `"small"` is `SMALL_MODEL`, for a config that needs a narrower one.
+    #: model; `"op-model-exports"` is the same with the environment's exports
+    #: (`op_model_sv_sources`), which op-model-sv takes its API from; `"small"`
+    #: is `SMALL_MODEL`, for a config that needs a narrower one.
     model: str = "op-model"
     root: str = "wb_dma_c"
 
     def sources(self) -> List[str]:
-        return op_model_sources() if self.model == "op-model" else list(SMALL_SOURCES)
+        if self.model == "op-model":
+            return op_model_sources()
+        if self.model == "op-model-exports":
+            return op_model_sv_sources()
+        return list(SMALL_SOURCES)
 
 
 #: The two-file model the pre-existing C/C++/SV progseq tests use.
@@ -103,9 +110,11 @@ SMALL_SOURCES = tuple(small_model_sources())
 #: break silently.
 CONFIGS: Tuple[Config, ...] = (
     Config("sv-named", "op-model-sv", ("--sv-reg-fields", "named"),
-           "the default SV spelling: write_field(<FIELD_CONST>, v)"),
+           "the default SV spelling: write_field(<FIELD_CONST>, v)",
+           model="op-model-exports"),
     Config("sv-folded", "op-model-sv", ("--sv-reg-fields", "folded"),
-           "the collapsed (mask, value) SV spelling the C target consumes"),
+           "the collapsed (mask, value) SV spelling the C target consumes",
+           model="op-model-exports"),
     Config("c-vtable", "op-model-c", (),
            "C defaults: vtable seam, bitfields, malloc lifecycle, .h + .c"),
     Config("c-mmio-hdr", "op-model-c", ("--link-style", "mmio",

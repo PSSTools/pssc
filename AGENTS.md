@@ -196,13 +196,14 @@ blocks of that kind. Every base-member copy goes through `from_base`. Still
 refused, for a component in the tree: shadowing a component INSTANCE, and a
 differently-typed shadow that an inherited body calls.
 
-That completed view is what C and SV RENDER (flattened; held to "generates
-what writing it out by hand does" in `test_op_model_py_inherit.py`). Python and
-C++ render inheritance NATIVELY (`OpModelTarget.native_inheritance`): a class
-per component type derived from its base's (`class Der(Base)`, `class der :
-public base, public virtual der_if`), emitting only what the component
-DECLARES (`comp_inherit.declared` -- the members before completion, `super`
-intact), with the language's `super` (`super().f`, `base::f`). They also emit
+That completed view is what C RENDERS (flattened; held to "generates
+what writing it out by hand does" in `test_op_model_py_inherit.py`). Python,
+C++ and SV render inheritance NATIVELY (`OpModelTarget.native_inheritance`): a
+class per component type derived from its base's (`class Der(Base)`,
+`class der : public base, public virtual der_if`, `class der extends base`),
+emitting only what the component DECLARES (`comp_inherit.declared` -- the
+members before completion, `super` intact), with the language's `super`
+(`super().f`, `base::f`, `super.f`). They also emit
 base types nothing instantiates (`OpModel.classes`/`base_classes`), and the
 gate checks what they render: declared bodies, with `super.f` classified
 against the base (`validate_calls(native=True)`). Python splits construction
@@ -210,8 +211,24 @@ against the base (`validate_calls(native=True)`). Python splits construction
 part, and keeps a field declared by a base and a derived class under per-class
 attributes behind properties (`naming.field_storage`) -- Python has one
 attribute namespace per object. `test_op_model_inherit_native.py` runs every
-case on both and requires the same trace. C is to get a vtable, and SV native
-classes wait on hoisting task calls into temporaries.
+case on all three (SV under Verilator) and requires the same trace. C is to get
+a vtable.
+
+## op-model-sv's API: exports
+
+op-model-sv's component classes keep PSS names and PSS access: a member is
+public and named as declared (`sub.a`, `ch[i].wake`), and the generated ones
+take the `pss_` prefix (`pss_imp`, `pss_do_init`). The platform holds a
+CONTEXT, never a component: `<root>_root #(Timp)::create(imp, <root ctor
+args>)` returns `<root>_ctxt_if`, whose methods are the exported actions
+(`--export-action`) and the root's EXPORTED functions -- `export target
+function f;` in the root's body. Exporting an instance function is an
+extension to LRM 20.4.2 (pssparser reports it as PSS120, a warning); only the
+root's exports are accepted yet (`targets/export_function.py`), and nothing
+else is on the API, so a model that exports nothing is an error. The WB DMA
+device tree exports nothing: SV tests present it with
+`tests/progseq/data/wb_dma_exports.pss` (`op_model.op_model_sv_sources`).
+Design: `docs/design/sv-op-model-inheritance.md`.
 
 Python binds each register GROUP's base separately (`naming.group_base`,
 `self._pss_base_<group>`), as C and C++ do: one `_base` per component put two

@@ -4,7 +4,9 @@ The front end spells a parameter reference and a field reference alike
 (`self.a`), so the name is resolved in scope order: parameter first. The type
 analysis (`ExprTypes`) and bc did that; every op-model emitter checked fields
 first, so `f(int a) { return a * 2; }` in a component with a field `a` read the
-FIELD -- `self.a`, `s->a`, `m_a`, `this->a` -- and compiled cleanly.
+FIELD -- `self.a`, `s->a`, `m_a`, `this->a` -- and compiled cleanly. (SV now
+names the field `a`, as PSS does, so a field the body reached past a local
+would be `this.a`.)
 """
 from __future__ import annotations
 
@@ -21,12 +23,13 @@ import std_pkg::*;
 component pss_top {
   int a = 100;
   target function int f(int a) { a = a + 1; return a * 2; }
+  export target function f;
 }
 """
 
 #: How each target would spell the FIELD `a`.
 _FIELD = {"op-model-py": "self.a", "op-model-c": "->a",
-          "op-model-sv": "m_a", "op-model-cpp": "this->a"}
+          "op-model-sv": "this.a", "op-model-cpp": "this->a"}
 
 
 def _compile(tmp_path, target):

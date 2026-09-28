@@ -186,6 +186,11 @@ class OpModel:
     #: `comp_dtypes` for a target that flattens (`comp_inherit`).
     classes: Tuple[Any, ...] = ()
 
+    #: The root component's exported functions (`export target function f;`
+    #: in its body, an extension -- see `export_function.py`), in declaration
+    #: order. Each is a function of the completed root.
+    exports: Tuple[Any, ...] = ()
+
     @property
     def base_classes(self) -> List[Any]:
         """`classes` that are not in the tree: bases nothing instantiates."""
@@ -332,6 +337,8 @@ def elaborate(ctx, root, out_dir, *, ctor_names: Optional[FrozenSet[str]] = None
                 groups.append(g)
 
     entries = _entries_in_tree(tuple(entries), post)
+    from .export_function import root_exports
+    exports = root_exports(ctx, root, post, names)
     classes = _classes(ctx, post, native_inheritance)
     have = {id(n.dtype) for n in post}
     extra = [c for c in classes if id(c) not in have]
@@ -357,6 +364,7 @@ def elaborate(ctx, root, out_dir, *, ctor_names: Optional[FrozenSet[str]] = None
         entries=entries,
         functions=functions,
         classes=classes,
+        exports=exports,
     )
 
 

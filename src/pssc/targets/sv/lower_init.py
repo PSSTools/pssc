@@ -68,6 +68,12 @@ def _stmt(s, members, reg_groups, subs, bus, expr, ind) -> List[str]:
         call = s.expr
         fn = call.func
         if _dt_name(fn) == "ExprAttribute":
+            # super.initialize(...) -> the base class's constructor method,
+            # which binds what the base declares (design D3: not virtual, so
+            # `super` reaches it whatever this class's signature).
+            if _dt_name(fn.value) == "TypeExprRefSuper":
+                args = ", ".join(expr(a) for a in call.args)
+                return [f"{pad}super.{fn.attr}({args});"]
             # regs.set_handle(h) -> build the register group at h
             if fn.attr == "set_handle":
                 name = _self_attr_name(fn.value)

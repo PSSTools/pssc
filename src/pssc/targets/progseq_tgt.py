@@ -2,9 +2,10 @@
 a PSS component tree.
 
 Transforms the subtree rooted at ``--root`` into an SV package: register value
-structs + register-model classes, per-component export-API interface classes, an
-import-API interface (extends the core ``pss_mem_if``), implementation
-classes, a parameterized import adapter, and a factory.
+structs + register-model classes, the import API (extends the core
+``pss_mem_if``), the context API the platform calls (the root's exported
+functions and the exported actions), one class per component type -- derived
+from its base's -- and a factory. See docs/design/sv-op-model-inheritance.md.
 
 Design: docs/design/pss-programming-seq-gen-design.md
 Plan:   docs/design/pss-programming-seq-gen-impl-plan.md
@@ -37,13 +38,29 @@ class ProgSeqTarget(OpModelTarget):
     supports_init_blocks = True
 
     # An exported action (`--export-action`) is a task of the component it
-    # runs in, on that component's export interface.
+    # runs in, called by the factory's method of the action's name.
     supports_entries = True
+
+    # One class per component type, derived from its base's: `extends`,
+    # `super.f(...)`, and a field declared again hides its base's (LRM 17.1).
+    native_inheritance = True
 
     # Package-scope functions are package tasks and functions: `target` and
     # unqualified ones tasks, `solve` ones SV functions (`sv.lower_progseq
     # .is_task`).
     supports_package_functions = True
+
+    @staticmethod
+    def assert_api_is_not_empty(model) -> None:
+        """The context API is the exported functions and the exported
+        actions, and nothing else (design D11): a model with neither has no
+        way in."""
+        if not (model.exports or model.entries):
+            raise ValueError(
+                f"op-model-sv: '{model.root.name}' exports nothing, so the "
+                f"generated model would have no API. Export the root's "
+                f"operations (`export target function f;` in its body) or "
+                f"an action (--export-action)")
 
     def add_args(self, parser: argparse.ArgumentParser) -> None:
         # `--root`, `--ctor-name` and `--no-core-copy` come from

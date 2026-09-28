@@ -35,7 +35,7 @@ from pssc import driver
 from pssc.frontend import Parser
 
 from .codetext import code_only
-from .op_model import op_model_sources
+from .op_model import op_model_sources, op_model_sv_sources
 
 
 _PROBE = """
@@ -198,7 +198,8 @@ def test_no_constraint_reaches_the_sv_output():
 
     with tempfile.TemporaryDirectory() as out:
         ns = argparse.Namespace(progseq_root="wb_dma_c", output_dir=out)
-        driver.compile(list(op_model_sources()), target="op-model-sv", opts=ns)
+        driver.compile(list(op_model_sv_sources()), target="op-model-sv",
+                       opts=ns)
         text = "".join(
             open(os.path.join(out, f)).read()
             for f in sorted(os.listdir(out)) if f.endswith(".sv"))

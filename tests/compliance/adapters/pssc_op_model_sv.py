@@ -10,7 +10,7 @@ The testbench names the root class and the entry from the ``--emit-manifest``
 document, never by reading the generated package: the manifest exists so a
 consumer does not parse generated code.
 
-The platform is duck-typed (``<root> #(plat_c)``): it answers every memory
+The platform is duck-typed (``<root>_root #(plat_c)``): it answers every memory
 primitive (reads with 0), whether or not the model uses it. PSS `yield`
 is `#0` in the generated model, so the platform supplies nothing for it. A test whose memory traffic matters uses the executor tap, which op-model-sv
 does not delegate to yet, so it is refused at generation.
@@ -90,7 +90,8 @@ module top;
   import {pkg}::*;
 
   // Answers every primitive the import API may declare; matched by
-  // signature (`{root} #(plat_c)`), so it need not implement the interface.
+  // signature (`{root}_root #(plat_c)`), so it need not implement the
+  // interface.
   class plat_c;
     task write8 (addr_handle_t addr, bit [7:0]  data); endtask
     task write16(addr_handle_t addr, bit [15:0] data); endtask
@@ -104,7 +105,7 @@ module top;
 
   initial begin
     plat_c plat = new();
-    {root}_if dut = {root} #(plat_c)::create(plat);
+    {root}_ctxt_if dut = {root}_root #(plat_c)::create(plat);
     dut.{entry}();
     $finish;
   end

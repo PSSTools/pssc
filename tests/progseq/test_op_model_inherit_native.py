@@ -1,15 +1,17 @@
 """Component inheritance rendered NATIVELY, held to one behaviour.
 
-op-model-py and op-model-cpp render a derived component as a derived class
-(`class Der(Base)`, `class der : public base`), with the language's own `super`
-(`super().f`, `base::f`). Two renderings of one model must behave as one: each
-case here runs on both, and the message and memory-access traces must be the
-same, and the expected one. See `targets/comp_inherit.py`.
+op-model-py, op-model-cpp and op-model-sv render a derived component as a
+derived class (`class Der(Base)`, `class der : public base`,
+`class der extends base`), with the language's own `super` (`super().f`,
+`base::f`, `super.f`). Three renderings of one model must behave as one: each
+case here runs on all three, and the message and memory-access traces must be
+the same, and the expected one. See `targets/comp_inherit.py`.
 """
 from __future__ import annotations
 
 import argparse
 import importlib
+import shutil
 import subprocess
 import sys
 
@@ -20,6 +22,7 @@ from pssc import driver
 from .conftest import available_cpp_compilers
 
 _CXX = available_cpp_compilers()
+_VERILATOR = shutil.which("verilator")
 
 #: A platform that logs every access and answers reads from a map; the
 #: Python side is `pssc_rt.MemoryBus`, which logs the same things.
@@ -108,6 +111,70 @@ def _run_cpp(tmp_path, pss, cxx, args=(), mem=None):
     run = subprocess.run([str(out / "run")], capture_output=True, text=True)
     assert run.returncode == 0, run.stderr
     return run.stdout.splitlines()
+
+
+#: The SV platform: logs as the others do, answers reads from a map. The
+#: model's `run` is reached through the context API, which takes its methods
+#: from exports -- so `_run_sv` exports it (`_EXPORT_RUN`).
+_SV_TB = r"""
+module top;
+  import pssc_reg_pkg::*;
+  import pss_top_pkg::*;
+
+  class plat_c;
+    bit [63:0] m[addr_handle_t];
+    task rd(int w, addr_handle_t a, output bit [63:0] v);
+      v = m.exists(a) ? m[a] : 0;
+      if (w != 64) v &= (64'h1 << w) - 1;
+      $display("read %0d 0x%0h 0x%0h", w, a, v);
+    endtask
+    task wr(int w, addr_handle_t a, bit [63:0] d);
+      m[a] = d;
+      $display("write %0d 0x%0h 0x%0h", w, a, d);
+    endtask
+    task write8 (addr_handle_t a, bit [7:0]  d); wr(8, a, d); endtask
+    task write16(addr_handle_t a, bit [15:0] d); wr(16, a, d); endtask
+    task write32(addr_handle_t a, bit [31:0] d); wr(32, a, d); endtask
+    task write64(addr_handle_t a, bit [63:0] d); wr(64, a, d); endtask
+    task read8 (addr_handle_t a, output bit [7:0]  d); bit [63:0] v; rd(8, a, v); d = v; endtask
+    task read16(addr_handle_t a, output bit [15:0] d); bit [63:0] v; rd(16, a, v); d = v; endtask
+    task read32(addr_handle_t a, output bit [31:0] d); bit [63:0] v; rd(32, a, v); d = v; endtask
+    task read64(addr_handle_t a, output bit [63:0] d); rd(64, a, d); endtask
+  endclass
+
+  initial begin
+    plat_c plat = new();
+    pss_top_ctxt_if dut;
+    @PRELOAD@
+    dut = pss_top_root #(plat_c)::create(plat@ARGS@);
+    dut.run();
+    $finish;
+  end
+endmodule
+"""
+
+_EXPORT_RUN = "\nextend component pss_top { export target function run; }\n"
+
+
+def _run_sv(tmp_path, pss, args=(), mem=None):
+    out = _compile(tmp_path, pss + _EXPORT_RUN, "op-model-sv")
+    preload = " ".join(f"plat.m[64'h{a:x}] = 64'h{v:x};" for a, v in
+                       (mem or {}).items())
+    (out / "tb.sv").write_text(
+        _SV_TB.replace("@PRELOAD@", preload).replace(
+            "@ARGS@", "".join(f", 64'h{a:x}" for a in args)))
+    files = [str(out / "pssc_reg_pkg.sv"), str(out / "pss_top_pkg.sv"),
+             str(out / "tb.sv")]
+    build = subprocess.run(
+        [_VERILATOR, "--binary", "-Wno-fatal", "--top-module", "top",
+         "-Mdir", str(tmp_path / "obj"), "-o", "sim"] + files,
+        capture_output=True, text=True, cwd=tmp_path)
+    assert build.returncode == 0, build.stdout + build.stderr
+    run = subprocess.run([str(tmp_path / "obj" / "sim")],
+                         capture_output=True, text=True, cwd=tmp_path)
+    assert run.returncode == 0, run.stdout + run.stderr
+    # Verilator's own report lines start with `- `; the model's never do.
+    return [ln for ln in run.stdout.splitlines() if not ln.startswith("- ")]
 
 
 _CASES = {
@@ -236,3 +303,11 @@ def test_python(tmp_path, case):
 def test_cpp(tmp_path, case):
     pss, args, mem, want = _CASES[case]
     assert _run_cpp(tmp_path, pss, _CXX[0], args, mem) == want
+
+
+@pytest.mark.sim
+@pytest.mark.skipif(_VERILATOR is None, reason="verilator not on PATH")
+@pytest.mark.parametrize("case", sorted(_CASES))
+def test_sv(tmp_path, case):
+    pss, args, mem, want = _CASES[case]
+    assert _run_sv(tmp_path, pss, args, mem) == want

@@ -119,5 +119,13 @@ package dma_engine_pkg {
             } while (csr.DONE == 0);
             return 0;
         }
+
+        // The model's API: what the environment may call. Exporting a
+        // component's instance function is an extension to LRM 20.4.2
+        // (pssparser PSS120); it runs on the instance it is called through.
+        export target function configure_channel;
+        export target function mem_to_mem_copy;
+        export target function mem_to_mem_copy_masked;
+        export target function mem_to_mem_copy_desc;
     }
 }

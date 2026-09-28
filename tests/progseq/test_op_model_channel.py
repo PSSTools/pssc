@@ -52,6 +52,8 @@ component chan_top_c {
             posted = ch[i].wake.try_put(1);
         }
     }
+
+    export target function notify;
 }
 """
 
@@ -135,11 +137,11 @@ def test_channels_are_constructed(sv):
 
 
 def test_channel_member_keeps_its_pss_name(sv):
-    """No `m_` prefix, and not `protected`.
+    """No `m_` prefix, and not `protected` -- as every member now.
 
-    A channel is the one field another component reaches THROUGH an instance
-    handle (`ch[i].wake.try_put(1)`), and the trailing `.wake` there is emitted
-    from the PSS name. Renaming the declaration to `m_wake` produced code that
+    Another component reaches it THROUGH an instance handle
+    (`ch[i].wake.try_put(1)`), and the trailing `.wake` there is emitted from
+    the PSS name. Renaming the declaration to `m_wake` produced code that
     spelled one field two ways; `protected` made the cross-component access a
     compile error.
     """
@@ -159,7 +161,7 @@ def test_blocking_get_becomes_a_task_call(sv):
 def test_non_blocking_calls_keep_their_return_value(sv):
     """`try_put`/`try_get` are functions returning a bit and must NOT get the
     output-argument rewrite that `get` needs."""
-    assert "posted = m_ch[i].wake.try_put(1);" in sv
+    assert "posted = ch[i].wake.try_put(1);" in sv
 
 
 # --- the runtime it depends on ---------------------------------------------
@@ -374,6 +376,8 @@ component disc_c {
         wake.try_put(1);            // predicate, answer ignored
         wide.get();                 // ...and a channel wider than `bit`
     }
+
+    export target function ops;
 }
 """
 
@@ -442,6 +446,8 @@ component nest_c {
             ch[i].wake.try_put(1);
         }
     }
+
+    export target function notify;
 }
 """
 
@@ -461,4 +467,4 @@ def test_a_discarded_predicate_on_a_child_channel_is_voided_too(tmp_path):
     driver.compile([str(src)], target="op-model-sv", opts=ns)
     sv = (tmp_path / "nest_c_pkg.sv").read_text()
 
-    assert "void'(m_ch[i].wake.try_put(1));" in sv, sv
+    assert "void'(ch[i].wake.try_put(1));" in sv, sv

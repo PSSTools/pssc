@@ -53,6 +53,7 @@ component c_c {
     solve function void %s(addr_handle_t base) { x = 1; }
     solve function void configure(int n) { x = n; }
     function void op() { x = 2; }
+    export target function op;
 }
 """
 
@@ -121,10 +122,10 @@ def test_two_compiles_do_not_interfere(tmp_path):
     # the thing that breaks when it is misclassified.
     a = (tmp_path / "a" / "a_pkg.sv").read_text()
     b = (tmp_path / "b" / "b_pkg.sv").read_text()
-    assert "create(IMP_T imp);" in a, (
+    assert "create(Timp imp);" in a, (
         "with --ctor-name ctor, `init` is an ordinary solve function and the "
         "factory takes no base address")
-    assert "create(IMP_T imp, addr_handle_t base);" in b, (
+    assert "create(Timp imp, addr_handle_t base);" in b, (
         "the previous compile's --ctor-name leaked into this one: `init` was "
         "not recognised as the constructor")
 
@@ -148,6 +149,7 @@ component c_c {
     int x;
     solve function void initialize(addr_handle_t base) { x = 1; }
     function void op() { x = 2; }
+    export target function op;
 }
 """
 

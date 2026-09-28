@@ -72,6 +72,21 @@ component component_c {
 component pss_top {
     /** The device under test. */
     component_c c[2];
+
+    int armed;
+
+    /** Arm the first channel. */
+    target function void arm_first() {
+        armed = 1;
+    }
+
+    target function void stop_first() {
+        armed = 0;
+    }
+
+    // The API: op-model-sv puts only exports on it.
+    export target function arm_first;
+    export target function stop_first;
 }
 '''
 
@@ -168,13 +183,14 @@ def test_a_trailing_comment_stays_on_its_statement_line(sv):
 
 
 def test_the_doc_block_is_on_both_the_prototype_and_the_implementation(sv):
-    """The interface is what a caller reads; the body is what a debugger reads.
-
-    The one place a comment is deliberately duplicated.
+    """The context interface is what a caller reads; the body is what a
+    debugger reads. The one place a comment is deliberately duplicated -- and
+    only for an export, since only an export has a prototype there.
     """
-    assert sv.count("* Probe the status register.") == 2
-    assert "pure virtual task probe" in sv
-    assert "virtual task probe" in sv
+    assert sv.count("/** Arm the first channel. */") == 2
+    assert "pure virtual task arm_first" in sv
+    assert "virtual task arm_first" in sv
+    assert sv.count("* Probe the status register.") == 1
 
 
 def _doc_blocks_butting_against_code(text, opener, indented=True):
@@ -239,22 +255,6 @@ def test_undocumented_prototypes_are_spaced_too(sv):
         prev = lines[i - 1].strip()
         assert prev == "" or prev.endswith("*/"), (
             "prototype at line %d runs into %r" % (i + 1, prev))
-
-
-def test_an_accessor_group_stays_together(sv):
-    """`ch()` and `ch_size()` are one member's plumbing, not two API entries.
-
-    Spacing every generated line apart would bury the operations among them,
-    so tightly-coupled groups are separated from their surroundings and not
-    internally. Same reasoning as the `_init`/`_create`/`_destroy` lifecycle
-    and the per-register accessor one-liners.
-    """
-    lines = [l.rstrip() for l in sv.split("\n")]
-    size = next((i for i, l in enumerate(lines)
-                 if "_size();" in l and "pure virtual function" in l), None)
-    if size is None:
-        pytest.skip("fixture has no sub-component array")
-    assert lines[size - 1].strip().startswith("pure virtual function")
 
 
 def test_a_detached_comment_does_not_propagate(sv, c):

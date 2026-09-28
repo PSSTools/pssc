@@ -53,6 +53,18 @@ def op_model_sources():
     return [os.path.join(OP_MODEL, p) for p in op_model_rel_paths()]
 
 
+#: The environment's exports for the WB DMA model (see the file). op-model-sv
+#: takes its API from exports, and the device tree declares none.
+WB_DMA_EXPORTS = os.path.normpath(os.path.join(
+    os.path.dirname(__file__), "data", "wb_dma_exports.pss"))
+
+
+def op_model_sv_sources():
+    """`op_model_sources()` plus the environment's exports: what an
+    op-model-sv compile of the WB DMA model is given."""
+    return op_model_sources() + [WB_DMA_EXPORTS]
+
+
 def small_model_dir():
     """Directory of the narrow two-file model (`dma_regs` + `dma_engine`).
 
