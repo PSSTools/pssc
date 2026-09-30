@@ -49,3 +49,37 @@ reason = "op-model-py gap: `match` pattern PatternAs is not lowered"
 verdict = "UNSUPPORTED"
 reason = "op-model-py gap: a user function named get_offset_of_instance on a non-register component is classified a register-offset FOLD by name alone (call_legality)"
 
+
+# --- activities, P0 slice (2026-09-30): an operation model has no activity ---
+
+[expected."act.atomic.body.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+[expected."act.compound.nested_labeled.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+[expected."act.multi_comp.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+[expected."act.repeat.single_stmt.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+[expected."act.replicate.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+[expected."act.traverse.handle.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+[expected."act.traverse.handle_multi.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+[expected."act.traverse.qualified.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"

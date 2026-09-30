@@ -162,7 +162,7 @@ def test_chost_via_cli(tmp_path):
     assert code == 0 and (out / "pss_top__a.c").is_file()
 
 
-PRINT_SRC = """
+PRINT_SRC = """import std_pkg::*;
 component pss_top {
     action A {
         bit[8] a;
@@ -176,7 +176,7 @@ component pss_top {
 """
 
 
-MULTIVAL_SRC = """
+MULTIVAL_SRC = """import std_pkg::*;
 component pss_top {
     action Leaf {
         rand bit[8] x; rand bit[8] y;
@@ -240,7 +240,7 @@ def test_builtin_lowering_does_not_mutate_source(tmp_path):
     assert before == after == "ExprAttribute"  # still self.print(...), not rewritten
 
 
-FLAT_PRINT_SRC = """
+FLAT_PRINT_SRC = """import std_pkg::*;
 component pss_top {
     action A {
         bit[8] a;
@@ -254,7 +254,7 @@ component pss_top {
 """
 
 
-COLLIDE_SRC = """
+COLLIDE_SRC = """import std_pkg::*;
 component comp1 { action A { exec body { print("c1"); } } }
 component comp2 { action A { exec body { print("c2"); } } }
 """
@@ -270,7 +270,7 @@ def test_chost_action_name_collision_avoided(tmp_path):
     assert "comp1__a.c" in names and "comp2__a.c" in names
 
 
-ACTIVITY_SRC = """
+ACTIVITY_SRC = """import std_pkg::*;
 component pss_top {
     action Leaf { exec body { print("leaf"); } }
     action Root {
@@ -281,7 +281,7 @@ component pss_top {
 }
 """
 
-NESTED_ACTIVITY_SRC = """
+NESTED_ACTIVITY_SRC = """import std_pkg::*;
 component pss_top {
     action Leaf { exec body { print("leaf"); } }
     action Mid  { Leaf x; activity { x; } }
@@ -301,7 +301,7 @@ def test_sequential_activity_inlined(tmp_path):
     assert root_c.count('fprintf(stdout, "leaf\\n")') == 4
 
 
-ANON_ACTIVITY_SRC = """
+ANON_ACTIVITY_SRC = """import std_pkg::*;
 component pss_top {
     action Leaf { rand bit[8] v; constraint { v > 10; v < 20; } exec body { print("leaf"); } }
     action Root {
@@ -500,7 +500,7 @@ def test_chost_activity_model_links(tmp_path):
     assert run.returncode == 0, run.stderr
 
 
-FIELD_ACTIVITY_SRC = """
+FIELD_ACTIVITY_SRC = """import std_pkg::*;
 component pss_top {
     action Leaf { bit[8] v; exec body { print("leaf v=%d", v); } }
     action Root { Leaf a; Leaf b; activity { a; b; } }
@@ -535,14 +535,14 @@ def test_chost_activity_with_fields_runs(tmp_path):
     assert run.stdout.split("\n")[:2] == ["leaf v=0", "leaf v=0"], run.stdout
 
 
-PARALLEL_SRC = """
+PARALLEL_SRC = """import std_pkg::*;
 component pss_top {
     action Leaf { exec body { print("leaf"); } }
     action Root { Leaf a; Leaf b; activity { parallel { a; b; } } }
 }
 """
 
-SELECT_SRC = """
+SELECT_SRC = """import std_pkg::*;
 component pss_top {
     action AA { exec body { print("A"); } }
     action BB { exec body { print("B"); } }
@@ -551,14 +551,14 @@ component pss_top {
 """
 
 
-REPEAT_SRC = """
+REPEAT_SRC = """import std_pkg::*;
 component pss_top {
     action Leaf { exec body { print("leaf"); } }
     action Root { Leaf a; activity { repeat (3) { a; } } }
 }
 """
 
-SCHEDULE_SRC = """
+SCHEDULE_SRC = """import std_pkg::*;
 component pss_top {
     action AA { exec body { print("A"); } }
     action BB { exec body { print("B"); } }
@@ -631,7 +631,7 @@ def test_chost_select_takes_first_branch(tmp_path):
     assert run.stdout.split() == ["A"], run.stdout
 
 
-PRESOLVE_SRC = """
+PRESOLVE_SRC = """import std_pkg::*;
 component pss_top {
     action Leaf {
         rand bit[8] v;
@@ -696,7 +696,7 @@ def test_presolve_range_set_implication(tmp_path):
         assert not (sol["z"] > 0) or sol["z"] < 50, sol
 
 
-ARRAY_SRC = """
+ARRAY_SRC = """import std_pkg::*;
 component pss_top {
     action Leaf {
         rand bit[8] arr[3];
@@ -748,7 +748,7 @@ def test_chost_array_field_runs(tmp_path):
     assert vals["arr0"] > 200 and vals["arr1"] < 5, run.stdout
 
 
-STRUCT_SRC = """
+STRUCT_SRC = """import std_pkg::*;
 component pss_top {
     struct Point { rand bit[8] x; rand bit[8] y; constraint x < y; }
     action Leaf {
@@ -818,7 +818,7 @@ def test_lower_body_unrolls_foreach():
 
 # Exec-body `foreach (arr[i])` now parses (pssparser ProceduralStmtForeach) and is
 # unrolled when the action is inlined into a traversing activity.
-FOREACH_BODY_SRC = """
+FOREACH_BODY_SRC = """import std_pkg::*;
 component pss_top {
     action A {
         rand bit[8] arr[3];
@@ -877,7 +877,7 @@ def test_foreach_body_runs(tmp_path):
     assert [l for l in run.stdout.split("\n") if l][:3] == ["v=1", "v=2", "v=3"]
 
 
-MATCH_BODY_SRC = """
+MATCH_BODY_SRC = """import std_pkg::*;
 component pss_top {
     action A {
         rand bit[8] x;
@@ -945,7 +945,7 @@ def test_presolve_array_of_struct(tmp_path):
         assert s[f"pts_{i}_x"] < s[f"pts_{i}_y"], s   # P's own x<y per element
 
 
-NESTED_STRUCT_SRC = """
+NESTED_STRUCT_SRC = """import std_pkg::*;
 component pss_top {
     struct Inner { rand bit[8] x; constraint x > 200; }
     struct Outer { rand Inner i; constraint i.x < 250; }
@@ -989,7 +989,7 @@ def test_presolve_foreach_constraint(tmp_path):
     assert [sol[f"s_{i}"] for i in range(4)] == [0, 2, 4, 6], sol
 
 
-FOREACH_SRC = """
+FOREACH_SRC = """import std_pkg::*;
 component pss_top {
     action Leaf {
         rand bit[8] arr[3];

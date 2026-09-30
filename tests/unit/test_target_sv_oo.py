@@ -8,6 +8,7 @@ from pathlib import Path
 from pssc.cli import main
 
 ATOMIC = (
+    "import std_pkg::*;\n"
     "component pss_top {\n"
     "    action Entry { exec post_solve { print(\"hi\"); } }\n"
     "}\n"

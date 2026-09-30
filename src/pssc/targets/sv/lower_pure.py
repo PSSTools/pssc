@@ -63,7 +63,8 @@ def _action_types(ir_ctx) -> List[tuple]:
 
 
 # Supported flow-object kinds -> their SV runtime base class.
-_FLOW_BASE = {"buffer": "zsp_buffer", "state": "zsp_state", "stream": "zsp_stream"}
+_FLOW_BASE = {ir.FlowKind.BUFFER: "zsp_buffer", ir.FlowKind.STATE: "zsp_state",
+              ir.FlowKind.STREAM: "zsp_stream"}
 
 
 def _flow_types(ir_ctx) -> List[tuple]:
@@ -119,7 +120,7 @@ def _resource_types(ir_ctx) -> List[tuple]:
     for name, dt in ir_ctx.type_map.items():
         if id(dt) in seen or _is_stdlib(name):
             continue
-        if isinstance(dt, ir.DataTypeStruct) and getattr(dt, "flow_kind", None) == "resource":
+        if isinstance(dt, ir.DataTypeStruct) and getattr(dt, "flow_kind", None) is ir.FlowKind.RESOURCE:
             seen.add(id(dt))
             out.append((name, dt))
     return out
@@ -178,7 +179,7 @@ def _action_fields_supported(dtype) -> bool:
             if getattr(f.datatype, "flow_kind", None) not in _FLOW_BASE:
                 return False
         if f.kind in (FieldKind.Lock, FieldKind.Share):
-            if getattr(f.datatype, "flow_kind", None) != "resource":
+            if getattr(f.datatype, "flow_kind", None) is not ir.FlowKind.RESOURCE:
                 return False
     return True
 
@@ -597,7 +598,7 @@ def _lower_compound_activity(ctx, dtype) -> List[svs.SVStmt]:
                 if entry[0] == pf:
                     entry[1].extend(forwarded)
         flow_kind, flow_name = _output_flow(handle_type.get(ph), pf)
-        if flow_kind == "stream":
+        if flow_kind is ir.FlowKind.STREAM:
             chan = f"_ch_{ph}_{pf}"
             top_decls.append(svs.SVStmtRaw(
                 text=f"zsp_stream_channel #({ctx.mangle_name(flow_name)}) {chan} = new();"))
@@ -765,7 +766,7 @@ def lower_flow_type(ctx: LoweringContext, dtype, sv_name: str) -> SVClass:
         if blk is not None:
             constraints.append(blk)
     bases = dict(_FLOW_BASE)
-    bases["resource"] = "zsp_resource"
+    bases[ir.FlowKind.RESOURCE] = "zsp_resource"
     base = bases.get(getattr(dtype, "flow_kind", None))  # None => plain struct
     return translate_class(
         dtype, sv_name=sv_name, extends=base,

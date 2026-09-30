@@ -54,3 +54,31 @@ def test_unique_with_domain_constraint():
         assert s.x < 8, f"seed={seed}: x={s.x} >= 8"
         assert s.y < 8, f"seed={seed}: y={s.y} >= 8"
         assert s.x != s.y, f"seed={seed}: x={s.x} == y={s.y}"
+
+
+# `unique` used to keep only the LAST element of each operand's path, so
+# `unique {a.x, b.x}` became `unique {x, x}` -- a different, unsatisfiable
+# constraint. Until StmtUnique carries expressions, a path operand is refused.
+def test_unique_path_operand_is_a_located_error():
+    from pssc import PssTranslationError
+    with pytest.raises(PssTranslationError, match=r"line 6: unique operand 'a\.x'"):
+        load_pss("""
+            struct S { rand bit[4] x; }
+            struct P {
+                rand S a;
+                rand S b;
+                constraint { unique { a.x, b.x }; }
+            }
+        """)
+
+
+def test_unique_single_operand_is_a_located_error():
+    """`unique {arr}` (distinct elements) used to be dropped without a word."""
+    from pssc import PssTranslationError
+    with pytest.raises(PssTranslationError, match=r"line 4: unique with one operand"):
+        load_pss("""
+            struct P {
+                rand bit[4] arr[4];
+                constraint { unique { arr }; }
+            }
+        """)

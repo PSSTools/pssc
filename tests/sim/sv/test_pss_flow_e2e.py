@@ -19,7 +19,7 @@ _SIMS = _sim_tags()
 pytestmark = pytest.mark.skipif(not _SIMS, reason="no supported simulator on PATH")
 
 
-_ATOMIC_PSS = """
+_ATOMIC_PSS = """import std_pkg::*;
 component pss_top {
     action Entry { exec post_solve { print("Hello World!"); } }
 }

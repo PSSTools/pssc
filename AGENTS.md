@@ -382,6 +382,32 @@ admission rule for a new `@overridable`, and the deprecation window) and
 `docs/op-model-manifest.md` (the `--emit-manifest` schema). If you change what a
 surface promises, that page is the one to edit — nothing else states the policy.
 
+## Activities on bc
+
+Design: `docs/design/activity-flow-resource-bc-design.md`; P0 is tracked in
+`docs/design/activity-p0-plan.md`.
+
+**A traversal names what the linker resolved, never a guess.** ast2ir fills
+`ActivityTraversal.type_qname`/`ActivityAnonTraversal.type_qname` from the
+reference's `SymbolRefPath` (`_traversed_type_qname`). A handle, whether
+declared in the action or in an activity block, gives its declared type;
+`action_type` stays as written for the SV/sw/be-py consumers.
+`PSSToScenarioPass` maps `type_qname` to a coroutine and refuses anything
+else. bc raises `LoweringError` on an INVOKE/SPAWN it cannot resolve. It used
+to run coroutine 0, a different action with a well-formed trace, and
+`test_activity_bc_runs.py` is the trace-level guard.
+
+**Every activity node is translated, or refused with a location.** The
+activity translator has no `return None` fall-through. A new pssparser node
+fails `test_activity_registry.py` by name, and a new ir-core activity IR node
+fails `test_activity_ir_registry.py`, until a row says whether it lowers or
+is refused. Add the row with the node.
+
+**Enums, not strings.** `JoinSpec.kind` is a `JoinKind` and
+`DataTypeStruct.flow_kind` is a `FlowKind`; `test_flow_kind.py` holds the
+second. The SV target keeps strings in its *own* binding records and converts
+where it reads the IR (`analyze_flow._resolve_flow_kind`).
+
 ## Compliance tests (pss-corpus executable tier)
 
 `tests/compliance/` runs the corpus's executable tier

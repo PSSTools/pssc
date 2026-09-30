@@ -192,3 +192,53 @@ which reads like a path written for the `@zdc` Python frontend, where the body
 is recovered by introspecting Python source. Coming from a `.pss` file through
 pssparser there is no Python source to introspect — which would explain both
 this and (1), and would make them one gap rather than two.
+
+---
+
+## pssc unit, pssparser R4 drift (2026-09-30)
+
+`tests/unit` went from 11 failures to **151** when pssc was first run against
+pssparser's symbol-resolution batches (R1–R4, 09-23 to 09-28). pssparser
+recorded every AST change it made, with the pssc edit each one needs, in its
+`docs/design/cross-repo-followups.md` (X-5, X-8, X-10, X-14 to X-18). None of
+them was a pssparser bug. Tracked by `docs/design/activity-p0-plan.md` §1.
+
+Fixed in P0 commit 1 (housekeeping):
+
+| Cause | Tests | Fix |
+|---|---|---|
+| `print`/`message` without `import std_pkg::*;` (package visibility, LRM 18.1, now enforced) | 71 | fixtures import `std_pkg` |
+| `ConstraintBlock.getName()` is an `ExprId` (X-10); named constraints were keyed by an AST object | 42 | `ast2ir` reads `.getId()` |
+| Covergroup cross items are `ExprRefName` (X-5, X-18); names came out as AST objects, so 0 hits sampled | 6 | `_id_name` unwraps it |
+| Redeclaring the built-in `initial`/`instance_id` is a duplicate declaration | 2 | tests now assert the located error |
+| `export target function f;` of an undeclared `f` is an error | 1 | test declares `f` |
+| `tx::send_pkt` (an *instance* as a type qualifier) in `tests/patterns/producer_consumer.pss` | 1 | fixture uses `tx_c::`. pssparser accepting it is reported upstream |
+
+Fixed in P0 commit 2: the 28 `bind`/`schedule`/`unique` crashes (X-5).
+
+Remaining, with owners:
+
+| Tests | Cause | Owner |
+|---|---|---|
+| `test_doc_references.py::test_every_doc_reference_resolves[…]` ×3 | cite `docs/op-model-py-async-plan.md` and `docs/op-model-export-design.md`, which were never committed | op-model work |
+| `test_doc_references.py::test_the_archived_notes_say_they_are_archived` | `op-model-output-defects.md`, `sv-op-model-inheritance{,-plan}.md` have no banner and are not on the allow-list | op-model work |
+
+Also pre-existing on `HEAD` (confirmed on a clean worktree), in `tests/progseq`,
+same drift, not activity work. Owner: op-model work.
+
+| Tests | Cause |
+|---|---|
+| `test_c_body_lowering.py::test_a_declared_builtin_with_no_c_rendering_is_rejected` | fixture calls `urandom()` without `import std_pkg::*;` |
+| `test_c_imports.py::test_a_component_scope_import_is_refused_rather_than_mislowered`, `::test_the_refusal_names_imports` | pssparser now rejects a component-scope `import target function` itself (20.4), before pssc's refusal is reached |
+| `test_call_legality.py` ×5 | `std_pkg.pss` now declares more functions (math, file, `error`/`fatal`); the tier tables and two tests' expectations lag it |
+
+`tests/sim/sv` (Verilator; `-k "not mti"`) had the same `std_pkg` fixture gap:
+25 failed on `HEAD`. With the sweep applied (P0 commit 8), 13 remain, all in
+`test_sv_pure_e2e.py`, and all pre-existing. On a clean `HEAD` worktree
+with the same sweep, that file fails 19 of 20. The cause is that once a model imports
+`std_pkg`, the sv-pure package declares fields of `std_pkg` types
+(`rand alloc_access_mode_e access;`) without declaring the types
+(`%Error: Can't find typedef/interface: 'alloc_access_mode_e'`). Owner: SV
+target (sv-pure). `test_sv_pure_constraints_are_enforced` ("expected fatal on unsat")
+is the same build failure.
+

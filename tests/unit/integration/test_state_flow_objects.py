@@ -42,12 +42,13 @@ def _build(src: str):
 
 
 def test_state_struct_flow_kind():
-    """State struct IR should have flow_kind == 'state'."""
+    """State struct IR should have flow_kind FlowKind.STATE (the declared type)."""
     ctx, _ = _build(PSS_SRC)
     power_ir = ctx.type_map.get("power_s")
     assert power_ir is not None, "power_s not found in type_map"
-    assert power_ir.flow_kind == "state", \
-        f"Expected flow_kind='state', got {power_ir.flow_kind!r}"
+    from zuspec.ir.core import FlowKind
+    assert power_ir.flow_kind is FlowKind.STATE, \
+        f"Expected flow_kind=FlowKind.STATE, got {power_ir.flow_kind!r}"
 
 
 def test_state_struct_python_class_tagged():
@@ -55,8 +56,9 @@ def test_state_struct_python_class_tagged():
     ctx, classes = _build(PSS_SRC)
     power_cls = classes.get("power_s")
     assert power_cls is not None, "power_s Python class not found"
-    assert getattr(power_cls, "_pss_flow_kind", None) == "state", \
-        f"Expected _pss_flow_kind='state', got {getattr(power_cls, '_pss_flow_kind', None)!r}"
+    from zuspec.ir.core import FlowKind
+    assert getattr(power_cls, "_pss_flow_kind", None) is FlowKind.STATE, \
+        f"Expected _pss_flow_kind=FlowKind.STATE, got {getattr(power_cls, '_pss_flow_kind', None)!r}"
 
 
 PSS_INITIAL_SRC = """\

@@ -66,7 +66,7 @@ def test_sv_pure_atomic_satisfiable_simulates(tmp_path):
     assert "ZSP_PURE_DONE" in log, f"did not complete:\n{log}"
 
 
-_COMPOUND = """
+_COMPOUND = """import std_pkg::*;
 component pss_top {
     action LA { exec body { message(LOW, "LEAF_A"); } }
     action LB { exec body { message(LOW, "LEAF_B"); } }
@@ -113,7 +113,7 @@ def test_sv_pure_parallel_runs_both(tmp_path):
     assert "LEAF_A" in log and "LEAF_B" in log and "ZSP_PURE_DONE" in log
 
 
-_BUFFER = """
+_BUFFER = """import std_pkg::*;
 component pss_top {
     buffer Data { rand bit[8] x; }
     pool Data dpool;
@@ -162,7 +162,7 @@ def test_sv_pure_buffer_forwarding_simulates(tmp_path):
     assert "ZSP_PURE_DONE" in log
 
 
-_INFER = """
+_INFER = """import std_pkg::*;
 component pss_top {
     buffer Data { rand bit[8] x; }
     pool Data dpool;
@@ -203,7 +203,7 @@ def test_sv_pure_inference_simulates(tmp_path):
     assert "ZSP_PURE_DONE" in log
 
 
-_STATE = """
+_STATE = """import std_pkg::*;
 component pss_top {
     state S { rand bit[8] v; }
     pool S sp;
@@ -263,7 +263,7 @@ def test_sv_pure_state_flow_pattern_simulates(tmp_path):
     assert "ZSP_PURE_DONE" in log
 
 
-_STREAM = """
+_STREAM = """import std_pkg::*;
 component pss_top {
     stream Frame { rand bit[8] d; }
     pool Frame fp;
@@ -304,7 +304,7 @@ def test_sv_pure_stream_simulates(tmp_path):
     assert "ZSP_PURE_DONE" in log
 
 
-_RESOURCE = """
+_RESOURCE = """import std_pkg::*;
 component pss_top {
     resource R { rand bit[8] rid; }
     pool [4] R rp;
@@ -344,7 +344,7 @@ def test_sv_pure_resource_simulates(tmp_path):
     assert "ZSP_PURE_DONE" in log
 
 
-_REPEAT = """
+_REPEAT = """import std_pkg::*;
 component pss_top {
     action Leaf { exec body { message(NONE, "L"); } }
     action Test {

@@ -300,12 +300,12 @@ def _get_stream_fields(
         ft = field.datatype
         # Resolve the flow-object type
         flow_dtype = None
-        if hasattr(ft, 'flow_kind') and ft.flow_kind == 'stream':
+        if hasattr(ft, 'flow_kind') and ft.flow_kind is ir.FlowKind.STREAM:
             flow_dtype = ft
         elif isinstance(ft, ir.DataTypeRef):
             for rname, rdt in ctx.ir_ctx.type_map.items():
                 if rname == ft.ref_name or rname.endswith(f"::{ft.ref_name}"):
-                    if hasattr(rdt, 'flow_kind') and rdt.flow_kind == 'stream':
+                    if hasattr(rdt, 'flow_kind') and rdt.flow_kind is ir.FlowKind.STREAM:
                         flow_dtype = rdt
                     break
 

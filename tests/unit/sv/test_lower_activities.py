@@ -251,7 +251,7 @@ class TestParallel:
     def test_fork_join_none(self, ctx):
         stmt = ir.ActivityParallel(
             stmts=[ir.ActivityTraversal(handle="a1")],
-            join_spec=ir.JoinSpec(kind="none"),
+            join_spec=ir.JoinSpec(kind=ir.JoinKind.NONE),
         )
         lines = _lower_activity_stmt(ctx, stmt, "comp")
         text = "\n".join(lines)
@@ -261,7 +261,7 @@ class TestParallel:
     def test_fork_join_any(self, ctx):
         stmt = ir.ActivityParallel(
             stmts=[ir.ActivityTraversal(handle="a1"), ir.ActivityTraversal(handle="a2")],
-            join_spec=ir.JoinSpec(kind="first"),
+            join_spec=ir.JoinSpec(kind=ir.JoinKind.FIRST),
         )
         lines = _lower_activity_stmt(ctx, stmt, "comp")
         text = "\n".join(lines)

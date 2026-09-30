@@ -68,10 +68,10 @@ def lower_component(ctx: LoweringContext, dtype: ir.DataTypeComponent) -> SVClas
         # Determine the flow kind of the element type
         elem_type = ctx.ir_ctx.type_map.get(pool.element_type_name) if ctx.ir_ctx else None
         flow_kind = getattr(elem_type, 'flow_kind', None)
-        if flow_kind != 'resource':
+        if flow_kind is not ir.FlowKind.RESOURCE:
             # Skip pools with a known non-resource flow kind.
             # When flow_kind is None (unknown type or no ir_ctx), emit conservatively.
-            if flow_kind in ('buffer', 'stream', 'state'):
+            if flow_kind in (ir.FlowKind.BUFFER, ir.FlowKind.STREAM, ir.FlowKind.STATE):
                 continue  # managed as local variables in activity lowering
         elem_sv = ctx.mangle_name(pool.element_type_name) if pool.element_type_name else "zsp_resource"
         capacity = pool.capacity if pool.capacity and pool.capacity > 0 else 1

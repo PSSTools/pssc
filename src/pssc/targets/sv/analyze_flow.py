@@ -312,7 +312,7 @@ def _resolve_flow_kind(
                 continue
             ft = field.datatype
             if hasattr(ft, 'flow_kind') and ft.flow_kind:
-                kind = ft.flow_kind
+                kind = ft.flow_kind.name.lower()   # IR FlowKind -> binding's str
                 ft_name = getattr(ft, 'name', '') or ''
                 sv_type = ctx.resolve_sv_class_name(ft_name) if ft_name else ""
                 return (kind, sv_type)
@@ -322,7 +322,8 @@ def _resolve_flow_kind(
                 for rname, rdt in ctx.ir_ctx.type_map.items():
                     if rname == ref_name or rname.endswith(f"::{ref_name}"):
                         if hasattr(rdt, 'flow_kind') and rdt.flow_kind:
-                            return (rdt.flow_kind, ctx.resolve_sv_class_name(rname))
+                            return (rdt.flow_kind.name.lower(),
+                                    ctx.resolve_sv_class_name(rname))
             break
         # Follow super type
         _sup = getattr(_cur_dtype, 'super', None)

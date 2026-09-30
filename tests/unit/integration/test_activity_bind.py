@@ -90,3 +90,53 @@ def test_activity_bind_dst_path():
     bind = binds[0]
     assert isinstance(bind.dst, ExprAttribute)
     assert bind.dst.attr == "in_data"
+
+
+def _attr_chain(expr):
+    """`self.a.b.c` as ['a', 'b', 'c']."""
+    from zuspec.ir.core.expr import ExprAttribute, TypeExprRefSelf
+    names = []
+    while isinstance(expr, ExprAttribute):
+        names.append(expr.attr)
+        expr = expr.value
+    assert isinstance(expr, TypeExprRefSelf), type(expr).__name__
+    return list(reversed(names))
+
+
+def test_label_path_operand():
+    """A handle declared in a labeled block is reached through the label
+    (LRM 11.8). The IR keeps the path as written; P3 resolves it."""
+    ctx = _build_ctx("""\
+component pss_top {
+    stream data_t { rand bit[8] val; }
+    action producer { output data_t out_data; }
+    action consumer { input data_t in_data; }
+    action test {
+        consumer c;
+        activity {
+            s1: sequence {
+                producer p;
+                p;
+            }
+            c;
+            bind s1.p.out_data c.in_data;
+        }
+    }
+}
+""")
+    assert not ctx.errors, ctx.errors
+    binds = _collect_binds(ctx.type_map["pss_top::test"].activity_ir.stmts)
+    assert len(binds) == 1
+    assert _attr_chain(binds[0].src) == ["s1", "p", "out_data"]
+    assert _attr_chain(binds[0].dst) == ["c", "in_data"]
+
+
+def test_bc_refuses_activity_bind():
+    """bc has no flow-object semantics until P3, so an activity `bind` is
+    refused by the scenario pass -- never lowered as if it were not there."""
+    from zuspec.ir.core.xf import PSSToScenarioPass
+    from zuspec.ir.core.xf.validate import UnsupportedConstructError
+    ctx = _build_ctx(PSS_SRC)
+    assert not ctx.errors, ctx.errors
+    with pytest.raises(UnsupportedConstructError, match="ActivityBind"):
+        PSSToScenarioPass(exports=["test"]).lower(ctx)

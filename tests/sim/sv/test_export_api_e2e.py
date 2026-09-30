@@ -92,7 +92,7 @@ def _run(tmpdir, sim, sv_dir, top_module="tb"):
     return runner.status, sim_log
 
 
-_ATOMIC_PSS = """
+_ATOMIC_PSS = """import std_pkg::*;
 component pss_top {
     action Entry { exec post_solve { print("Hello World!"); } }
 }
@@ -174,7 +174,7 @@ def test_import_api_routed_to_testbench(tmp_path, sim):
     assert "[TB] done" in log, log
 
 
-_MULTI_PSS = """
+_MULTI_PSS = """import std_pkg::*;
 component pss_top {
     action Hello { exec post_solve { print("hello "); } }
     action World { exec post_solve { print("world "); } }

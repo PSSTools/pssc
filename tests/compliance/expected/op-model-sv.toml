@@ -53,3 +53,37 @@ reason = "op-model-sv gap: message() argument typing (expr_types.py) does not re
 [expected."types.string.match.001"]
 verdict = "UNSUPPORTED"
 reason = "op-model-sv gap: a user component function named get_offset_of_instance is taken for the reg_group_c method (matched by name in _fold_offset)"
+
+# --- activities, P0 slice (2026-09-30): an operation model has no activity ---
+
+[expected."act.atomic.body.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+[expected."act.compound.nested_labeled.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+[expected."act.multi_comp.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+[expected."act.repeat.single_stmt.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+[expected."act.replicate.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+[expected."act.traverse.handle.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+[expected."act.traverse.handle_multi.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+[expected."act.traverse.qualified.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"

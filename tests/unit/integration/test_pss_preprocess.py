@@ -2,13 +2,16 @@
 
 The LRM built-in fields ``initial`` (state) and ``instance_id`` (resource) are
 injected natively by pssparser (``AstBuilderInt::addStructBuiltinField``); there
-is no source pre-processing. These tests assert the fields reach the IR and that
-the constraint references link.
+is no source pre-processing. These tests assert the fields reach the IR once,
+that redeclaring one is a located error, and that the constraint references
+link.
 """
 from __future__ import annotations
 import os
 import tempfile
 import pytest
+
+from pssparser import ParseException
 
 from pssc import Parser, AstToIrTranslator
 
@@ -50,15 +53,50 @@ def test_resource_gets_instance_id_field():
     assert "instance_id" in _field_names(ctx.type_map["r"])
 
 
-def test_no_double_injection_initial():
-    ctx = _translate(
-        "component pss_top { state s { rand bool initial; rand int x; } }")
+def _redeclaration_error(pss_src: str) -> dict:
+    """Parse + link ``pss_src``, which must fail; return its one marker."""
+    with tempfile.NamedTemporaryFile(suffix='.pss', mode='w', delete=False) as f:
+        f.write(pss_src)
+        fname = f.name
+    try:
+        p = Parser()
+        with pytest.raises(ParseException) as ei:
+            p.parse([fname])
+            p.link()
+        errs = [m for m in ei.value.markers if m["severity"] == "error"]
+        assert len(errs) == 1, errs
+        return errs[0]
+    finally:
+        try:
+            os.unlink(fname)
+        except OSError:
+            pass
+
+
+# A built-in is declared by every state/resource type (LRM 12.4, 12.5), so
+# declaring it again is a duplicate declaration -- located at the user's copy.
+
+def test_redeclared_initial_is_a_located_error():
+    src = "component pss_top { state s { rand bool initial; rand int x; } }"
+    m = _redeclaration_error(src)
+    assert "duplicate declaration of 'initial'" in m["message"]
+    assert (m["line"], m["col"]) == (1, src.index("initial") + 1)
+
+
+def test_redeclared_instance_id_is_a_located_error():
+    src = "component pss_top { resource r { int instance_id; rand bit[4] cfg; } }"
+    m = _redeclaration_error(src)
+    assert "duplicate declaration of 'instance_id'" in m["message"]
+    assert (m["line"], m["col"]) == (1, src.index("instance_id") + 1)
+
+
+def test_builtin_initial_reaches_the_ir_once():
+    ctx = _translate("component pss_top { state s { rand int x; } }")
     assert _field_names(ctx.type_map["s"]).count("initial") == 1
 
 
-def test_no_double_injection_instance_id():
-    ctx = _translate(
-        "component pss_top { resource r { int instance_id; rand bit[4] cfg; } }")
+def test_builtin_instance_id_reaches_the_ir_once():
+    ctx = _translate("component pss_top { resource r { rand bit[4] cfg; } }")
     assert _field_names(ctx.type_map["r"]).count("instance_id") == 1
 
 

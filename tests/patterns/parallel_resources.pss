@@ -2,6 +2,8 @@
 // Exercises: resource declaration, pool, bind, lock, parallel fork/join,
 //            sequential activity.
 
+import std_pkg::*;
+
 resource dma_channel_r {
     rand bit[4] id;
 }

@@ -14,7 +14,7 @@ import pssc
 from pssc import targets
 
 
-_MODEL = """
+_MODEL = """import std_pkg::*;
 component pss_top {
     action Hello { exec body { print("hello from C\\n"); } }
     action World { exec body { print("world from C\\n"); } }
@@ -65,7 +65,7 @@ def test_bridge_generates_dispatch_and_pkg(tmp_path):
     assert (out / "zsp_bridge.c").exists()
 
 
-_RAND_MODEL = """
+_RAND_MODEL = """import std_pkg::*;
 component pss_top {
     action Entry {
         rand bit[8] x;

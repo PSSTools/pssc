@@ -916,11 +916,11 @@ def _lower_parallel(
     join_kw = "join"
     if par.join_spec is not None:
         kind = par.join_spec.kind
-        if kind == "none":
+        if kind is ir.JoinKind.NONE:
             join_kw = "join_none"
-        elif kind == "first":
+        elif kind is ir.JoinKind.FIRST:
             join_kw = "join_any"
-        # "all" (default) -> join
+        # ALL (default) -> join
 
     lines = [trace_parallel_enter(), "fork"]
 

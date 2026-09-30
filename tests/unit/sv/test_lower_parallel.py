@@ -35,7 +35,7 @@ class TestParallelBasic:
     def test_join_none(self, ctx):
         par = ir.ActivityParallel(
             stmts=[ir.ActivityTraversal(handle="a1")],
-            join_spec=ir.JoinSpec(kind="none"),
+            join_spec=ir.JoinSpec(kind=ir.JoinKind.NONE),
         )
         lines = _lower_activity_stmt(ctx, par, "comp")
         text = "\n".join(lines)
@@ -47,7 +47,7 @@ class TestParallelBasic:
                 ir.ActivityTraversal(handle="a1"),
                 ir.ActivityTraversal(handle="a2"),
             ],
-            join_spec=ir.JoinSpec(kind="first"),
+            join_spec=ir.JoinSpec(kind=ir.JoinKind.FIRST),
         )
         lines = _lower_activity_stmt(ctx, par, "comp")
         text = "\n".join(lines)

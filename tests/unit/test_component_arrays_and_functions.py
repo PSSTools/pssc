@@ -143,7 +143,7 @@ class TestFunctionFeatures(unittest.TestCase):
 
     def test_function_default_param_translates(self):
         """Function with default param: Arguments.defaults has one entry."""
-        ctx = self.parse_and_translate("""
+        ctx = self.parse_and_translate("""import std_pkg::*;
             component C {
                 function void greet(string name = "World") {
                     print(name);
@@ -157,7 +157,7 @@ class TestFunctionFeatures(unittest.TestCase):
 
     def test_function_default_int_param(self):
         """Function with int default: defaults list has ExprConstant(42)."""
-        ctx = self.parse_and_translate("""
+        ctx = self.parse_and_translate("""import std_pkg::*;
             component C {
                 function void compute(int n = 42) {
                     print("ok");
@@ -195,7 +195,7 @@ class TestFunctionFeatures(unittest.TestCase):
 
     def test_void_function_no_return_type(self):
         """void function has returns=None."""
-        ctx = self.parse_and_translate("""
+        ctx = self.parse_and_translate("""import std_pkg::*;
             component C {
                 function void do_nothing() {
                     print("ok");
@@ -365,7 +365,7 @@ class TestExtendDeclaration(unittest.TestCase):
 
     def test_extend_action_adds_exec_body(self):
         """extend action with exec body adds body function to the action."""
-        ctx = self.parse_and_translate("""
+        ctx = self.parse_and_translate("""import std_pkg::*;
             component C {
                 action a { rand int x; }
             }
@@ -408,7 +408,7 @@ class TestExtendDeclaration(unittest.TestCase):
 
     def test_extend_action_both_field_and_exec(self):
         """extend action can add both a field and an exec block together."""
-        ctx = self.parse_and_translate("""
+        ctx = self.parse_and_translate("""import std_pkg::*;
             component C {
                 action a { rand int x; }
             }

@@ -124,6 +124,9 @@ class AstToIrContext:
 
     def __init__(self):
         self.type_map: Dict[str, ir.DataType] = {}
+        # `export T(...);` (LRM 20.10): the exported actions, qualified as
+        # the linker resolved them, in source order.
+        self.export_actions: List[str] = []
         self.symbol_table: Dict[str, Any] = {}
         self.errors: List[str] = []
         self.scope_stack: List[ir.DataType] = []
@@ -507,6 +510,8 @@ class AstToIrTranslator:
                 self._translate_import_proto(ctx, child)
             elif isinstance(child, pss_ast.ExportFunction):
                 self._record_export(ctx, child, None, namespace_prefix)
+            elif isinstance(child, pss_ast.ExportAction):
+                self._record_export_action(ctx, child)
             elif isinstance(child, pss_ast.Field):
                 # A package- or global-scope field is a `static const`. Its
                 # value is folded so it can size an array: `wb_dma_ch_c
@@ -514,6 +519,18 @@ class AstToIrTranslator:
                 # as `size=-1`, or nothing downstream can emit the accessors or
                 # unroll the constructor loop.
                 self._record_const(ctx, child, namespace_prefix)
+
+    def _record_export_action(self, ctx: AstToIrContext, node) -> None:
+        """Record ``export T(...);`` (LRM 20.10) on ``ctx.export_actions``,
+        by the name the linker resolved ``T`` to. Nothing is translated: the
+        action is declared, and translated, where it is declared."""
+        qname = self._linked_type_name(ctx, node.getTarget())
+        if qname is None:
+            ctx.add_error(f"{_ast_where(node)}export: the exported action "
+                          f"could not be resolved")
+            return
+        if qname not in ctx.export_actions:
+            ctx.export_actions.append(qname)
 
     @staticmethod
     def _record_export(ctx: AstToIrContext, node, scope: Optional[str],
@@ -739,6 +756,12 @@ class AstToIrTranslator:
                 value_func = self._translate_generic_value_constraint(ctx, child)
                 if value_func:
                     target_ir.functions.append(value_func)
+            elif isinstance(child, pss_ast.FieldPool):
+                self._translate_declared_pool(ctx, child, target_ir)
+            elif isinstance(child, pss_ast.ComponentBind):
+                self._translate_component_bind(ctx, child, target_ir)
+            elif isinstance(child, pss_ast.ExportAction):
+                self._record_export_action(ctx, child)
             elif self.debug:
                 # The silent-drop class this method exists to prevent. Anything
                 # reaching here is a body element no backend will ever see.
@@ -976,14 +999,6 @@ class AstToIrTranslator:
             # Compute register offsets
             self._compute_register_offsets(ctx, comp)
 
-        # Consume explicit `pool [N] T name;` declarations (FieldPool AST nodes)
-        # so real pool names and capacities reach the IR.
-        self._translate_declared_pools(ctx, component, comp)
-
-        # Consume explicit `bind pool targets;` directives (ComponentBind AST
-        # nodes) so real pool binds reach the IR.
-        self._translate_component_binds(ctx, component, comp)
-
         # Pop scope
         ctx.pop_scope()
 
@@ -1086,68 +1101,70 @@ class AstToIrTranslator:
             super_name = getattr(sup, "ref_name", None)
         return False
 
-    def _translate_declared_pools(self, ctx: AstToIrContext, component, comp: ir.DataTypeComponent):
-        """Create IR ``Pool``s from explicit ``pool [N] T name;`` declarations.
+    def _translate_declared_pool(self, ctx: AstToIrContext, child, comp: ir.DataTypeComponent):
+        """An IR ``Pool`` from an explicit ``pool [N] T name;`` (a ``FieldPool``),
+        carrying the declared name and capacity. Called from
+        ``_translate_type_body``, so a pool in an ``extend component`` counts."""
+        name_node = child.getName()
+        pool_name = (name_node.getId()
+                     if isinstance(name_node, pss_ast.ExprId) else str(name_node))
+        elem_type = self._translate_data_type(ctx, child.getType())
+        elem_type_name = elem_type.name if isinstance(elem_type, ir.DataTypeStruct) \
+            else self._pool_elem_type_name(child.getType())
+        comp.pools.append(ir.Pool(
+            name=pool_name,
+            element_type_name=elem_type_name,
+            element_type=elem_type if isinstance(elem_type, ir.DataTypeStruct) else None,
+            capacity=self._eval_pool_size(ctx, child, child.getSize()),
+        ))
 
-        These are ``FieldPool`` AST nodes (surfaced by the parser as of the
-        pssparser-detox B1 change).  Each yields a real pool carrying the
-        source-declared name and capacity, so pool sizes reach the IR instead of
-        being inferred with a fixed default.
-        """
-        for child in component.children():
-            if not isinstance(child, pss_ast.FieldPool):
-                continue
-            name_node = child.getName()
-            pool_name = (name_node.getId()
-                         if isinstance(name_node, pss_ast.ExprId) else str(name_node))
-            elem_type = self._translate_data_type(ctx, child.getType())
-            elem_type_name = elem_type.name if isinstance(elem_type, ir.DataTypeStruct) \
-                else self._pool_elem_type_name(child.getType())
-            pool = ir.Pool(
-                name=pool_name,
-                element_type_name=elem_type_name,
-                element_type=elem_type if isinstance(elem_type, ir.DataTypeStruct) else None,
-                capacity=self._eval_pool_size(child.getSize()),
-            )
-            comp.pools.append(pool)
-
-    def _translate_component_binds(self, ctx: AstToIrContext, component, comp: ir.DataTypeComponent):
-        """Create IR ``PoolBind``s from explicit ``bind pool targets;`` directives.
-
-        These are ``ComponentBind`` AST nodes (surfaced by the parser as of the
-        pssparser-detox B1b change).  Each yields a real ``PoolBind`` carrying
-        the bound pool name, the wildcard flag, and any explicit dotted target
-        paths, so real binds reach the IR instead of being inferred.
-        """
-        for child in component.children():
-            if not isinstance(child, pss_ast.ComponentBind):
-                continue
-            pool_path = child.getPool_path()
-            # The pool is named by the final element of the (usually trivial)
-            # hierarchical path, matching declared pool names.
-            pool_name = pool_path.split(".")[-1] if pool_path else pool_path
-            comp.pool_binds.append(ir.PoolBind(
-                pool_name=pool_name,
-                field_paths=[
-                    p for p in (self._bind_target_path(t) for t in child.getTargets())
-                    if p is not None
-                ],
-                is_wildcard=child.getIs_wildcard(),
-            ))
+    def _translate_component_bind(self, ctx: AstToIrContext, child, comp: ir.DataTypeComponent):
+        """An IR ``PoolBind`` from an explicit ``bind pool targets;`` (a
+        ``ComponentBind``): the bound pool, the wildcard flag and the target
+        paths. Called from ``_translate_type_body``, like pools."""
+        # The pool is a path (`gfx0.dpool`, LRM 12.3), an
+        # ExprRefPathContext the linker bound (pssparser X-5/X-17).
+        pool_path = self._ref_path_names(child.getPool_path())
+        if not pool_path:
+            ctx.add_error(f"{_ast_where(child)}bind: the pool path could not be read")
+            return
+        targets = [child.getTarget(i) for i in range(child.numTargets())]
+        comp.pool_binds.append(ir.PoolBind(
+            pool_name=pool_path[-1],
+            pool_path=pool_path,
+            field_paths=[
+                p for p in (self._bind_target_path(ctx, t) for t in targets)
+                if p is not None
+            ],
+            is_wildcard=child.getIs_wildcard(),
+        ))
 
     @staticmethod
-    def _bind_target_path(target) -> Optional[str]:
+    def _bind_target_path(ctx: AstToIrContext, target) -> Optional[str]:
         """Flatten a ``ComponentBindTarget`` to its dotted path, or ``None``.
 
-        The parser splits ``producer.out`` across two accessors: everything up to
-        the last dot arrives as ``getType_id()`` (it is resolved as a type
-        reference), and the trailing member as ``getField()``.  A wildcard target
-        (``bind dpool *;``) names no path at all -- the wildcard is already
-        recorded on the enclosing ``PoolBind``.
+        The parser splits ``gfx0.producer.out`` three ways: the component
+        instances crossed (``getPath()``), the action type (``getType_id()``)
+        and the trailing member (``getField()``, an ``ExprRefName``). A
+        wildcard target (``bind dpool *;``) names no path at all -- the
+        wildcard is already recorded on the enclosing ``PoolBind``.
+
+        A range (``gfx[0..1].producer.out``) selects several instances, which
+        only the pool-binding table (P2) can represent: it is a located error,
+        never dropped.
         """
         if target.getIs_wildcard():
             return None
         parts: List[str] = []
+        ranged = target.getRange() is not None
+        for i in range(target.numPath()):
+            elem = target.getPath(i)
+            ranged = ranged or elem.getRange() is not None
+            parts.append(elem.getId().getId().getId())
+        if ranged:
+            ctx.add_error(f"{_ast_where(target)}bind ranges are not supported "
+                          f"yet (P2 pool-binding table)")
+            return None
         type_id = target.getType_id()
         if type_id is not None:
             for i in range(type_id.numElems()):
@@ -1156,7 +1173,7 @@ class AstToIrTranslator:
                     parts.append(elem_id.getId())
         field = target.getField()
         if field is not None:
-            parts.append(field.getId())
+            parts.append(field.getId().getId())
         return ".".join(parts) if parts else None
 
     def _pool_elem_type_name(self, type_node) -> Optional[str]:
@@ -1176,8 +1193,10 @@ class AstToIrTranslator:
             return type_id.getId()
         return str(type_id) if type_id is not None else None
 
-    def _eval_pool_size(self, size_node) -> Optional[int]:
-        """Evaluate a pool size expression to an int, or None if unsized/unknown."""
+    def _eval_pool_size(self, ctx: AstToIrContext, pool, size_node) -> Optional[int]:
+        """A pool's size (LRM 12.1, a constant expression) as an int; None
+        for an unsized pool, which is unbounded. A size that does not fold
+        is a located error -- reading it as unbounded changes the model."""
         if size_node is None:
             return None
         get_val = getattr(size_node, "getValue", None)
@@ -1185,8 +1204,12 @@ class AstToIrTranslator:
             try:
                 return int(get_val())
             except (TypeError, ValueError):
-                return None
-        return None
+                pass
+        folded = self._fold_const_expr(ctx, size_node)
+        if folded is None:
+            ctx.add_error(f"{_ast_where(pool)}pool size is not a constant "
+                          f"pssc can evaluate")
+        return folded
 
     def _translate_action(self, ctx: AstToIrContext, action: pss_ast.Action,
                           parent_comp_name: Optional[str] = None,
@@ -1349,22 +1372,76 @@ class AstToIrTranslator:
         ctx: 'AstToIrContext',
         children,
     ) -> List['ir.ActivityStmt']:
-        """Translate an iterable of PSS activity child nodes to IR ActivityStmt list."""
+        """Translate a block's children to an IR ActivityStmt list.
+
+        A block holds its declarations as well as its statements (LRM
+        11.8.2, pssparser X-8). An action handle declared there is not a
+        statement: a traversal of it resolves to its type through the
+        linker (``type_qname``). An ``action`` data field declared in a
+        block is refused until P1 gives activity-local data a home.
+        """
         result: List[ir.ActivityStmt] = []
         for child in children:
-            if child is None:
+            if child is None or isinstance(child, pss_ast.ActionHandleField):
+                continue
+            if isinstance(child, pss_ast.Field):
+                ctx.add_error(f"{_ast_where(child)}data fields declared in an "
+                              f"activity block are not supported yet (P1)")
                 continue
             stmt = self._translate_activity_stmt(ctx, child)
             if stmt is not None:
                 result.append(stmt)
         return result
 
+    def _activity_body(self, ctx: 'AstToIrContext', body) -> List['ir.ActivityStmt']:
+        """A compound statement's body as a statement list.
+
+        An unlabeled ``{...}`` block is its statements. Anything else -- a
+        single statement (``repeat (3) do B;``), or a LABELED block, which is
+        a named sub-activity (LRM 11.8) -- is one statement. Only a missing
+        body is empty.
+        """
+        if body is None:
+            return []
+        if isinstance(body, pss_ast.ActivitySequence) \
+                and self._activity_label(body) is None:
+            return self._translate_activity_stmts(ctx, body.children())
+        stmt = self._translate_activity_stmt(ctx, body)
+        return [stmt] if stmt is not None else []
+
+    @staticmethod
+    def _activity_label(node) -> Optional[str]:
+        """The label of a labeled activity statement or scope, or None."""
+        get = getattr(node, "getLabel", None)
+        label = get() if get is not None else None
+        return label.getId() if label is not None else None
+
     def _translate_activity_stmt(
         self,
         ctx: 'AstToIrContext',
         node,
     ) -> Optional['ir.ActivityStmt']:
-        """Translate a single PSS activity AST node to an IR ActivityStmt."""
+        """Translate one PSS activity statement, keeping its label.
+
+        A statement this cannot translate is a located error -- never
+        dropped: ``test_activity_registry.py`` holds every activity node
+        kind pssparser has to a row saying which it is.
+        """
+        stmt = self._translate_activity_stmt_body(ctx, node)
+        if stmt is None:
+            return None
+        label = self._activity_label(node)
+        if label is not None:
+            if isinstance(node, pss_ast.ActivityReplicate):
+                # ActivityReplicate.label is the `R[]:` iteration label.
+                ctx.add_error(f"{_ast_where(node)}a labeled replicate "
+                              f"statement is not supported yet (P1)")
+                return None
+            stmt.label = label
+        return stmt
+
+    def _translate_activity_stmt_body(self, ctx: 'AstToIrContext', node):
+        where = _ast_where(node)
 
         if isinstance(node, (pss_ast.ActivitySequence, pss_ast.ActivityDecl)):
             stmts = self._translate_activity_stmts(ctx, node.children())
@@ -1372,16 +1449,17 @@ class AstToIrTranslator:
 
         if isinstance(node, pss_ast.ActivityParallel):
             stmts = self._translate_activity_stmts(ctx, node.children())
-            join_spec = self._translate_join_spec(node.getJoin_spec())
+            join_spec = self._translate_join_spec(ctx, node.getJoin_spec())
             return ir.ActivityParallel(stmts=stmts, join_spec=join_spec)
 
         if isinstance(node, pss_ast.ActivitySchedule):
             stmts = self._translate_activity_stmts(ctx, node.children())
-            return ir.ActivitySchedule(stmts=stmts)
+            join_spec = self._translate_join_spec(ctx, node.getJoin_spec())
+            return ir.ActivitySchedule(stmts=stmts, join_spec=join_spec)
 
         if isinstance(node, pss_ast.ActivityAtomicBlock):
-            stmts = self._translate_activity_stmts(ctx, node.children())
-            return ir.ActivityAtomic(stmts=stmts)
+            # The block's children are its variables; its content is the body.
+            return ir.ActivityAtomic(stmts=self._activity_body(ctx, node.getBody()))
 
         if isinstance(node, pss_ast.ActivityActionHandleTraversal):
             return self._translate_handle_traversal(ctx, node)
@@ -1396,47 +1474,38 @@ class AstToIrTranslator:
             count_expr = self._translate_expression(ctx, node.getCount())
             loop_var = node.getLoop_var()
             index_var = loop_var.getId() if loop_var and hasattr(loop_var, 'getId') else None
-            body_stmts = self._translate_activity_stmts(ctx, _activity_body_children(node.getBody()))
-            return ir.ActivityRepeat(count=count_expr, index_var=index_var, body=body_stmts)
+            return ir.ActivityRepeat(count=count_expr, index_var=index_var,
+                                     body=self._activity_body(ctx, node.getBody()))
 
         if isinstance(node, pss_ast.ActivityRepeatWhile):
+            # Activity has only the do-while form, `repeat {...} while (c);`
+            # (PSSParser.g4); the body runs first.
             cond_expr = self._translate_expression(ctx, node.getCond())
-            body_stmts = self._translate_activity_stmts(ctx, _activity_body_children(node.getBody()))
-            return ir.ActivityDoWhile(condition=cond_expr, body=body_stmts)
+            return ir.ActivityDoWhile(condition=cond_expr,
+                                      body=self._activity_body(ctx, node.getBody()))
 
         if isinstance(node, pss_ast.ActivityForeach):
             it_id = node.getIt_id()
             iterator = it_id.getId() if it_id else '_item'
             idx_id = node.getIdx_id()
             index_var = idx_id.getId() if idx_id else None
-            target_expr = self._translate_expression(ctx, node.getTarget())
-            body_stmts = self._translate_activity_stmts(ctx, _activity_body_children(node.getBody()))
+            # The collection is `path`; `getTarget()` is the scope's own
+            # target, null (pssparser X-8).
+            collection = self._translate_expression(ctx, node.getPath())
+            if collection is None:
+                ctx.add_error(f"{where}foreach: the collection could not be translated")
+                return None
             return ir.ActivityForeach(
-                iterator=iterator, collection=target_expr,
-                index_var=index_var, body=body_stmts,
+                iterator=iterator, collection=collection, index_var=index_var,
+                body=self._activity_body(ctx, node.getBody()),
             )
 
         if isinstance(node, pss_ast.ActivityIfElse):
             cond_expr = self._translate_expression(ctx, node.getCond())
-            true_s = node.getTrue_s()
-            false_s = node.getFalse_s()
-            if_body: List[ir.ActivityStmt] = []
-            else_body: List[ir.ActivityStmt] = []
-            if true_s:
-                s = self._translate_activity_stmt(ctx, true_s)
-                if s:
-                    if hasattr(s, 'stmts'):
-                        if_body.extend(s.stmts)
-                    else:
-                        if_body.append(s)
-            if false_s:
-                s = self._translate_activity_stmt(ctx, false_s)
-                if s:
-                    if hasattr(s, 'stmts'):
-                        else_body.extend(s.stmts)
-                    else:
-                        else_body.append(s)
-            return ir.ActivityIfElse(condition=cond_expr, if_body=if_body, else_body=else_body)
+            return ir.ActivityIfElse(
+                condition=cond_expr,
+                if_body=self._activity_body(ctx, node.getTrue_s()),
+                else_body=self._activity_body(ctx, node.getFalse_s()))
 
         if isinstance(node, pss_ast.ActivitySelect):
             branches: List[ir.SelectBranch] = []
@@ -1446,16 +1515,9 @@ class AstToIrTranslator:
                     continue
                 guard = self._translate_expression(ctx, b.getGuard()) if b.getGuard() else None
                 weight = self._translate_expression(ctx, b.getWeight()) if b.getWeight() else None
-                body = b.getBody()
-                body_stmts: List[ir.ActivityStmt] = []
-                if body:
-                    s = self._translate_activity_stmt(ctx, body)
-                    if s:
-                        if hasattr(s, 'stmts'):
-                            body_stmts.extend(s.stmts)
-                        else:
-                            body_stmts.append(s)
-                branches.append(ir.SelectBranch(guard=guard, weight=weight, body=body_stmts))
+                branches.append(ir.SelectBranch(
+                    guard=guard, weight=weight,
+                    body=self._activity_body(ctx, b.getBody())))
             return ir.ActivitySelect(branches=branches)
 
         if isinstance(node, pss_ast.ActivityReplicate):
@@ -1465,8 +1527,11 @@ class AstToIrTranslator:
             # ActivityReplicate names this accessor ``getIdx_id``.
             idx_id = node.getIdx_id()
             index_var = idx_id.getId() if idx_id is not None and hasattr(idx_id, 'getId') else None
-            body_stmts = self._translate_activity_stmts(ctx, _activity_body_children(node.getBody()))
-            return ir.ActivityReplicate(count=count_expr, index_var=index_var, body=body_stmts)
+            it_label = node.getIt_label()
+            return ir.ActivityReplicate(
+                count=count_expr, index_var=index_var,
+                label=it_label.getId() if it_label is not None else None,
+                body=self._activity_body(ctx, node.getBody()))
 
         if isinstance(node, pss_ast.ActivityMatch):
             cond_expr = self._translate_expression(ctx, node.getCond())
@@ -1479,10 +1544,8 @@ class AstToIrTranslator:
                 else:
                     # Translate ExprOpenRangeList -> ExprRangeList
                     pattern = self._translate_open_range_list(ctx, choice.getCond())
-                body = choice.getBody()
-                body_stmts = self._translate_activity_stmts(
-                    ctx, _activity_body_children(body))
-                cases.append(ir.MatchCase(pattern=pattern, body=body_stmts))
+                cases.append(ir.MatchCase(
+                    pattern=pattern, body=self._activity_body(ctx, choice.getBody())))
             return ir.ActivityMatch(subject=cond_expr, cases=cases)
 
         if isinstance(node, pss_ast.ActivityConstraint):
@@ -1496,24 +1559,34 @@ class AstToIrTranslator:
                         exprs.append(s.expr)
             return ir.ActivityConstraint(constraints=exprs)
 
-        if isinstance(node, pss_ast.ActivityBindStmt):
-            # Translate the LHS (ExprHierarchicalId -> ExprAttribute chain)
-            lhs_expr = self._hier_id_to_expr(node.getLhs())
-            # Translate each RHS; emit one ActivityBind per RHS item
-            if node.numRhs() == 0:
+        if isinstance(node, pss_ast.ActivitySchedulingConstraint):
+            targets = [self._bind_operand(ctx, node, t) for t in node.getTargets()]
+            if None in targets:
                 return None
-            if node.numRhs() == 1:
-                rhs_expr = self._hier_id_to_expr(node.getRh(0))
-                return ir.ActivityBind(src=lhs_expr, dst=rhs_expr)
-            # Multiple RHS: wrap in a sequence block
-            binds = []
-            for i in range(node.numRhs()):
-                rhs_expr = self._hier_id_to_expr(node.getRh(i))
-                binds.append(ir.ActivityBind(src=lhs_expr, dst=rhs_expr))
-            return ir.ActivitySequenceBlock(stmts=binds)
+            return ir.ActivitySchedulingConstraint(
+                is_parallel=bool(node.getIs_parallel()), targets=targets)
 
-        if self.debug:
-            self.logger.debug(f"Unhandled activity stmt type: {type(node).__name__}")
+        if isinstance(node, pss_ast.ActivitySymbolCall):
+            ctx.add_error(f"{where}activity symbols are not supported yet (P1)")
+            return None
+
+        if isinstance(node, pss_ast.ActivityBindStmt):
+            # Operands are ExprRefPathContexts the linker bound (pssparser
+            # X-5/X-17), translated like any reference: `s1.p.out_data` keeps
+            # its label step, as written.
+            lhs_expr = self._bind_operand(ctx, node, node.getLhs())
+            rhs_exprs = [self._bind_operand(ctx, node, node.getRh(i))
+                         for i in range(node.numRhs())]
+            if lhs_expr is None or not rhs_exprs or None in rhs_exprs:
+                return None
+            if len(rhs_exprs) == 1:
+                return ir.ActivityBind(src=lhs_expr, dst=rhs_exprs[0])
+            # Multiple RHS: one ActivityBind per RHS item, in a sequence block
+            return ir.ActivitySequenceBlock(stmts=[
+                ir.ActivityBind(src=lhs_expr, dst=rhs) for rhs in rhs_exprs])
+
+        ctx.add_error(f"{where}activity statement {type(node).__name__} "
+                      f"is not translated")
         return None
 
     def _translate_handle_traversal(
@@ -1524,6 +1597,9 @@ class AstToIrTranslator:
         """Extract handle name from ExprRefPathContext and build ActivityTraversal."""
         target = node.getTarget()
         hier_id = target.getHier_id()
+        where = _ast_where(node)
+        if not self._check_no_initializers(ctx, node):
+            return None
         parts: List[str] = []
         for i in range(hier_id.numElems()):
             elem = hier_id.getElem(i)
@@ -1534,8 +1610,55 @@ class AstToIrTranslator:
         handle = '.'.join(parts) if parts else None
         if handle is None:
             return None
+        # `h[i]` traverses one element of a handle array (LRM 11.3.2).
+        last = hier_id.getElem(hier_id.numElems() - 1)
+        index = None
+        if last.numSubscript() > 1:
+            ctx.add_error(f"{where}traversal of '{handle}' with "
+                          f"{last.numSubscript()} subscripts is not supported yet")
+            return None
+        if last.numSubscript() == 1:
+            index = self._translate_expression(ctx, last.getSubscript(0))
+            if index is None:
+                ctx.add_error(f"{where}the index of '{handle}' could not be translated")
+                return None
         inline_constraints = self._extract_inline_constraints(ctx, node)
-        return ir.ActivityTraversal(handle=handle, inline_constraints=inline_constraints)
+        return ir.ActivityTraversal(
+            handle=handle, index=index, inline_constraints=inline_constraints,
+            type_qname=self._traversed_type_qname(
+                ctx, self._symbol_scope_at(ctx, target.getTarget(), depth=0)))
+
+    def _traversed_type_qname(self, ctx: AstToIrContext, decl) -> Optional[str]:
+        """The qualified action type a traversal reference was LINKED to.
+
+        *decl* is what the linker bound the reference to: an action's type
+        scope (``do pss_top::B``), or a handle's declaration -- a ``Field`` in
+        an action body, an ``ActionHandleField`` in an activity block
+        (pssparser X-8) -- whose own type is then followed. ``do b1`` with
+        ``b1`` a handle links to the handle, and runs its type the same way.
+        """
+        if decl is None:
+            return None
+        if hasattr(decl, "getUpper"):
+            return self._scope_qname(ctx, decl)
+        type_node = decl.getType() if hasattr(decl, "getType") else None
+        type_id = (type_node.getType_id()
+                   if hasattr(type_node, "getType_id") else None)
+        if type_id is None:
+            return None
+        # A handle array `A arr[3]` is declared as `array<A,3>`; `arr[i]`
+        # traverses its element type.
+        if type_id.numElems() == 1:
+            elem = type_id.getElem(0)
+            params = elem.getParams()
+            if elem.getId().getId() == "array" and params is not None \
+                    and params.numValues() > 0:
+                elem_t = getattr(params.getValue(0), "getValue", lambda: None)()
+                elem_id = (elem_t.getType_id()
+                           if hasattr(elem_t, "getType_id") else None)
+                return (self._linked_type_name(ctx, elem_id)
+                        if elem_id is not None else None)
+        return self._linked_type_name(ctx, type_id)
 
     def _translate_type_traversal(
         self,
@@ -1543,6 +1666,8 @@ class AstToIrTranslator:
         node: 'pss_ast.ActivityActionTypeTraversal',
     ) -> 'ir.ActivityAnonTraversal':
         """Extract action type name and optional label; build ActivityAnonTraversal."""
+        if not self._check_no_initializers(ctx, node):
+            return None
         target = node.getTarget()
         type_id = target.getType_id()
         parts: List[str] = []
@@ -1571,10 +1696,23 @@ class AstToIrTranslator:
         comp_expr, filtered = self._extract_comp_expr(inline_constraints)
         return ir.ActivityAnonTraversal(
             action_type=action_type,
+            type_qname=self._traversed_type_qname(
+                ctx, self._symbol_scope_at(ctx, type_id.getTarget(), depth=0)),
             label=label,
             inline_constraints=filtered,
             comp_expr=comp_expr,
         )
+
+    @staticmethod
+    def _check_no_initializers(ctx, node) -> bool:
+        """``do A {.x = 1};`` / ``a1 {.x = 2};`` (LRM 11.3.1) set a field
+        before the solve. Nothing below carries them yet, so they are a
+        located error rather than dropped."""
+        if node.numInitializers() == 0:
+            return True
+        ctx.add_error(f"{_ast_where(node)}traversal initializers are not "
+                      f"supported yet (P1)")
+        return False
 
     def _extract_inline_constraints(self, ctx, node) -> list:
         """Extract `with` constraint expressions from a traversal node.
@@ -2376,39 +2514,49 @@ class AstToIrTranslator:
             return copy.deepcopy(node)
         return dataclasses.replace(copy.deepcopy(node), **replacements)
 
-    def _hier_id_to_expr(self, hier_id) -> 'ir.Expr':
-        """Convert an ExprHierarchicalId to a chain of ExprAttribute nodes.
+    def _bind_operand(self, ctx: AstToIrContext, stmt, ref) -> Optional['ir.Expr']:
+        """An activity ``bind`` operand (an ``ExprRefPathContext``) as the
+        ``ExprAttribute`` chain it names, e.g. ``p.out_data`` ->
+        ``self.p.out_data``. None, with a located error, if it cannot be."""
+        expr = self._translate_expression(ctx, ref) if ref is not None else None
+        if expr is None or isinstance(expr, ir.ExprRefUnresolved):
+            ctx.add_error(f"{_ast_where(stmt)}bind operand could not be translated")
+            return None
+        return expr
 
-        Used for ``bind lhs rhs;`` statement LHS/RHS which are
-        ``ExprMemberPathElem`` chains (e.g. ``p.out_data`` -> ``self.p.out_data``).
-        """
-        result: ir.Expr = ir.TypeExprRefSelf()
-        if hier_id is None:
-            return result
-        for i in range(hier_id.numElems()):
-            elem = hier_id.getElem(i)
-            id_obj = elem.getId() if hasattr(elem, 'getId') else None
-            if id_obj is None:
-                continue
-            name = id_obj.getId() if hasattr(id_obj, 'getId') else str(id_obj)
-            result = ir.ExprAttribute(value=result, attr=name)
-        return result
+    @staticmethod
+    def _ref_path_names(ref) -> List[str]:
+        """The names along an ``ExprRefPathContext`` as written: ``gfx0.dpool``
+        -> ``['gfx0', 'dpool']``. For paths kept as names (a bound pool);
+        anything evaluated goes through ``_translate_expression``."""
+        hier_id = ref.getHier_id() if ref is not None else None
+        names: List[str] = []
+        for i in range(hier_id.numElems() if hier_id is not None else 0):
+            id_obj = hier_id.getElem(i).getId()
+            if id_obj is not None:
+                names.append(id_obj.getId())
+        return names
 
-    def _translate_join_spec(self, join_spec) -> Optional['ir.JoinSpec']:
-        """Convert a PSS ActivityJoinSpec to IR JoinSpec."""
+    def _translate_join_spec(self, ctx, join_spec) -> Optional['ir.JoinSpec']:
+        """A PSS join specification (LRM 11.3.4) as an IR JoinSpec; None when
+        the block has none, which is ``join all``."""
         if join_spec is None:
             return None
         if isinstance(join_spec, pss_ast.ActivityJoinSpecBranch):
-            return ir.JoinSpec(kind='branch')
+            labels = ['.'.join(self._ref_path_names(join_spec.getBranche(i)))
+                      for i in range(join_spec.numBranches())]
+            return ir.JoinSpec(kind=ir.JoinKind.BRANCH, branch_labels=labels)
         if isinstance(join_spec, pss_ast.ActivityJoinSpecFirst):
-            count = self._translate_expression(None, join_spec.getCount()) if hasattr(join_spec, 'getCount') else None
-            return ir.JoinSpec(kind='first', count=count)
+            return ir.JoinSpec(kind=ir.JoinKind.FIRST,
+                               count=self._translate_expression(ctx, join_spec.getCount()))
         if isinstance(join_spec, pss_ast.ActivityJoinSpecNone):
-            return ir.JoinSpec(kind='none')
+            return ir.JoinSpec(kind=ir.JoinKind.NONE)
         if isinstance(join_spec, pss_ast.ActivityJoinSpecSelect):
-            count = self._translate_expression(None, join_spec.getCount()) if hasattr(join_spec, 'getCount') else None
-            return ir.JoinSpec(kind='select', count=count)
-        return ir.JoinSpec(kind='all')
+            return ir.JoinSpec(kind=ir.JoinKind.SELECT,
+                               count=self._translate_expression(ctx, join_spec.getCount()))
+        ctx.add_error(f"{_ast_where(join_spec)}join specification "
+                      f"{type(join_spec).__name__} is not translated")
+        return None
 
     def _translate_field_ref(self, ctx: AstToIrContext, field_ref: pss_ast.FieldRef) -> Optional[ir.Field]:
         """Translate a PSS FieldRef (input/output flow-object reference) to IR Field."""
@@ -2464,10 +2612,10 @@ class AstToIrTranslator:
         if hasattr(struct, 'getKind'):
             kind = struct.getKind()
             _flow_kind_map = {
-                pss_ast.StructKind.Buffer:   "buffer",
-                pss_ast.StructKind.Stream:   "stream",
-                pss_ast.StructKind.State:    "state",
-                pss_ast.StructKind.Resource: "resource",
+                pss_ast.StructKind.Buffer:   ir.FlowKind.BUFFER,
+                pss_ast.StructKind.Stream:   ir.FlowKind.STREAM,
+                pss_ast.StructKind.State:    ir.FlowKind.STATE,
+                pss_ast.StructKind.Resource: ir.FlowKind.RESOURCE,
             }
             struct_ir.flow_kind = _flow_kind_map.get(kind)
 
@@ -2529,7 +2677,7 @@ class AstToIrTranslator:
         # pssparser injects the `bool initial;` built-in field natively so the
         # linker accepts `initial`; here we record whether any constraint body
         # references it.
-        if struct_ir.flow_kind == "state":
+        if struct_ir.flow_kind is ir.FlowKind.STATE:
             struct_ir.has_initial_constraint = self._struct_references_initial(struct_ir)
             # Ensure `initial` field defaults to True (it is set False at runtime for
             # non-initial states; True is the correct starting value per PSS LRM).
@@ -2767,20 +2915,27 @@ class AstToIrTranslator:
                     self._collect_constraint_stmt(ctx, sub, body)
 
         elif isinstance(stmt, pss_ast.ConstraintStmtUnique):
+            # StmtUnique names fields of this type. An operand is an
+            # ExprRefPathContext (pssparser X-5); only a single-name one is
+            # such a field. Keeping just the last name of `a.x` made
+            # `unique {a.x, b.x}` into `unique {x, x}`, so a path, and the
+            # one-operand form (`unique {arr}`: distinct elements), are
+            # refused until StmtUnique carries expressions.
+            where = _ast_where(stmt)
             var_names = []
             for j in range(stmt.numList()):
-                hid = stmt.getList(j)
-                if hid is not None and hid.numElems() > 0:
-                    # Take the last element as the field name
-                    last = hid.getElem(hid.numElems() - 1)
-                    if hasattr(last, 'getId'):
-                        id_obj = last.getId()
-                        name = id_obj.getId() if isinstance(id_obj, pss_ast.ExprId) else str(id_obj)
-                    else:
-                        name = str(last)
-                    var_names.append(name)
-            if len(var_names) >= 2:
-                body.append(ir.StmtUnique(vars=var_names))
+                names = self._ref_path_names(stmt.getList(j))
+                if len(names) != 1:
+                    ctx.add_error(
+                        f"{where}unique operand '{'.'.join(names)}' is a path; "
+                        f"only fields of the enclosing type are supported yet")
+                    return
+                var_names.append(names[0])
+            if len(var_names) < 2:
+                ctx.add_error(f"{where}unique with one operand (distinct array "
+                              f"elements) is not supported yet")
+                return
+            body.append(ir.StmtUnique(vars=var_names))
 
         elif isinstance(stmt, (pss_ast.ConstraintStmtDefault,
                                pss_ast.ConstraintStmtDefaultDisable)):
@@ -2825,7 +2980,9 @@ class AstToIrTranslator:
             IR Function if any constraint statements were translated, else None
         """
         # Determine the constraint function name
-        raw_name = constraint_block.getName() if hasattr(constraint_block, 'getName') else None
+        # The name is an ExprId, or None for an unnamed block (pssparser X-10).
+        name_node = constraint_block.getName() if hasattr(constraint_block, 'getName') else None
+        raw_name = name_node.getId() if name_node is not None else None
         if raw_name:
             func_name = raw_name
         else:
@@ -4363,8 +4520,12 @@ class AstToIrTranslator:
         """
         get_target = getattr(type_id, "getTarget", None)
         ref = get_target() if get_target is not None else None
-        scope = self._symbol_scope_at(ctx, ref, depth=0)
-        if scope is None:
+        return self._scope_qname(ctx, self._symbol_scope_at(ctx, ref, depth=0))
+
+    def _scope_qname(self, ctx: AstToIrContext, scope) -> Optional[str]:
+        """The qualified name of a symbol TYPE scope, the key types are filed
+        under; None for anything else (a field, say, which has no upper)."""
+        if scope is None or not hasattr(scope, "getUpper"):
             return None
         names: List[str] = []
         s = scope
@@ -4974,11 +5135,15 @@ class AstToIrTranslator:
 
     @staticmethod
     def _id_name(id_obj) -> str:
-        """Return the string name of an ExprId (or empty)."""
+        """Return the string name of an ExprId or ExprRefName (or empty).
+
+        A cross item is an ExprRefName, whose ``getId()`` is the ExprId
+        (pssparser X-5/X-18)."""
         if id_obj is None:
             return ''
-        getter = getattr(id_obj, 'getId', None)
-        return getter() if getter else str(id_obj)
+        if isinstance(id_obj, pss_ast.ExprRefName):
+            id_obj = id_obj.getId()
+        return id_obj.getId() if isinstance(id_obj, pss_ast.ExprId) else str(id_obj)
 
     def _translate_covergroup(self, ctx: AstToIrContext, cg_node) -> Optional[object]:
         """Translate a Covergroup AST node into an IR PssCoverGroup.
@@ -5022,11 +5187,3 @@ class AstToIrTranslator:
             crosses=crosses,
         )
 
-
-def _activity_body_children(body):
-    """Return an iterable of children for an activity body scope (or empty)."""
-    if body is None:
-        return []
-    if hasattr(body, 'children'):
-        return body.children()
-    return []

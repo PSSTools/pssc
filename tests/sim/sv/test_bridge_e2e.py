@@ -20,7 +20,7 @@ pytestmark = pytest.mark.skipif(
     reason="verilator + gcc required")
 
 
-_MODEL = """
+_MODEL = """import std_pkg::*;
 component pss_top {
     action Hello { exec body { print("hello from C\\n"); } }
     action World { exec body { print("world from C\\n"); } }
@@ -67,7 +67,7 @@ def test_bridge_drives_scenario_from_verilator(tmp_path):
     assert "[TB] done" in run.stdout, run.stdout
 
 
-_RAND_MODEL = """
+_RAND_MODEL = """import std_pkg::*;
 component pss_top {
     action Entry {
         rand bit[8] x;

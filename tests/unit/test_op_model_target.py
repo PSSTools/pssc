@@ -162,7 +162,7 @@ def test_the_empty_api_assertion_fires(tmp_path):
 def test_legality_target_selects_whose_rules_apply(tmp_path):
     """A derived style reuses a built-in's Tier 2 rather than restating it.
     `print` is legal for the C target and this one borrows its set."""
-    src = """
+    src = """import std_pkg::*;
 component p_c {
     target function void say() { print("hi"); }
 }

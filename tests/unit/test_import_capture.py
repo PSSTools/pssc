@@ -17,7 +17,7 @@ def _translate(pss_text):
 
 def test_import_target_and_solve_captured():
     ctx = _translate(
-        """
+        """import std_pkg::*;
         package dut_api {
             import target function void doit(int i);
             import solve  function int  getval(int i);
@@ -43,7 +43,7 @@ def test_import_target_and_solve_captured():
 
 def test_no_imports_yields_empty_list():
     ctx = _translate(
-        """
+        """import std_pkg::*;
         component pss_top {
             action Entry { exec post_solve { print("hi"); } }
         }

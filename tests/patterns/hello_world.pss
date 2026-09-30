@@ -5,6 +5,8 @@
 //
 // Original work for zuspec test suite. MIT-licensed.
 
+import std_pkg::*;
+
 component pss_top {
 
     action write_reg {

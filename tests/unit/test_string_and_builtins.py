@@ -166,7 +166,7 @@ class TestBuiltinFunctions(unittest.TestCase):
 
     def test_print_call_translates(self):
         """print("msg") translates to StmtExpr(ExprCall)."""
-        ctx = self.parse_and_translate("""
+        ctx = self.parse_and_translate("""import std_pkg::*;
             component C {
                 action a {
                     exec body {
@@ -183,7 +183,7 @@ class TestBuiltinFunctions(unittest.TestCase):
 
     def test_print_call_has_string_arg(self):
         """print("hello") produces ExprCall with one ExprConstant arg."""
-        ctx = self.parse_and_translate("""
+        ctx = self.parse_and_translate("""import std_pkg::*;
             component C {
                 action a {
                     exec body {
@@ -200,7 +200,7 @@ class TestBuiltinFunctions(unittest.TestCase):
 
     def test_print_call_func_name(self):
         """print() ExprCall func has attr 'print'."""
-        ctx = self.parse_and_translate("""
+        ctx = self.parse_and_translate("""import std_pkg::*;
             component C {
                 action a {
                     exec body {

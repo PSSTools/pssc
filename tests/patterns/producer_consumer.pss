@@ -1,6 +1,8 @@
 // Producer/consumer pattern using a buffer flow object.
 // Exercises: buffer declaration, output/input fields, activity bind.
 
+import std_pkg::*;
+
 struct payload_s {
     rand bit[32] address;
     rand bit[16] length;
@@ -45,8 +47,8 @@ component pss_top {
 
     action do_transfer {
         activity {
-            tx::send_pkt s;
-            rx::recv_pkt r;
+            tx_c::send_pkt s;
+            rx_c::recv_pkt r;
             bind s.pkt r.pkt;
         }
     }

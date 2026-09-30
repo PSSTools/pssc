@@ -27,7 +27,7 @@ def _write(tmp_path, name, text):
 
 
 _TOP = "component pss_top {\n}\n"
-_ACTION = """\
+_ACTION = """import std_pkg::*; \
 extend component pss_top {
     action entry_a {
         exec body {
@@ -140,7 +140,8 @@ def test_the_correct_export_form_parses(tmp_path):
 def test_exported_function_is_left_alone(tmp_path):
     """`export target function f;` is an exported FUNCTION (20.9), not an action."""
     src = _write(tmp_path, "p.pss",
-                 "package p {\n    export target function f;\n}\n")
+                 "package p {\n    function void f();\n"
+                 "    export target function f;\n}\n")
     driver.translate([src])    # must not raise
 
 
