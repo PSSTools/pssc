@@ -225,6 +225,10 @@ class AstToIrContext:
         self.errors.append(message)
 
 
+#: The three kinds of type body (see AstToIrTranslator._BODY_ELEMENTS).
+_EVERY_BODY = frozenset({'component', 'action', 'struct'})
+
+
 class AstToIrTranslator:
     """Main translator from PSS AST to Zuspec IR
 
@@ -680,94 +684,268 @@ class AstToIrTranslator:
         )
         ctx.import_functions.append(ir_func)
 
-    #: ExecBlock kinds that become a named IR function on the enclosing type.
-    #: ``is_async`` matters: an action ``body`` can consume time, the solve-time
-    #: blocks and the component init/run hooks cannot.
+    #: ExecBlock kinds that become a named IR function on the enclosing type,
+    #: and the kinds of body each is translated in. ``is_async`` matters: an
+    #: action ``body`` can consume time, the solve-time blocks and the
+    #: component init/run hooks cannot. Which kind is LEGAL where is
+    #: pssparser's to say; a kind outside its row here is one ast2ir has no
+    #: translation for, and is refused rather than dropped.
     _EXEC_FUNCS = {
-        pss_ast.ExecKind.ExecKind_Body:      ('body',       True),
-        pss_ast.ExecKind.ExecKind_PreSolve:  ('pre_solve',  False),
-        pss_ast.ExecKind.ExecKind_PostSolve: ('post_solve', False),
-        pss_ast.ExecKind.ExecKind_InitDown:  ('init_down',  False),
-        pss_ast.ExecKind.ExecKind_InitUp:    ('init_up',    False),
-        pss_ast.ExecKind.ExecKind_RunStart:  ('run_start',  False),
-        pss_ast.ExecKind.ExecKind_RunEnd:    ('run_end',    False),
+        pss_ast.ExecKind.ExecKind_Body:      ('body',       True,  {'component', 'action'}),
+        pss_ast.ExecKind.ExecKind_PreSolve:  ('pre_solve',  False, _EVERY_BODY),
+        pss_ast.ExecKind.ExecKind_PostSolve: ('post_solve', False, _EVERY_BODY),
+        pss_ast.ExecKind.ExecKind_InitDown:  ('init_down',  False, {'component'}),
+        pss_ast.ExecKind.ExecKind_InitUp:    ('init_up',    False, {'component'}),
+        pss_ast.ExecKind.ExecKind_RunStart:  ('run_start',  False, {'component'}),
+        pss_ast.ExecKind.ExecKind_RunEnd:    ('run_end',    False, {'component'}),
     }
+
+    #: An exec kind as the user wrote it, for a refusal.
+    _EXEC_KEYWORDS = {
+        pss_ast.ExecKind.ExecKind_Body: 'body',
+        pss_ast.ExecKind.ExecKind_Header: 'header',
+        pss_ast.ExecKind.ExecKind_Declaration: 'declaration',
+        pss_ast.ExecKind.ExecKind_RunStart: 'run_start',
+        pss_ast.ExecKind.ExecKind_RunEnd: 'run_end',
+        pss_ast.ExecKind.ExecKind_InitDown: 'init_down',
+        pss_ast.ExecKind.ExecKind_InitUp: 'init_up',
+        pss_ast.ExecKind.ExecKind_PreSolve: 'pre_solve',
+        pss_ast.ExecKind.ExecKind_PostSolve: 'post_solve',
+        pss_ast.ExecKind.ExecKind_PreBody: 'pre_body',
+        pss_ast.ExecKind.ExecKind_File: 'file',
+    }
+
+    _ALL_BODIES = _EVERY_BODY
+
+    #: What a type body may hold, and what becomes of it: AST class name ->
+    #: (handler, the kinds of body it is accepted in). A handler of ``None``
+    #: is an element with nothing to lower, and its comment says why. A class
+    #: with no row, or in a body its row does not name, is refused with a
+    #: located error: this dispatch used to end in a debug log, and a
+    #: `override` block, a `monitor` or an action's second activity vanished
+    #: from the model without a word. test_type_body_registry.py enumerates
+    #: pssparser's classes, so a new one fails there by name.
+    _BODY_ELEMENTS = {
+        'Field':                      ('_body_field',          _ALL_BODIES),
+        'ExecBlock':                  ('_body_exec',           _ALL_BODIES),
+        'ConstraintBlock':            ('_body_constraint',     _ALL_BODIES),
+        'GenericConstraintDeclValue': ('_body_generic_value',  _ALL_BODIES),
+        'Covergroup':                 ('_body_covergroup',     {'action', 'struct'}),
+        'FunctionDefinition':         ('_body_function',       {'component'}),
+        'ExportFunction':             ('_body_export_function', {'component'}),
+        'ExportAction':               ('_body_export_action',  {'component'}),
+        'Action':                     ('_body_action',         {'component'}),
+        'Struct':                     ('_body_struct',         {'component'}),
+        'EnumDecl':                   ('_body_enum',           {'component'}),
+        'FieldPool':                  ('_body_pool',           {'component'}),
+        'ComponentBind':              ('_body_bind',           {'component'}),
+        'FieldRef':                   ('_body_field_ref',      {'action'}),
+        'FieldClaim':                 ('_body_field_claim',    {'action'}),
+        'ActivityDecl':               ('_body_activity',       {'action'}),
+        # A name lookup is the linker's; ast2ir reads what it resolved.
+        'PackageImportStmt':          (None,                   _ALL_BODIES),
+        # A declaration only: the definition is built in or imported, and a
+        # call to it is resolved by the linker at the call.
+        'FunctionPrototype':          (None,                   _ALL_BODIES),
+        # The implicit `comp` handle; the action's component is recorded
+        # as ctx.parent_comp_names when the action is registered.
+        'FieldCompRef':               (None,                   {'action'}),
+    }
+
+    #: How a refused element is named to the user. The class name otherwise.
+    _BODY_CONSTRUCT_NAMES = {
+        'OverrideDecl':                 "an 'override' block",
+        'Monitor':                      "a monitor",
+        'CoverStmtInline':              "a cover statement",
+        'CoverStmtReference':           "a cover statement",
+        'CovergroupType':               "a covergroup type",
+        'CovergroupInstantiation':      "a covergroup instance",
+        'ExecTargetTemplateBlock':      "a target-template exec block",
+        'SymbolDeclaration':            "an activity symbol",
+        'ActivitySchedulingConstraint': "a scheduling constraint",
+        'FunctionImportProto':          "an 'import function'",
+        'FunctionImportType':           "an 'import function'",
+        'ImportClass':                  "an 'import class'",
+        'TargetTemplateFunction':       "a target-template function",
+        'ExtendType':                   "an 'extend'",
+        'ExtendEnum':                   "an 'extend enum'",
+        'TypedefDeclaration':           "a typedef",
+        'ActivityDecl':                 "an activity",
+    }
+
+    @classmethod
+    def _body_row(cls, klass):
+        """*klass*'s ``_BODY_ELEMENTS`` row, or its nearest base's -- a
+        ``GenericConstraintDeclBool`` IS a ``ConstraintBlock`` -- else
+        ``(None, ())``."""
+        for base in klass.__mro__:
+            row = cls._BODY_ELEMENTS.get(base.__name__)
+            if row is not None:
+                return row
+        return (None, ())
+
+    @staticmethod
+    def _body_kind(target_ir) -> str:
+        """'component', 'action' or 'struct': which body *target_ir* has."""
+        if isinstance(target_ir, ir.DataTypeComponent):
+            return 'component'
+        if isinstance(target_ir, ir.DataTypeClass):
+            return 'action'
+        return 'struct'
 
     def _translate_type_body(self, ctx: AstToIrContext, children, target_ir,
                              qualified_name: str):
-        """Dispatch the children of a component/action body onto ``target_ir``.
+        """Dispatch the children of a component, action or struct body onto
+        ``target_ir``, through ``_BODY_ELEMENTS``.
 
-        Shared by ``_translate_component`` (the initial declaration) and
-        ``_translate_extend`` (a later ``extend`` of the same type) **so the two
-        cannot diverge**. They did diverge, silently, and the cost was the whole
-        operation model: ``_translate_extend`` handled only ``Field``,
+        The one dispatch for all three, and for an ``extend`` of each, **so
+        they cannot diverge**. They did diverge, silently, and the cost was the
+        whole operation model: ``_translate_extend`` handled only ``Field``,
         ``ExecBlock`` and ``ConstraintBlock``, so every ``target function`` and
         every ``action`` declared in an ``extend component`` — which is where a
         model following the PSS coding guidelines puts all of them — was dropped
         without a word. Translation succeeded, the type map was populated, and
         the generated API was empty. See the operation-model export design, §3A.
+        Later an ``extend action`` still could not add an ``input`` or a
+        ``lock``, because actions had a loop of their own.
 
         ``qualified_name`` is the name nested actions are parented to: the
         declaring component for an initial declaration, the *extended* type for
         an ``extend``.
         """
+        kind = self._body_kind(target_ir)
         for child in children:
             if child is None:
                 continue
+            cls = type(child).__name__
+            handler, kinds = self._body_row(type(child))
+            if kind not in kinds:
+                what = self._BODY_CONSTRUCT_NAMES.get(cls, f"'{cls}'")
+                ctx.add_error(f"{_ast_where(child)}{what} in {kind} "
+                              f"'{qualified_name}' is not supported yet")
+            elif handler is not None:
+                getattr(self, handler)(ctx, child, target_ir, qualified_name)
 
-            if isinstance(child, pss_ast.Field):
-                field = self._translate_field(ctx, child)
-                if field:
-                    target_ir.fields.append(field)
-            elif isinstance(child, pss_ast.FunctionDefinition):
-                func = self._translate_function(ctx, child)
-                if func:
-                    target_ir.functions.append(func)
-            elif isinstance(child, pss_ast.ExportFunction):
-                self._record_export(ctx, child, qualified_name)
-            elif isinstance(child, pss_ast.Action):
-                # Nested action -- registered under its qualified name, with the
-                # enclosing component recorded as its parent.
-                self._translate_action(ctx, child, parent_comp_name=qualified_name)
-            elif isinstance(child, pss_ast.Struct):
-                self._translate_struct(ctx, child)
-            elif isinstance(child, pss_ast.EnumDecl):
-                self._translate_enum(ctx, child)
-            elif isinstance(child, pss_ast.ExecBlock):
-                entry = self._EXEC_FUNCS.get(child.getKind())
-                if entry is not None:
-                    name, is_async = entry
-                    stmts = self._translate_exec_scope(ctx, child)
-                    # `exec_kind` says what this function IS. The name alone
-                    # says it too (an exec kind is a keyword, so no declared
-                    # function can take it), but a consumer should not have to
-                    # know that to tell an exec block from an operation.
-                    target_ir.functions.append(
-                        ir.Function(name=name, is_async=is_async, body=stmts,
-                                    metadata={"exec_kind": name}))
-                elif self.debug:
-                    self.logger.debug(
-                        f"{qualified_name}: unhandled exec kind {child.getKind()}")
-            elif isinstance(child, pss_ast.ConstraintBlock):
-                constraint_func = self._translate_constraint_block(ctx, child, target_ir)
-                if constraint_func:
-                    target_ir.functions.append(constraint_func)
-            elif isinstance(child, pss_ast.GenericConstraintDeclValue):
-                value_func = self._translate_generic_value_constraint(ctx, child)
-                if value_func:
-                    target_ir.functions.append(value_func)
-            elif isinstance(child, pss_ast.FieldPool):
-                self._translate_declared_pool(ctx, child, target_ir)
-            elif isinstance(child, pss_ast.ComponentBind):
-                self._translate_component_bind(ctx, child, target_ir)
-            elif isinstance(child, pss_ast.ExportAction):
-                self._record_export_action(ctx, child)
-            elif self.debug:
-                # The silent-drop class this method exists to prevent. Anything
-                # reaching here is a body element no backend will ever see.
-                self.logger.debug(
-                    f"{qualified_name}: unhandled body element "
-                    f"{type(child).__name__}")
+    # -- one handler per _BODY_ELEMENTS row --------------------------------
+
+    def _body_field(self, ctx, child, target_ir, qualified_name):
+        field = self._translate_field(ctx, child)
+        if field:
+            target_ir.fields.append(field)
+
+    def _body_field_ref(self, ctx, child, target_ir, qualified_name):
+        field = self._translate_field_ref(ctx, child)
+        if field:
+            target_ir.fields.append(field)
+
+    def _body_field_claim(self, ctx, child, target_ir, qualified_name):
+        # lock/share resource claim (PSS LRM section 9.3)
+        field = self._translate_field_claim(ctx, child)
+        if field:
+            target_ir.fields.append(field)
+
+    def _body_exec(self, ctx, child, target_ir, qualified_name):
+        """An exec block, merged with any earlier block of its kind.
+
+        LRM 22.1 d): several exec blocks of one kind in a definition scope
+        "shall be considered as a single exec block of the given kind,
+        processed in source order" -- and an extension is the same scope,
+        after the initial definition. Each used to become a function of its
+        own, and consumers disagreed on which one ran: bc kept the last, the
+        SV target the first.
+        """
+        kind = self._body_kind(target_ir)
+        entry = self._EXEC_FUNCS.get(child.getKind())
+        if entry is None or kind not in entry[2]:
+            ek = self._EXEC_KEYWORDS.get(child.getKind(), child.getKind())
+            ctx.add_error(f"{_ast_where(child)}'exec {ek}' in {kind} "
+                          f"'{qualified_name}' is not supported yet")
+            return
+        name, is_async, _ = entry
+        stmts = self._translate_exec_scope(ctx, child)
+        for fn in target_ir.functions:
+            if (fn.metadata or {}).get("exec_kind") == name:
+                # Each block is its own scope, and the IR has no block
+                # statement to keep them apart: the same local declared at
+                # the top of two blocks would become a redeclaration.
+                clash = sorted(self._top_locals(fn.body) & self._top_locals(stmts))
+                if clash:
+                    ctx.add_error(
+                        f"{_ast_where(child)}'exec {name}' in {kind} "
+                        f"'{qualified_name}' declares {', '.join(clash)}, as "
+                        f"an earlier 'exec {name}' does; merging the two "
+                        f"(LRM 22.1) is not supported yet")
+                    return
+                fn.body.extend(stmts)
+                return
+        # `exec_kind` says what this function IS. The name alone says it
+        # too (an exec kind is a keyword, so no declared function can take
+        # it), but a consumer should not have to know that to tell an exec
+        # block from an operation.
+        target_ir.functions.append(
+            ir.Function(name=name, is_async=is_async, body=stmts,
+                        metadata={"exec_kind": name}))
+
+    @staticmethod
+    def _top_locals(stmts) -> set:
+        """The locals declared at the top level of *stmts*."""
+        return {s.target.name for s in stmts
+                if isinstance(s, ir.StmtAnnAssign)
+                and isinstance(s.target, ir.ExprRefLocal)}
+
+    def _body_constraint(self, ctx, child, target_ir, qualified_name):
+        constraint_func = self._translate_constraint_block(ctx, child, target_ir)
+        if constraint_func:
+            target_ir.functions.append(constraint_func)
+
+    def _body_generic_value(self, ctx, child, target_ir, qualified_name):
+        value_func = self._translate_generic_value_constraint(ctx, child)
+        if value_func:
+            target_ir.functions.append(value_func)
+
+    def _body_covergroup(self, ctx, child, target_ir, qualified_name):
+        cg = self._translate_covergroup(ctx, child)
+        if cg is not None:
+            target_ir.covergroups.append(cg)
+
+    def _body_activity(self, ctx, child, target_ir, qualified_name):
+        # LRM 11.1: more than one activity in an action runs as if the
+        # activities were combined in a `schedule`. The second used to
+        # replace the first.
+        if target_ir.activity_ir is not None:
+            ctx.add_error(f"{_ast_where(child)}a second activity in action "
+                          f"'{qualified_name}' is not supported yet (the "
+                          f"activities run as one 'schedule', LRM 11.1)")
+            return
+        target_ir.activity_ir = self._translate_activity_body(ctx, child)
+
+    def _body_function(self, ctx, child, target_ir, qualified_name):
+        func = self._translate_function(ctx, child)
+        if func:
+            target_ir.functions.append(func)
+
+    def _body_export_function(self, ctx, child, target_ir, qualified_name):
+        self._record_export(ctx, child, qualified_name)
+
+    def _body_export_action(self, ctx, child, target_ir, qualified_name):
+        self._record_export_action(ctx, child)
+
+    def _body_action(self, ctx, child, target_ir, qualified_name):
+        # Nested action -- registered under its qualified name, with the
+        # enclosing component recorded as its parent.
+        self._translate_action(ctx, child, parent_comp_name=qualified_name)
+
+    def _body_struct(self, ctx, child, target_ir, qualified_name):
+        self._translate_struct(ctx, child)
+
+    def _body_enum(self, ctx, child, target_ir, qualified_name):
+        self._translate_enum(ctx, child)
+
+    def _body_pool(self, ctx, child, target_ir, qualified_name):
+        self._translate_declared_pool(ctx, child, target_ir)
+
+    def _body_bind(self, ctx, child, target_ir, qualified_name):
+        self._translate_component_bind(ctx, child, target_ir)
 
     def _translate_extend(self, ctx: AstToIrContext, extend: pss_ast.ExtendType):
         """Translate a PSS extend declaration, adding fields/functions to the target IR type.
@@ -1272,78 +1450,12 @@ class AstToIrTranslator:
         if hasattr(action, 'getIs_abstract') and action.getIs_abstract():
             action_ir.is_abstract = True
             
-        # Translate children (fields, exec blocks, and constraints)
-        for child in action.children():
-            if child is None:
-                continue
-                
-            if isinstance(child, pss_ast.Field):
-                field = self._translate_field(ctx, child)
-                if field:
-                    action_ir.fields.append(field)
-            elif isinstance(child, pss_ast.FieldRef):
-                field = self._translate_field_ref(ctx, child)
-                if field:
-                    action_ir.fields.append(field)
-            elif isinstance(child, pss_ast.ActionHandleField):
-                # Named action handle declared at the action or activity level.
-                # E.g. `link_init a_init;` → Field(kind=Field, name='a_init',
-                #       datatype=DataTypeRef('link_init'))
-                # These become class-level handles on the action, constructed
-                # in pre_solve() before randomize().
-                name_node = child.getName()
-                handle_name = name_node.getId() if hasattr(name_node, 'getId') else str(name_node)
-                type_node = child.getType()
-                type_id = type_node.getType_id() if hasattr(type_node, 'getType_id') else None
-                type_parts: list = []
-                if type_id:
-                    for _ti in range(type_id.numElems()):
-                        elem = type_id.getElem(_ti)
-                        eid = elem.getId() if hasattr(elem, 'getId') else None
-                        if eid and hasattr(eid, 'getId'):
-                            type_parts.append(eid.getId())
-                handle_type_name = '::'.join(type_parts) if type_parts else None
-                if handle_name and handle_type_name:
-                    from zuspec.ir.core.fields import FieldKind as _HFK
-                    _hf = ir.Field(
-                        name=handle_name,
-                        kind=_HFK.Field,
-                        datatype=ir.DataTypeRef(ref_name=handle_type_name),
-                    )
-                    action_ir.fields.append(_hf)
-            elif isinstance(child, pss_ast.FieldClaim):
-                # lock/share resource claim (PSS LRM section 9.3)
-                field = self._translate_field_claim(ctx, child)
-                if field:
-                    action_ir.fields.append(field)
-            elif isinstance(child, pss_ast.ExecBlock):
-                kind = child.getKind()
-                if kind == pss_ast.ExecKind.ExecKind_Body:
-                    stmts = self._translate_exec_scope(ctx, child)
-                    func = ir.Function(name='body', is_async=True, body=stmts)
-                    action_ir.functions.append(func)
-                elif kind == pss_ast.ExecKind.ExecKind_PreSolve:
-                    stmts = self._translate_exec_scope(ctx, child)
-                    func = ir.Function(name='pre_solve', is_async=False, body=stmts)
-                    action_ir.functions.append(func)
-                elif kind == pss_ast.ExecKind.ExecKind_PostSolve:
-                    stmts = self._translate_exec_scope(ctx, child)
-                    func = ir.Function(name='post_solve', is_async=False, body=stmts)
-                    action_ir.functions.append(func)
-            elif isinstance(child, pss_ast.ConstraintBlock):
-                constraint_func = self._translate_constraint_block(ctx, child, action_ir)
-                if constraint_func:
-                    action_ir.functions.append(constraint_func)
-            elif isinstance(child, pss_ast.GenericConstraintDeclValue):
-                value_func = self._translate_generic_value_constraint(ctx, child)
-                if value_func:
-                    action_ir.functions.append(value_func)
-            elif isinstance(child, pss_ast.Covergroup):
-                cg = self._translate_covergroup(ctx, child)
-                if cg is not None:
-                    action_ir.covergroups.append(cg)
-            elif isinstance(child, pss_ast.ActivityDecl):
-                action_ir.activity_ir = self._translate_activity_body(ctx, child)
+        # Translate children -- the dispatch shared with every other type
+        # body and with `extend action`.
+        self._translate_type_body(ctx, action.children(), action_ir,
+                                  action_ir.name if namespace_prefix
+                                  else (f"{parent_comp_name}::{action_name}"
+                                        if parent_comp_name else action_name))
 
         # Flush any `rand int in [range]` domain constraints onto this action.
         self._flush_range_constraints(action_ir)
@@ -2635,37 +2747,10 @@ class AstToIrTranslator:
             if super_name:
                 struct_ir.super = ir.DataTypeRef(ref_name=super_name)
 
-        # Translate children (fields, exec blocks, and constraints)
-        for child in struct.children():
-            if child is None:
-                continue
-
-            if isinstance(child, pss_ast.Field):
-                field = self._translate_field(ctx, child)
-                if field:
-                    struct_ir.fields.append(field)
-            elif isinstance(child, pss_ast.ExecBlock):
-                kind = child.getKind()
-                if kind == pss_ast.ExecKind.ExecKind_PreSolve:
-                    stmts = self._translate_exec_scope(ctx, child)
-                    func = ir.Function(name='pre_solve', is_async=False, body=stmts)
-                    struct_ir.functions.append(func)
-                elif kind == pss_ast.ExecKind.ExecKind_PostSolve:
-                    stmts = self._translate_exec_scope(ctx, child)
-                    func = ir.Function(name='post_solve', is_async=False, body=stmts)
-                    struct_ir.functions.append(func)
-            elif isinstance(child, pss_ast.ConstraintBlock):
-                constraint_func = self._translate_constraint_block(ctx, child, struct_ir)
-                if constraint_func:
-                    struct_ir.functions.append(constraint_func)
-            elif isinstance(child, pss_ast.GenericConstraintDeclValue):
-                value_func = self._translate_generic_value_constraint(ctx, child)
-                if value_func:
-                    struct_ir.functions.append(value_func)
-            elif isinstance(child, pss_ast.Covergroup):
-                cg = self._translate_covergroup(ctx, child)
-                if cg is not None:
-                    struct_ir.covergroups.append(cg)
+        # Translate children -- the dispatch shared with every other type
+        # body and with `extend struct`.
+        self._translate_type_body(ctx, struct.children(), struct_ir,
+                                  qualified_name)
 
         # Flush any `rand int in [range]` domain constraints onto this struct.
         self._flush_range_constraints(struct_ir)

@@ -401,7 +401,11 @@ to run coroutine 0, a different action with a well-formed trace, and
 activity translator has no `return None` fall-through. A new pssparser node
 fails `test_activity_registry.py` by name, and a new ir-core activity IR node
 fails `test_activity_ir_registry.py`, until a row says whether it lowers or
-is refused. Add the row with the node.
+is refused. Add the row with the node. Type bodies hold to the same rule:
+component, action and struct bodies (and their `extend`s) share one table,
+`AstToIrTranslator._BODY_ELEMENTS`, and `test_type_body_registry.py` fails
+on a pssparser class with no row. Exec blocks of one kind in a scope are
+merged in source order (LRM 22.1 d); consumers see one function per kind.
 
 **Enums, not strings.** `JoinSpec.kind` is a `JoinKind` and
 `DataTypeStruct.flow_kind` is a `FlowKind`; `test_flow_kind.py` holds the

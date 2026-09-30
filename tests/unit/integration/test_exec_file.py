@@ -1,11 +1,13 @@
-"""`exec file` parses natively and is ignored (detox C2).
+"""`exec file` parses natively and is refused where it is (detox C2, O6).
 
 The ``exec file "name" = <triple-quoted-template>;`` form is grammar-valid in
-pssparser (``target_file_exec_block``), but its AST builder is a stub, so no
-node is produced and the directive is not lowered. The old
-``_strip_exec_file_blocks`` source rewrite (which deleted it before parsing) is
-gone; the construct now flows through ``parse -> link -> translate`` untouched
-and is simply ignored.
+pssparser (``target_file_exec_block``). The old ``_strip_exec_file_blocks``
+source rewrite (which deleted it before parsing) is gone; the construct flows
+through ``parse -> link -> translate``. While pssparser's builder was a stub no
+node reached ast2ir and it was ignored; the builder now produces an
+``ExecTargetTemplateBlock``, which no target lowers, so it is refused with its
+line rather than dropped -- a file the user asked for would otherwise be
+missing without a word.
 """
 from __future__ import annotations
 import os
@@ -44,11 +46,13 @@ def _translate(src: str):
             pass
 
 
-def test_exec_file_parses_and_translates_cleanly():
-    """No parse/link/translate error; the action still reaches the IR."""
+def test_exec_file_parses_and_is_refused_where_it_is():
+    """It parses and links; translation names it, and its line, as
+    unsupported. The rest of the action still reaches the IR."""
     ctx = _translate(EXEC_FILE_PSS)
-    assert not ctx.errors
+    assert ctx.errors == ["line 4: a target-template exec block in action "
+                          "'pss_top::A' is not supported yet"], ctx.errors
     action = ctx.type_map.get("pss_top::A") or ctx.type_map.get("A")
     assert action is not None
-    # `x` is a real field; `exec file` contributes nothing (builder stub).
+    # `x` is a real field; `exec file` contributes nothing.
     assert "x" in [f.name for f in action.fields]

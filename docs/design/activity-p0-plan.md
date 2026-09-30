@@ -657,12 +657,34 @@ parallel.
 ---
 
 - **O6 — `_translate_type_body` still ends in a debug-only fall-through.**
-  Found while doing P0.12: any body element it does not dispatch is
-  dropped without a word, the same class as the activity fall-through that
-  P0.10 removed. `FieldPool`, `ComponentBind` and `ExportAction` now
-  dispatch. Proposal: make the fall-through an error, and add a registry
-  test like §4's over the component and action body kinds. That is outside
-  activities, so it is not in P0.
+  **Done 2026-09-30.** Component, action and struct bodies (and `extend` of
+  each) now share one table, `AstToIrTranslator._BODY_ELEMENTS`. An element
+  with no row, or in a body its row does not name, is a located error.
+  `test_type_body_registry.py` enumerates pssparser's `ScopeChild` classes
+  and requires a row or a stated reason for each. What changed in meaning
+  (`test_type_body_semantics.py`):
+  - Exec blocks of one kind in a scope merge into one function, in source
+    order, with the initial definition before its extensions (LRM 22.1 d).
+    bc used to run the last and SV the first. Two blocks declaring the same
+    top-level local are refused, since the IR has no block statement to
+    scope them.
+  - `extend action` now reaches `input`/`output`/`lock`/`share` (these were dropped).
+  - A second activity in an action is refused (it replaced the first; LRM
+    11.1 runs them as one `schedule`, which is P3).
+  - Newly refused, previously dropped: `override` blocks, monitors, `cover`
+    statements, covergroup types and instances, target-template exec blocks
+    and functions (`exec file` included; `test_exec_file.py` updated), action
+    `symbol`s, action-level scheduling constraints, component-scope `import
+    function`/`import class`, a typedef, `extend` or `extend enum` inside a
+    type, an activity in a component, and action `exec pre_body`/`run_start`/
+    `run_end`/`header`/`declaration`.
+  - Inert by design: `import p::*`, function prototypes (library types) and
+    an action's implicit `comp`.
+  - The action-level `ActionHandleField` branch was dead code: pssparser
+    parses `B b1;` in an action body as a `Field`. Removed.
+  None of pssc's suites exercised the newly refused constructs: unit 1898
+  passed / 4 (docs), progseq, compliance (bc 164 / 43 xfailed, op-model-sv
+  80 / 19) and sim (13 pre-existing) unchanged.
 
 - **O7 — two corpus schema gaps for activities.** (a) A bodiless atomic
   action emits no `act` record, but a model's atomic type always expects
@@ -685,3 +707,4 @@ parallel.
 | 2026-09-30 | commit 7 (P0.14) | unit 1847 passed / 4 failed (docs); SV output byte-identical on the patterns; be-py unit 22 passed; rest unchanged |
 | 2026-09-30 | commit 8 (§5 corpus slice) | 8 `act.*` tests: bc 7 PASS + 1 strict UNSUPPORTED; checker 380 passed. Also swept `tests/sim/sv` for `std_pkg`: sim 25 → 13 failed, all 13 pre-existing sv-pure `std_pkg` type-declaration failures (in `KNOWN_TEST_FAILURES.md`) |
 | 2026-09-30 | commit 9 (§7 docs) | design doc §2.5 "After P0" + F15; AGENTS.md "Activities on bc"; corpus README catalogue; ir-core docstrings on `label`, `branch_labels`, `type_qname`, `pool_path` and `ActivitySchedulingConstraint` |
+| 2026-09-30 | O6 | one type-body dispatch + registry (43 cases) + 6 semantics tests. Unit 1898 passed / 4 failed (docs); progseq 8 pre-existing; compliance bc 164/43xf, op-model-sv 80/19xf; sim 13 pre-existing |
