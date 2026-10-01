@@ -276,6 +276,41 @@ above are the evidence as found; this is what changed.
 - **Corpus (§2.4).** There is a first L3 slice (8 `act.*` tests); the checker
   handles `replicate`, and the mutants cover `act` records.
 
+### 2.6 After P1 (2026-10-01)
+
+P1 is tracked in [activity-p1-plan.md](activity-p1-plan.md); its gate record is
+in §10. What changed:
+
+- **Front end.** Inside a traversal's `with` and initializers, a name the
+  linker found in the traversed action is rooted at `TypeExprRefTraversed`
+  (13.1.4); traversal initializers are carried; activity data declarations,
+  constraint statements and every silent drop the P1 survey found (S1-S5) are
+  translated or refused with a location.
+- **One object per activation (P1-D1).** ir-core lays out an export's action
+  tree statically, and bc runs it with base offsets in both engines. Structs
+  are flat, one slot per scalar leaf. Attribute initial values and `static
+  const` folding go through the linker.
+- **Solving across the activity (P1-D2/D3).** Constraints that tie nodes (a
+  parent's, a `with`, an activity `constraint`) form cones. A traversal solves
+  its node in its cone (`SOLVE_NODE`): committed values pinned, values still to
+  come free, which is the lookahead. Handles reset on block entry (13.4.8). A
+  node in no cone keeps its old bytecode. Labeled `replicate` is unrolled.
+- **Components (P1-D4).** The component tree is one object, constructed
+  before the entry (`$comp_init`, Ex 281 order). An action runs in an instance
+  of its context's subtree; with several candidates, `comp` is a variable of
+  its cone, which `comp ==` steers. Every component's actions are lowered.
+- **Calibration.** `PSSToScenarioPass(lookahead=False)` makes the solve greedy
+  (test only); every lookahead test fails with it on some seed.
+- **Native engine.** It implements the base offset and refuses the other P1
+  operations by name before running anything (P1-D6).
+- **Corpus.** A second L3 slice (11 `act.*` tests: lookahead, resets, `with`,
+  activity constraints, component choice and steering, bodiless actions,
+  compound solve-time execs). The checker binds handles to occurrences,
+  resets them per 13.4.8, and reads `obs` records and `"traced": false`
+  actions (O7).
+- **Unchanged.** Flow objects, resources, inference, `select` and `schedule`
+  structure choices and activity symbols (O2) are P2 onward.
+
 ---
 
 ## 3. Architecture
@@ -1347,7 +1382,7 @@ the op-model procedural work for now (D13).
 | Phase | Content | Gate |
 |---|---|---|
 | **P0 — Stop the bleeding** | F1–F14 in ast2ir, `bind` first (except F13's `prev`/`uid`, deferred by D11). bc: an unknown traversal target is an **error**, never coroutine 0; handle → type resolution; `JoinKind`; `repeat…while` and `replicate` mapped to existing VM loops; compound pre/post_solve. `schedule` is **rejected** when its members have flow, state or resource relations, until P3/P4 do it right (D4), rather than silently run as parallel. Both silent-drop registry tests (§9.1). | the 11 failing tests green; both registry tests green; L3 corpus tests that need no flow objects pass or are strict-listed |
-| **P1 — Compound-scope solving** | handles are objects the parent solves (first use of hoisting: parent and sibling constraints form the cone); INVOKE with a provided `Obj`; inline `with`; activity constraints; struct and attribute references (`o.v`) in bc (also unblocks 5 `types.*` corpus tests); `comp` assignment and non-root components; `yield` | Ex 179/183/184 lookahead tests pass; `types.*` UNSUPPORTED entries drop |
+| **P1 — Compound-scope solving** (done 2026-10-01: Ex 179/180/183/184 pass on 200 seeds and each fails some seed without lookahead; `act.multi_comp.001`, the 5 `types.*` and 5 `comp.*` entries left `bc.toml`; the 11 new `act.*` corpus tests pass on bc; goldens identical; rt-eng refuses P1 ops) | handles are objects the parent solves (first use of hoisting: parent and sibling constraints form the cone); INVOKE with a provided `Obj`; inline `with`; activity constraints; struct and attribute references (`o.v`) in bc (also unblocks 5 `types.*` corpus tests); `comp` assignment and non-root components; `yield` | Ex 179/183/184 lookahead tests pass; `types.*` UNSUPPORTED entries drop |
 | **P2 — Static elaboration** | in ir-core `xf/` (D1): component instance tree; the pool-binding table as one walk; ICL tables; sample points (value-only vs structural); static cones plus cone-break analysis and telemetry; static diagnostics. **The SV target migrated onto the table.** `--emit-manifest` gains `pools`/`bindings`/`icl`. | table tests; SV golden snapshots byte-identical; manifest tests |
 | **P3 — Explicit flow and resources, global mode, planned arbitration** | planner v0 in `zuspec.ir.core.xf.plan` (no inference): explicit and implicit-to-explicit binding, resources, state tickets, `schedule` ordering. Plan model with its `.zbc` and `plan.json` projections; VM primitives as new opcodes (D2); global execution with monitors; timing-fuzz harness | UC1, 2, 6, 7, 8, 9, 10 pass on the corpus; UC16 timing-fuzz invariance; plan projections agree |
 | **P3c — Corpus checker P2/P3** | runs alongside P3: matcher, refs, witness SMT, Rules C/J, ladders, cheat mutations; **plan adjudication** (`check --plan`, PLAN-FAIL/REALISE-FAIL); structure enumeration; the D8 scaling experiment; start harvesting be-py models (§8.4) | checker self-tests plus 100% cheat-mutation kill; D8 measured and a default chosen |

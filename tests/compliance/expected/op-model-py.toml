@@ -75,3 +75,50 @@ reason = "not an operation-model entry: the root action has an activity (export_
 [expected."act.traverse.qualified.001"]
 verdict = "UNSUPPORTED"
 reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+
+# --- activities, P1 slice (2026-10-01): values chosen across an activity ---
+
+[expected."act.comp.random.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+[expected."act.comp.steer.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+[expected."act.compound.pre_post.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+[expected."act.constraint.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+[expected."act.lookahead.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+[expected."act.lookahead.sub.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+[expected."act.solve.order.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+[expected."act.solve.reset.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+[expected."act.traverse.bodiless.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+[expected."act.with.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+[expected."act.with.order.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"

@@ -456,7 +456,9 @@ offset and refuses the rest before running anything (P1-D6). Tests:
 (`with`, activity constraints, Ex 84, the unsat error). A lookahead test is
 calibrated: with `PSSToScenarioPass(lookahead=False)` (test only; the solve
 sees no constraint over a node not yet committed) it must fail on some seed
-(`unsat_seeds`), or it is not testing lookahead.
+(`unsat_seeds`), or it is not testing lookahead. The corpus's lookahead tests
+are held to the same rule on the seeds the corpus runs them with
+(`tests/compliance/test_corpus_lookahead_calibrated.py`).
 
 **Components are one object too.** ir-core's `xf/pss_lower/comp_tree.py`
 elaborates the tree under the root (`ScenarioModule.comp_tree`): every

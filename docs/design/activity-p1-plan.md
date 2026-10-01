@@ -1,6 +1,6 @@
 # P1 "Compound-scope solving": implementation, test and doc plan
 
-Status: **reviewed** (2026-09-30, §7); P1.0–P1.6 committed; P1.7 next. This file
+Status: **reviewed** (2026-09-30, §7); P1.0–P1.7 committed (P1.7: pss-corpus 774c88c), which completes P1. This file
 tracks P1 of [activity-flow-resource-bc-design.md](activity-flow-resource-bc-design.md)
 (§10); P0 is [activity-p0-plan.md](activity-p0-plan.md). Tick items as they land.
 
@@ -429,18 +429,32 @@ Each lands with its tests; the progress log (§8) records the counts.
 
 ### P1.7 Corpus and checker (pss-corpus)
 
-- [ ] Checker: handle names on activity nodes; compound types carry `fields`
+- [x] Checker: handle names on activity nodes; compound types carry `fields`
   and `constraints`; a parent constraint over `a.val` binds to the matched
-  occurrence; handle reset per 13.4.8 for loops (Ex 180).
-- [ ] New L3 tests: `act.solve.order.001` (Ex 179), `act.solve.reset.001`
+  occurrence; handle reset per 13.4.8 for loops (Ex 180). Stage 3 walks the
+  activity again with the matched occurrences: a `label` binds its handle,
+  entering a block or loop iteration unbinds the handles traversed in it, and
+  a constraint (type, `with`, activity) is asserted whenever all its handles
+  are bound, once per distinct set of occurrences. `with` names resolve in
+  the child first, then the parent; `this.` is the parent.
+- [x] New L3 tests: `act.solve.order.001` (Ex 179), `act.solve.reset.001`
   (Ex 180), `act.lookahead.001` (Ex 183), `act.lookahead.sub.001` (Ex 184),
   `act.with.001`, `act.with.order.001` (Ex 142 legal form), `act.constraint.001`,
   `act.comp.random.001` (Ex 50, needs `comp.pct_id` from COMPLIANCE-DESIGN
-  §4.3), `act.comp.steer.001` (Ex 143).
-- [ ] Mutants: a trace violating a parent constraint must be caught.
-- [ ] O7 (§7): `"traced": false` on atomic types (checker + lint), observers
+  §4.3), `act.comp.steer.001` (Ex 143). All pass on bc. The lookahead ones
+  are calibrated against the corpus's own seeds
+  (`tests/compliance/test_corpus_lookahead_calibrated.py`): without lookahead,
+  Ex 183 fails on 9 of 32, Ex 184 on 11 of 32, and the activity constraint on
+  4 of 64 (raised from 32 seeds, where 2 failed).
+- [x] Mutants: a trace violating a parent constraint must be caught
+  (`checker/tests/test_activity.py`: a legal trace and constraint-breaking
+  mutants per model, each FAIL naming the constraint; Ex 180's legal trace
+  fails if the loop is unrolled into one block, so the reset is what makes it
+  legal).
+- [x] O7 (§7): `"traced": false` on atomic types (checker + lint), observers
   and `obs` records (§4.4); tests `act.traverse.bodiless.001`,
-  `act.compound.pre_post.001`.
+  `act.compound.pre_post.001`. There is no `pss-corpus lint` command yet: the
+  no-`exec body` rule is a model test (`test_models.py`).
 
 ---
 
@@ -458,18 +472,21 @@ SV/C (the construct-test harness). Each refusal gets a located-error test.
 | P1.4 | `test_lookahead.py` (Ex 179/180/183/184, 200 seeds; the calibration run is P1.6), `test_scope_solve.py` (`with`, activity constraints, child reads, Ex 84, labeled replicate, the unsat error), rt-eng `test_engine_activation.py` (base offset, refusals) |
 | P1.5 | `test_component_tree.py` (layout, Ex 281 order, initial values, inheritance, per-instance state, index refusals), `test_comp_choice.py` (Ex 50 distribution over 3 instances, Ex 143 steer, static steer, a child relative to a chosen parent, Ex 51 refusal, qualified keys); component paths are covered there and by the five corpus entries closed; rt-eng `test_engine_components.py` |
 | P1.6 | `test_lookahead.py` and `test_scope_solve.py`: each lookahead test also runs with `lookahead=False` and must fail on some seed (`unsat_seeds`) |
+| P1.7 | corpus: the 11 `act.*` tests on bc, op-model-py and op-model-sv (strict-listed there: not an operation-model entry); `test_corpus_lookahead_calibrated.py`; checker `test_activity.py` (legal traces, mutants, observers, untraced actions, the reset) and the untraced-type rule in `test_models.py` |
 
 ## 5. Docs
 
-- [ ] Design doc §2.6 "After P1"; §10 P1 row marked done with the gate record.
-- [ ] AGENTS.md "Activities on bc": the flattened-activation rule (P1-D1), the
+- [x] Design doc §2.6 "After P1"; §10 P1 row marked done with the gate record.
+- [x] AGENTS.md "Activities on bc": the flattened-activation rule (P1-D1), the
   cone rule (P1-D2/D3), `comp` as a variable (P1-D4), and the tests that hold
   each.
-- [ ] be-bc `docs/spec/`: `SOLVE_NODE` and the base-offset operand (the
-  primitive spec P7 builds on).
-- [ ] ir-core docstrings on `ScScopeProblem`, `ScInvoke.node`, the action tree.
-- [ ] Corpus README: the new `act.*` tests; COMPLIANCE-DESIGN notes the checker
-  scope change.
+- [x] be-bc `docs/spec/`: `SOLVE_NODE` and the base-offset operand (the
+  primitive spec P7 builds on): `activation.md`, `components.md`.
+- [x] ir-core docstrings on `ScScopeProblem`, `ScInvoke.node` (it became
+  `child_base` and `site`), the action tree.
+- [x] Corpus README: the new `act.*` tests; COMPLIANCE-DESIGN notes the checker
+  scope change (§6.3). COMPLIANCE-DESIGN.md is untracked in pss-corpus, so
+  that edit is in no commit.
 
 ## 6. Risks
 
@@ -517,3 +534,4 @@ SV/C (the construct-test harness). Each refusal gets a located-error test.
 | 2026-10-01 | P1.4 | one-object activation (`INSTR_F_NODE` base offsets in both engines), `SOLVE_NODE` cone solve with lookahead (per-enabled-set problem + `pin`, no enable literals), `SCOPE_ENTER` resets, `LOOP_BODY_CERTAIN`, traversal initializers (`ScInvoke.init`, `INSTR_F_INITED`), labeled `replicate` unrolled, child reads through handles; rt-eng refuses the P1 ops at load. Found, not fixed: a constraint's `x + 1` wraps at the operand width in bc's own SOLVE too. Unit 2018 passed / 4 (docs); progseq 8 pre-existing; compliance 256 / 50 xfailed (no entry closes: none waits only on P1.4); ir-core 89, be-bc 310, rt-eng 102; be-sw unchanged from baseline |
 | 2026-10-01 | P1.5 | component tree as one object (ir-core `comp_tree.py`), `$comp_init` construction (Ex 281 order), `LD_COMP`/`ST_COMP`, component functions in their instance, root-relative coroutine keys (`coro_key`), `comp` choice as a cone variable with `comp ==` steering, Ex 51 refusal; found and fixed: activity statements had no location, O-P1-3 not implemented. Closes 6 strict bc entries (`act.multi_comp` + 5 `comp.*`); 5 re-listed with their next gap. Unit 2040 passed / 4 (docs); progseq 8 pre-existing, goldens identical; compliance 262 / 44 xfailed; ir-core 89, be-bc 310, rt-eng 105, rt-core 38; be-sw unchanged from baseline |
 | 2026-10-01 | P1.6 | calibration switch `lookahead=False` (`ScActionTree.lookahead`, greedy in-force rule in bc rather than a static cut); 6 lookahead tests calibrated, each fails without lookahead on 17–77 of 200 seeds. P1.5 committed (pssc 5a32a44, ir-core 6d1fa95, be-bc d0076b0, rt-eng da4486e, rt-core 4c33717). Unit 2046 passed / 4 (docs); compliance 262 / 44 xfailed; ir-core 89, be-bc 310 |
+| 2026-10-01 | P1.7 | checker: handles bound to occurrences, 13.4.8 resets, compound fields and constraints, `with` resolution, activity constraints, `obs` records, `"traced": false`; 11 new L3 `act.*` tests, all PASS on bc and calibrated against no-lookahead; strict-listed on op-model-py/sv. P1.6 committed (pssc 11b3e01, ir-core c99d80e, be-bc 5d988c2); all P1 repos pushed (dv-solve rebased onto upstream as 20e9a0b). Checker 420; unit 2047 passed / 4 (docs); compliance 513 passed / 66 xfailed (bc + op-model-py + op-model-sv; the 22 new xfails are the op-model entries); goldens identical. P1 complete |
