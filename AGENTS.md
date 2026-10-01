@@ -453,7 +453,10 @@ unrolled onto its nodes. The run-time side is `interp/activation.py`, specified
 in be-bc's `docs/spec/activation.md`. The native engine implements the base
 offset and refuses the rest before running anything (P1-D6). Tests:
 `test_lookahead.py` (Ex 179/180/183/184, 200 seeds) and `test_scope_solve.py`
-(`with`, activity constraints, Ex 84, the unsat error).
+(`with`, activity constraints, Ex 84, the unsat error). A lookahead test is
+calibrated: with `PSSToScenarioPass(lookahead=False)` (test only; the solve
+sees no constraint over a node not yet committed) it must fail on some seed
+(`unsat_seeds`), or it is not testing lookahead.
 
 **Components are one object too.** ir-core's `xf/pss_lower/comp_tree.py`
 elaborates the tree under the root (`ScenarioModule.comp_tree`): every

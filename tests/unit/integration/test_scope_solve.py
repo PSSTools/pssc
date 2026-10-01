@@ -12,21 +12,30 @@ import pytest
 from zuspec.be.bc.interp import VMError
 
 from .test_activity_bc_runs import trace
-from .test_lookahead import runs
+from .test_lookahead import runs, unsat_seeds
 
 pytestmark = pytest.mark.filterwarnings("ignore::UserWarning")
 
 
-def test_with_constrains_its_traversal_and_the_parent_looks_ahead():
-    """`this.px` is the parent's (13.1.4): px is chosen so both traversals
-    have a value -- the first needs val < px, so px > 0."""
-    got = runs("""
+_WITH_PARENT = """
     action T {
         rand bit[4] px;
         A a1;
         activity { a1 with { val < this.px; }; do A with { val == this.px; }; }
         exec post_solve { message(NONE, "%u", px); }
-    }""")
+    }"""
+
+_ACT_CONSTRAINT = """
+    action T {
+        A a, b;
+        activity { a; { b; constraint { b.val > a.val; } } }
+    }"""
+
+
+def test_with_constrains_its_traversal_and_the_parent_looks_ahead():
+    """`this.px` is the parent's (13.1.4): px is chosen so both traversals
+    have a value -- the first needs val < px, so px > 0."""
+    got = runs(_WITH_PARENT)
     for px, v1, v2 in got:
         assert v1 < px and v2 == px
 
@@ -44,14 +53,17 @@ def test_a_with_holds_at_its_traversal_only():
 
 
 def test_an_activity_constraint_holds_in_its_block():
-    got = runs("""
-    action T {
-        A a, b;
-        activity { a; { b; constraint { b.val > a.val; } } }
-    }""")
+    got = runs(_ACT_CONSTRAINT)
     for a, b in got:
         assert b > a
     assert max(a for a, _ in got) <= 14         # lookahead: room for b
+
+
+@pytest.mark.parametrize("src", [_WITH_PARENT, _ACT_CONSTRAINT],
+                         ids=["with_parent", "activity_constraint"])
+def test_without_lookahead_the_lookahead_tests_fail_on_some_seed(src):
+    """Calibration (P1.6): see ``test_lookahead.py``."""
+    assert unsat_seeds(src) > 0
 
 
 def test_an_activity_constraint_in_an_untaken_branch_is_not_in_force():

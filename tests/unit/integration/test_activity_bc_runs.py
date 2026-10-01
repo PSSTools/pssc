@@ -22,7 +22,7 @@ from zuspec.be.bc.lower import lower_module
 from zuspec.be.bc.lower.errors import LoweringError
 
 
-def _lower(src: str, root: str = "pss_top::T"):
+def _lower(src: str, root: str = "pss_top::T", lookahead: bool = True):
     fd, fname = tempfile.mkstemp(suffix=".pss")
     try:
         os.write(fd, src.encode())
@@ -34,7 +34,8 @@ def _lower(src: str, root: str = "pss_top::T"):
         os.unlink(fname)
     assert not ctx.errors, ctx.errors
     comp, _, action = root.rpartition("::")
-    module = PSSToScenarioPass(root=comp, exports=[action]).lower(ctx)
+    module = PSSToScenarioPass(root=comp, exports=[action],
+                               lookahead=lookahead).lower(ctx)
     return lower_module(module, entry_action=action, solve_unconstrained=True)
 
 

@@ -1,6 +1,6 @@
 # P1 "Compound-scope solving": implementation, test and doc plan
 
-Status: **reviewed** (2026-09-30, §7); P1.0–P1.4 committed; P1.5 done (uncommitted); P1.6 next. This file
+Status: **reviewed** (2026-09-30, §7); P1.0–P1.6 committed; P1.7 next. This file
 tracks P1 of [activity-flow-resource-bc-design.md](activity-flow-resource-bc-design.md)
 (§10); P0 is [activity-p0-plan.md](activity-p0-plan.md). Tick items as they land.
 
@@ -413,9 +413,18 @@ Each lands with its tests; the progress log (§8) records the counts.
 
 ### P1.6 Lookahead calibration and fault injection
 
-- [ ] `PSSToScenarioPass(lookahead=False)` (test-only switch, design §5.4
-  `greedy-nohoist`): cones are cut to the traversed node. Ex 183/184 tests run
-  both ways and require the no-lookahead run to fail on some seed (gate 1).
+- [x] `PSSToScenarioPass(lookahead=False)` (test-only switch, design §5.4
+  `greedy-nohoist`), carried as `ScActionTree.lookahead`. **Change from the
+  draft:** the cones are not cut at lowering. A node's solve still needs the
+  constraints tying it to nodes already committed (`b` must see `a.val < b.val`
+  with `a` pinned), so a static cut would test something weaker than greedy.
+  Instead bc's in-force rule (`interp/activation.py`) drops any constraint
+  reading a node that is neither the traversed node nor committed: the solve is
+  greedy, and every constraint still holds or the run is a `ScopeUnsatError`.
+  Every lookahead test runs both ways and the no-lookahead run fails on some of
+  the 200 seeds (gate 1): Ex 183 on 57, Ex 184 on 58, Ex 180 on 77, the
+  parent-first test on 17, and the two `with`/activity-constraint tests in
+  `test_scope_solve.py`.
 - [ ] Fault switch `commit-aux` (design §9.6) deferred to P5; noted here.
 
 ### P1.7 Corpus and checker (pss-corpus)
@@ -448,6 +457,7 @@ SV/C (the construct-test harness). Each refusal gets a located-error test.
 | P1.3 | `test_bc_struct_values.py`, `test_bc_attribute_paths.py` |
 | P1.4 | `test_lookahead.py` (Ex 179/180/183/184, 200 seeds; the calibration run is P1.6), `test_scope_solve.py` (`with`, activity constraints, child reads, Ex 84, labeled replicate, the unsat error), rt-eng `test_engine_activation.py` (base offset, refusals) |
 | P1.5 | `test_component_tree.py` (layout, Ex 281 order, initial values, inheritance, per-instance state, index refusals), `test_comp_choice.py` (Ex 50 distribution over 3 instances, Ex 143 steer, static steer, a child relative to a chosen parent, Ex 51 refusal, qualified keys); component paths are covered there and by the five corpus entries closed; rt-eng `test_engine_components.py` |
+| P1.6 | `test_lookahead.py` and `test_scope_solve.py`: each lookahead test also runs with `lookahead=False` and must fail on some seed (`unsat_seeds`) |
 
 ## 5. Docs
 
@@ -506,3 +516,4 @@ SV/C (the construct-test harness). Each refusal gets a located-error test.
 | 2026-10-01 | P1.2 | `ScActionTree` per export (nodes, scopes, sites), cones (`ScScopeProblem`, TYPE/ACTIVITY/WITH), `ScInvoke.child_base`, `Field.type_qname`; S1 lifted for a constant index. Solve-node choice moved to run time (P1.4), see P1.2. Unit 2002 passed / 4 (docs); progseq 8 pre-existing, goldens identical; compliance 256 / 50 xfailed; ir-core 88, be-bc 310; be-sw unchanged from baseline |
 | 2026-10-01 | P1.4 | one-object activation (`INSTR_F_NODE` base offsets in both engines), `SOLVE_NODE` cone solve with lookahead (per-enabled-set problem + `pin`, no enable literals), `SCOPE_ENTER` resets, `LOOP_BODY_CERTAIN`, traversal initializers (`ScInvoke.init`, `INSTR_F_INITED`), labeled `replicate` unrolled, child reads through handles; rt-eng refuses the P1 ops at load. Found, not fixed: a constraint's `x + 1` wraps at the operand width in bc's own SOLVE too. Unit 2018 passed / 4 (docs); progseq 8 pre-existing; compliance 256 / 50 xfailed (no entry closes: none waits only on P1.4); ir-core 89, be-bc 310, rt-eng 102; be-sw unchanged from baseline |
 | 2026-10-01 | P1.5 | component tree as one object (ir-core `comp_tree.py`), `$comp_init` construction (Ex 281 order), `LD_COMP`/`ST_COMP`, component functions in their instance, root-relative coroutine keys (`coro_key`), `comp` choice as a cone variable with `comp ==` steering, Ex 51 refusal; found and fixed: activity statements had no location, O-P1-3 not implemented. Closes 6 strict bc entries (`act.multi_comp` + 5 `comp.*`); 5 re-listed with their next gap. Unit 2040 passed / 4 (docs); progseq 8 pre-existing, goldens identical; compliance 262 / 44 xfailed; ir-core 89, be-bc 310, rt-eng 105, rt-core 38; be-sw unchanged from baseline |
+| 2026-10-01 | P1.6 | calibration switch `lookahead=False` (`ScActionTree.lookahead`, greedy in-force rule in bc rather than a static cut); 6 lookahead tests calibrated, each fails without lookahead on 17–77 of 200 seeds. P1.5 committed (pssc 5a32a44, ir-core 6d1fa95, be-bc d0076b0, rt-eng da4486e, rt-core 4c33717). Unit 2046 passed / 4 (docs); compliance 262 / 44 xfailed; ir-core 89, be-bc 310 |
