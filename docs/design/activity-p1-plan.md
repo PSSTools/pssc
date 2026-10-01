@@ -143,7 +143,7 @@ recommendation is what the work items assume.
   read from the solved value. One mechanism for random choice and for
   steering, and it composes with P3's pool constraints.
 - **P1-D5 — Refusals kept in P1**, each located: recursive action trees;
-  activity symbols (O2); a handle-array element with a non-constant index
+  activity symbols (O2; implemented after P1, see §8); a handle-array element with a non-constant index
   inside a constraint; a handle traversed twice in one scope where a later
   traversal has a `with` (O-P1-3).
 - **P1-D6 — rt-eng refuses P1 opcodes** by name until P8 ports them (gate 6).
@@ -513,7 +513,8 @@ SV/C (the construct-test harness). Each refusal gets a located-error test.
   error. (Re-traversal in a new iteration or a re-entered block is a new
   scope entry, 13.4.8, and stays supported, as does `a; a;` with no `with`.)
 - **O-P1-4 → accepted.** rt-eng refuses P1 opcodes by name until P8 (P1-D6).
-- **O-P1-5 → deferred.** Activity symbols stay refused.
+- **O-P1-5 → deferred.** Activity symbols stay refused. (Done after P1,
+  2026-10-01: see the O2 row of §8.)
 - **O-P1-6 (O7) → decided.** (a) An atomic type may carry `"traced": false`:
   the checker keeps it in the structure and consumes no record for it; lint
   requires the type to have no `exec body`. (b) No schema change: a compound's
@@ -535,3 +536,4 @@ SV/C (the construct-test harness). Each refusal gets a located-error test.
 | 2026-10-01 | P1.5 | component tree as one object (ir-core `comp_tree.py`), `$comp_init` construction (Ex 281 order), `LD_COMP`/`ST_COMP`, component functions in their instance, root-relative coroutine keys (`coro_key`), `comp` choice as a cone variable with `comp ==` steering, Ex 51 refusal; found and fixed: activity statements had no location, O-P1-3 not implemented. Closes 6 strict bc entries (`act.multi_comp` + 5 `comp.*`); 5 re-listed with their next gap. Unit 2040 passed / 4 (docs); progseq 8 pre-existing, goldens identical; compliance 262 / 44 xfailed; ir-core 89, be-bc 310, rt-eng 105, rt-core 38; be-sw unchanged from baseline |
 | 2026-10-01 | P1.6 | calibration switch `lookahead=False` (`ScActionTree.lookahead`, greedy in-force rule in bc rather than a static cut); 6 lookahead tests calibrated, each fails without lookahead on 17–77 of 200 seeds. P1.5 committed (pssc 5a32a44, ir-core 6d1fa95, be-bc d0076b0, rt-eng da4486e, rt-core 4c33717). Unit 2046 passed / 4 (docs); compliance 262 / 44 xfailed; ir-core 89, be-bc 310 |
 | 2026-10-01 | P1.7 | checker: handles bound to occurrences, 13.4.8 resets, compound fields and constraints, `with` resolution, activity constraints, `obs` records, `"traced": false`; 11 new L3 `act.*` tests, all PASS on bc and calibrated against no-lookahead; strict-listed on op-model-py/sv. P1.6 committed (pssc 11b3e01, ir-core c99d80e, be-bc 5d988c2); all P1 repos pushed (dv-solve rebased onto upstream as 20e9a0b). Checker 420; unit 2047 passed / 4 (docs); compliance 513 passed / 66 xfailed (bc + op-model-py + op-model-sv; the 22 new xfails are the op-model entries); goldens identical. P1 complete |
+| 2026-10-01 | O2 (after P1) | activity symbols (LRM 11.7): ast2ir expands each call as a block of its own, parameters replaced by the call's arguments (translated at the call), bare `s;` (Ex 120) expanded through the linker, recursion a located error; pssparser gives a symbol a `sub_activity` so labels in its body resolve. Found and fixed: a labeled `do A` was not a name in the action tree (`l1.val` reached bc as an unlocated LoweringError). Found, not fixed: be-bc `SeedStream.next_below` is `lcg % n`, so successive two-way selects alternate (strict xfail in `test_activity_symbols.py`); a path through a labeled block (`L.h.val`, 11.8) still reaches bc unlocated; pssparser reports names in a `with` on a symbol as "a pssparser defect". Corpus `act.symbol.001` (27 of 32 seeds fail without lookahead). Committed with pssparser 6a7b2d0, ir-core 0f88180, pss-corpus 54d15e7; P1.7 committed (pss-corpus 774c88c, pssc e5e9763). Checker 423; pssparser 5679; unit 2062 passed / 4 (docs); compliance 546 passed / 68 xfailed; ir-core 89; goldens identical |

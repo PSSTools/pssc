@@ -103,7 +103,8 @@ CASES = {
                                       and s[0].label == "L1"),
     "ActivitySuper":                 (None, "", _first(A.ActivitySuper)),
     "ActivitySymbolCall":            ("S1();", "symbol S1 { do B; }",
-                                      Err(r"line \d+: activity symbols are not supported")),
+                                      lambda s: isinstance(s[0], A.ActivitySequenceBlock)
+                                      and isinstance(s[0].stmts[0], A.ActivityAnonTraversal)),
 }
 
 _MODEL = """\

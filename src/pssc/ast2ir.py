@@ -174,6 +174,17 @@ class _Phase(enum.Enum):
     EXTEND = 2
 
 
+class _PathPrefix:
+    """The first steps of a linker ``SymbolRefPath``, walkable by
+    ``_symbol_scope_at``."""
+
+    def __init__(self, steps):
+        self._steps = steps
+
+    def getPathList(self):
+        return self._steps
+
+
 class AstToIrContext:
     """Context for AST to IR translation
 
@@ -256,6 +267,11 @@ class AstToIrContext:
         # root a name the linker resolved in the traversed action is rooted at
         # (``ir.TypeExprRefTraversed``). None elsewhere.
         self.inline_root: Optional[ir.Expr] = None
+        # The activity symbols being expanded, outermost first (LRM 11.7):
+        # ``(declaration, call)``. A name the linker resolved to a symbol's
+        # parameter is translated as the call's argument, in the frames
+        # outside it.
+        self.symbol_frames: list = []
         # How many generic constraint references have been instantiated so far.
         # Each reference gets the next number, which is what makes two
         # references to one declaration distinguishable after their bodies have
@@ -875,6 +891,9 @@ class AstToIrTranslator:
         # The implicit `comp` handle; the action's component is recorded
         # as ctx.parent_comp_names when the action is registered.
         'FieldCompRef':               (None,                   {'action'}),
+        # A declaration only: each call expands its body where it is written
+        # (`_expand_symbol`), so a symbol nothing calls lowers to nothing.
+        'SymbolDeclaration':          (None,                   {'action'}),
     }
 
     #: How a refused element is named to the user. The class name otherwise.
@@ -1827,8 +1846,7 @@ class AstToIrTranslator:
                 is_parallel=bool(node.getIs_parallel()), targets=targets)
 
         if isinstance(node, pss_ast.ActivitySymbolCall):
-            ctx.add_error(f"{where}activity symbols are not supported yet (P1)")
-            return None
+            return self._expand_symbol(ctx, node)
 
         if isinstance(node, pss_ast.ActivityBindStmt):
             # Operands are ExprRefPathContexts the linker bound (pssparser
@@ -1849,15 +1867,127 @@ class AstToIrTranslator:
                       f"is not translated")
         return None
 
+    def _expand_symbol(self, ctx: 'AstToIrContext', node) -> Optional['ir.ActivityStmt']:
+        """A symbol call as the symbol's body, a block of its own (LRM 11.7).
+
+        The body is translated afresh at each call, so every expansion has its
+        own traversal sites, and a label or handle the body declares names
+        that expansion's. Where the body names a parameter, the call's
+        argument is translated in its place -- in the frames OUTSIDE the
+        symbol, where the call was written (``_symbol_arg``). A value argument
+        is substituted, not evaluated once: a call has the same effect as
+        writing the body in-line.
+        """
+        where = _ast_where(node)
+        target = node.getTarget()
+        decl = self._symbol_scope_at(
+            ctx, target.getTarget() if hasattr(target, "getTarget") else None, depth=0)
+        name = target.getId().getId() if hasattr(target, "getId") \
+            and hasattr(target.getId(), "getId") else "?"
+        if not isinstance(decl, pss_ast.SymbolDeclaration):
+            ctx.add_error(f"{where}'{name}' is not an activity symbol")
+            return None
+        return self._expand_symbol_body(ctx, decl, node, name, where)
+
+    def _expand_symbol_body(self, ctx, decl, call, name: str, where: str):
+        """*decl*'s body for *call* -- an ``ActivitySymbolCall``, or a bare
+        ``s;`` (Ex 120), which parses as a traversal and takes no argument."""
+        n_args = call.numParams() if hasattr(call, "numParams") else 0
+        if n_args != decl.numParams():
+            ctx.add_error(f"{where}symbol '{name}' takes {decl.numParams()} "
+                          f"argument(s), but {n_args} are given")
+            return None
+        # pssparser hands out a new wrapper per access: compare with ==.
+        if any(d == decl for d, _ in ctx.symbol_frames):
+            chain = " -> ".join([d.getName() for d, _ in ctx.symbol_frames] + [name])
+            ctx.add_error(f"{where}symbol '{name}' activates itself ({chain}); "
+                          f"symbols are not recursive (LRM 11.7)")
+            return None
+        ctx.symbol_frames.append((decl, call))
+        try:
+            stmts = self._translate_activity_stmts(ctx, decl.children())
+        finally:
+            ctx.symbol_frames.pop()
+        return ir.ActivitySequenceBlock(stmts=stmts)
+
+    def _symbol_arg(self, ctx: 'AstToIrContext', ref):
+        """``(k, argument)`` if the linker resolved *ref* to a parameter of
+        the symbol expanding in frame *k*, else None. The argument is an AST
+        expression of the call, to be translated in frames ``[:k]``."""
+        if ref is None or not ctx.symbol_frames:
+            return None
+        path = list(ref.getPathList())
+        if not path or path[-1].kind != pss_ast.SymbolRefPathElemKind.ElemKind_ArgIdx:
+            return None
+        decl = self._symbol_scope_at(ctx, _PathPrefix(path[:-1]), depth=0)
+        for k in range(len(ctx.symbol_frames) - 1, -1, -1):
+            d, call = ctx.symbol_frames[k]
+            if d == decl:
+                return k, call.getParam(path[-1].idx)
+        return None
+
+    @contextlib.contextmanager
+    def _at_call(self, ctx: 'AstToIrContext', k: int):
+        """Translate as at the call of frame *k*: its outer frames only, and
+        outside any `with` (an argument is never written in one)."""
+        frames, root = ctx.symbol_frames, ctx.inline_root
+        ctx.symbol_frames, ctx.inline_root = frames[:k], None
+        try:
+            yield
+        finally:
+            ctx.symbol_frames, ctx.inline_root = frames, root
+
     def _translate_handle_traversal(
         self,
         ctx: 'AstToIrContext',
         node: 'pss_ast.ActivityActionHandleTraversal',
-    ) -> Optional['ir.ActivityTraversal']:
+    ) -> Optional['ir.ActivityStmt']:
         """Extract handle name from ExprRefPathContext and build ActivityTraversal."""
         target = node.getTarget()
-        hier_id = target.getHier_id()
         where = _ast_where(node)
+        # `a_or_b;` calls a symbol with no arguments (Ex 120): the parser
+        # cannot tell it from a traversal, the linker can.
+        decl = self._symbol_scope_at(ctx, target.getTarget(), depth=0)
+        if isinstance(decl, pss_ast.SymbolDeclaration):
+            if node.getWith_c() is not None or node.numInitializers():
+                ctx.add_error(f"{where}symbol '{decl.getName()}' is not an "
+                              f"action: it takes no 'with' and no initializer")
+                return None
+            return self._expand_symbol_body(
+                ctx, decl, node, decl.getName(), where)
+        # Traversing a symbol's handle parameter traverses the handle its call
+        # passed (LRM 11.7, Ex 121). Followed outward through nested symbols;
+        # the argument's subscript is the caller's, so it is translated in
+        # the frames outside the call, and a `with` on the traversal stays the
+        # symbol body's.
+        own_sub = target.getHier_id().getElem(0)
+        at = None
+        hit = self._symbol_arg(ctx, target.getTarget())
+        while hit is not None:
+            k, arg = hit
+            hier = arg.getHier_id() if hasattr(arg, "getHier_id") else None
+            if target.getHier_id().numElems() != 1 or hier is None \
+                    or isinstance(arg, pss_ast.ExprRefPathSuper):
+                ctx.add_error(f"{where}the argument for this symbol parameter "
+                              f"is not an action handle")
+                return None
+            if own_sub.numSubscript() \
+                    and hier.getElem(hier.numElems() - 1).numSubscript():
+                ctx.add_error(f"{where}a subscripted handle parameter whose "
+                              f"argument is subscripted too is not supported")
+                return None
+            target, at = arg, k
+            hit = self._symbol_arg(ctx, target.getTarget())
+        return self._translate_handle_traversal_at(
+            ctx, node, target, where,
+            own_sub if at is not None and own_sub.numSubscript() else None, at)
+
+    def _translate_handle_traversal_at(self, ctx, node, target, where,
+                                       own_sub=None, at=None):
+        """The traversal *node* of the handle *target* names. *at*: the
+        symbol frame whose call wrote *target* (a parameter's argument), and
+        *own_sub* the element of *node* carrying a subscript of its own."""
+        hier_id = target.getHier_id()
         parts: List[str] = []
         for i in range(hier_id.numElems()):
             elem = hier_id.getElem(i)
@@ -1875,8 +2005,13 @@ class AstToIrTranslator:
             ctx.add_error(f"{where}traversal of '{handle}' with "
                           f"{last.numSubscript()} subscripts is not supported yet")
             return None
-        if last.numSubscript() == 1:
-            index = self._translate_expression(ctx, last.getSubscript(0))
+        if own_sub is not None:
+            index = self._translate_expression(ctx, own_sub.getSubscript(0))
+        elif last.numSubscript() == 1:
+            with (self._at_call(ctx, at) if at is not None
+                  else contextlib.nullcontext()):
+                index = self._translate_expression(ctx, last.getSubscript(0))
+        if own_sub is not None or last.numSubscript() == 1:
             if index is None:
                 ctx.add_error(f"{where}the index of '{handle}' could not be translated")
                 return None
@@ -4478,6 +4613,17 @@ class AstToIrTranslator:
         # (ElemKind_Inline: a `with` block, an initializer) is that action's,
         # not `self`'s -- `b1 with { x < px; }` reads `b1.x` and `self.px`.
         ref = expr.getTarget() if hasattr(expr, 'getTarget') else None
+        # A symbol's parameter is the call's argument (LRM 11.7): `aa.x` with
+        # `aa` bound to `a1` is `self.a1.x`, and `n` bound to `2` is `2`.
+        hit = self._symbol_arg(ctx, ref)
+        if hit is not None:
+            k, arg = hit
+            with self._at_call(ctx, k):
+                root = self._translate_expression(ctx, arg)
+            if root is None:
+                return ir.ExprRefUnresolved(name="unknown")
+            root = self._apply_subscripts(ctx, elems[0], root)
+            return self._translate_ref_chain(ctx, expr, elems[1:], root)
         kinds = [pe.kind for pe in ref.getPathList()] if ref is not None else []
         K = pss_ast.SymbolRefPathElemKind
         if kinds and kinds[-1] == K.ElemKind_This:

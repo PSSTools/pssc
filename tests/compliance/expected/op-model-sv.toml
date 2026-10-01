@@ -126,3 +126,7 @@ reason = "not an operation-model entry: the root action has an activity (export_
 [expected."act.with.order.001"]
 verdict = "UNSUPPORTED"
 reason = "not an operation-model entry: the root action has an activity (export_action.py)"
+
+[expected."act.symbol.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the root action has an activity (export_action.py)"

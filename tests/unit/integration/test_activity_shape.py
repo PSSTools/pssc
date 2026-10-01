@@ -198,10 +198,18 @@ def test_scheduling_constraint_present():
     assert [t.attr for t in sc[0].targets] == ["b1", "b2"]
 
 
-def test_symbol_call_is_a_located_error():
-    errs = _errors("S1();", decls="symbol S1 { do A; }")
-    assert any("activity symbols are not supported" in e and "line 12" in e
-               for e in errs), errs
+def test_symbol_call_is_its_body_with_the_arguments_in_place():
+    """LRM 11.7: the call is the symbol's body, a block of its own; the
+    handle parameter traverses `a1`, and its `with` reads the value argument."""
+    s = _one("S1(a1, 3);",
+             A.ActivitySequenceBlock,
+             decls="symbol S1(A h, int v) { do B; h with { x == v; }; }")
+    first, trav = s.stmts
+    assert _is_do(first, "B")
+    assert isinstance(trav, A.ActivityTraversal) and trav.handle == "a1"
+    assert trav.type_qname == "pss_top::A"
+    (c,) = trav.inline_constraints
+    assert isinstance(c.rhs, ExprConstant) and c.rhs.value == 3
 
 
 def test_block_handle_declaration_is_a_declaration():

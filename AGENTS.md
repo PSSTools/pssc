@@ -478,6 +478,14 @@ of it (`ZBC_HDR_COMP_INIT`, the two ops). Spec: be-bc
 `docs/spec/components.md`. Tests: `test_component_tree.py`,
 `test_comp_choice.py`.
 
+**A symbol call is its body** (LRM 11.7). ast2ir expands each call as a
+block of its own, translated afresh at each call, with each parameter the
+linker resolved replaced by the call's argument, translated where the call
+is written (`_expand_symbol`, `_symbol_arg`). bc, the action tree and the
+cones never see a symbol; a recursive call is a located error. `s;` with no
+argument list parses as a traversal that the linker resolved to the symbol
+(`test_activity_symbols.py`).
+
 **Enums, not strings.** `JoinSpec.kind` is a `JoinKind` and
 `DataTypeStruct.flow_kind` is a `FlowKind`; `test_flow_kind.py` holds the
 second. The SV target keeps strings in its *own* binding records and converts

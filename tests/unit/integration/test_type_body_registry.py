@@ -136,9 +136,11 @@ CASES = {
                          ('component pss_top { action A { '
                           'exec header C = """x"""; } }', "A",
                           Err(r"a target-template exec block in action 'pss_top::A'")),
+    # Expanded at each call (LRM 11.7), so it is the activity that holds it.
     "SymbolDeclaration": ("component pss_top { action B { } action A { "
                           "symbol s { do B; } activity { s; } } }", "A",
-                          Err(r"an activity symbol in action 'pss_top::A'")),
+                          lambda c: isinstance(_action(c).activity_ir.stmts[0].stmts[0],
+                                               A.ActivityAnonTraversal)),
     "ActivitySchedulingConstraint":
                          ("component pss_top { action B { } action A { B b1; "
                           "B b2; activity { schedule { b1; b2; } } "

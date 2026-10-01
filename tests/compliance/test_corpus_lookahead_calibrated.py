@@ -14,7 +14,8 @@ from conftest import CORPUS
 
 pytestmark = pytest.mark.filterwarnings("ignore::UserWarning")
 
-LOOKAHEAD = ["act.lookahead.001", "act.lookahead.sub.001", "act.constraint.001"]
+LOOKAHEAD = ["act.lookahead.001", "act.lookahead.sub.001", "act.constraint.001",
+             "act.symbol.001"]
 
 TESTS = {t.id: t for t in discover(f"{CORPUS}/compliance")}
 

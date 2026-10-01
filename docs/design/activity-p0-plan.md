@@ -645,6 +645,16 @@ parallel.
 - **O2 — activity symbols.** They are rejected in P0. Should they be
   implemented in P1 (inline expansion) or later? They are rare in the curated
   models.
+  **Done 2026-10-01, after P1, by inline expansion in ast2ir.** Each call is
+  the symbol's body, a block of its own, translated afresh, so every
+  expansion has its own sites, labels and handles. A parameter the linker
+  resolved in the body is the call's argument, translated in the frames
+  outside the call: a handle parameter traverses its argument, a value
+  parameter is substituted (not evaluated once). `s;` with no argument list
+  (Ex 120) parses as a traversal; the linker resolves it to the symbol, and
+  ast2ir expands it. A recursive call is a located error. pssparser now gives
+  a symbol a `sub_activity` scope, so `l1: do A;` in a symbol body is a name
+  there, as in an activity. Tests: `test_activity_symbols.py`.
 - **O3 — bind ranges and traversal initializers.** Both are rejected in P0.
   Proposed owners: ranges in P2 (the pool-binding table), initializers in P1.
 - **O4 — per-iteration labels on `replicate`.** Rejected in P0, owned by P1

@@ -309,7 +309,12 @@ in §10. What changed:
   resets them per 13.4.8, and reads `obs` records and `"traced": false`
   actions (O7).
 - **Unchanged.** Flow objects, resources, inference, `select` and `schedule`
-  structure choices and activity symbols (O2) are P2 onward.
+  structure choices are P2 onward.
+- **Activity symbols (O2, after P1).** ast2ir expands each call where it is
+  written: the symbol's body as a block of its own, translated afresh, with
+  each parameter replaced by the call's argument translated where the call
+  is (LRM 11.7). Nothing downstream sees a symbol. A recursive call is a
+  located error.
 
 ---
 
