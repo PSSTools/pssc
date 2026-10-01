@@ -23,43 +23,23 @@ reason = "bc inlines native functions at each call site, so it rejects recursion
 
 [expected."comp.array.001"]
 verdict = "UNSUPPORTED"
-reason = "bc gap: a component attribute or package constant reached through a path (`comp.ch.chan`, `cfg_pkg::X`) -- 'reference through ExprAttribute' (lower/procedural.py)"
-
-[expected."comp.func.calls.001"]
-verdict = "UNSUPPORTED"
-reason = "bc gap: a call through a component path deeper than `comp.f()` (`comp.a.f()`, `comp.c.try_get()`, `ch[i].f()`) -- _call_name returns None (lower/procedural.py)"
-
-[expected."comp.init.order.001"]
-verdict = "UNSUPPORTED"
-reason = "bc gap: a component attribute or package constant reached through a path (`comp.ch.chan`, `cfg_pkg::X`) -- 'reference through ExprAttribute' (lower/procedural.py)"
-
-[expected."comp.init.solve_fn.001"]
-verdict = "UNSUPPORTED"
-reason = "bc gap: a component attribute or package constant reached through a path (`comp.ch.chan`, `cfg_pkg::X`) -- 'reference through ExprAttribute' (lower/procedural.py)"
-
-[expected."comp.instances.001"]
-verdict = "UNSUPPORTED"
-reason = "bc gap: a call through a component path deeper than `comp.f()` (`comp.a.f()`, `comp.c.try_get()`, `ch[i].f()`) -- _call_name returns None (lower/procedural.py)"
-
-[expected."comp.attr.struct.001"]
-verdict = "UNSUPPORTED"
-reason = "bc gap: a call through a component path deeper than `comp.f()` (`comp.a.f()`, `comp.c.try_get()`, `ch[i].f()`) -- _call_name returns None (lower/procedural.py)"
+reason = "bc gap: an element of a component array with a computed index (`comp.ch[j]`, `foreach (ch[i])`) -- bc has no indexed component access (lower/procedural.py _comp_inst)"
 
 [expected."sync.channel.depth.001"]
 verdict = "UNSUPPORTED"
-reason = "bc gap: a call through a component path deeper than `comp.f()` (`comp.a.f()`, `comp.c.try_get()`, `ch[i].f()`) -- _call_name returns None (lower/procedural.py)"
+reason = "bc gap: channel_c's built-in functions (`try_put`, `try_get`) have no bc implementation (lower/procedural.py _no_callee)"
 
 [expected."sync.channel.guard.001"]
 verdict = "UNSUPPORTED"
-reason = "bc gap: a call through a component path deeper than `comp.f()` (`comp.a.f()`, `comp.c.try_get()`, `ch[i].f()`) -- _call_name returns None (lower/procedural.py)"
+reason = "bc gap: channel_c's built-in functions (`try_put`, `try_get`) have no bc implementation (lower/procedural.py _no_callee)"
 
 [expected."sync.channel.try.001"]
 verdict = "UNSUPPORTED"
-reason = "bc gap: a call through a component path deeper than `comp.f()` (`comp.a.f()`, `comp.c.try_get()`, `ch[i].f()`) -- _call_name returns None (lower/procedural.py)"
+reason = "bc gap: channel_c's built-in functions (`try_put`, `try_get`) have no bc implementation (lower/procedural.py _no_callee)"
 
 [expected."types.string.match.001"]
 verdict = "UNSUPPORTED"
-reason = "bc gap: a call through a component path deeper than `comp.f()` (`comp.a.f()`, `comp.c.try_get()`, `ch[i].f()`) -- _call_name returns None (lower/procedural.py)"
+reason = "bc gap: string comparison (lower/procedural.py _compare)"
 
 [expected."L0P.tap.rw8.001"]
 verdict = "UNSUPPORTED"
@@ -76,9 +56,3 @@ reason = "bc procedural code has no addr_handle_t (DataTypeChandle), so no memor
 [expected."L0P.tap.rw64.001"]
 verdict = "UNSUPPORTED"
 reason = "bc procedural code has no addr_handle_t (DataTypeChandle), so no memory primitive or executor tap"
-
-# --- activities, P0 slice (2026-09-30; docs/design/activity-p0-plan.md §5) ---
-
-[expected."act.multi_comp.001"]
-verdict = "UNSUPPORTED"
-reason = "P1: only the root component's actions are lowered; a traversal of a sub-component's action is refused (xf/pss_lower/lower.py _traversal_target)"

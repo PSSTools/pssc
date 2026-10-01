@@ -146,3 +146,22 @@ def test_a_labeled_replicate_runs_each_iteration_on_its_own_node():
         activity { replicate (j: 3) R[]: { do A with { val == j + 4; }; } }
     }""", range(3))
     assert got == [[4, 5, 6]] * 3
+
+
+def test_a_handle_traversed_again_in_its_scope_with_a_with_is_refused():
+    """O-P1-3: `a; a with {...};` in one block is a located error; in a
+    block of its own (a new scope entry, 13.4.8) it is not."""
+    from zuspec.ir.core.xf.validate import UnsupportedConstructError
+    from .test_activity_bc_runs import _lower
+    src = """
+import std_pkg::*;
+component pss_top {
+    action A { rand bit[4] val; }
+    action T { A a; activity { a; %s } }
+}
+"""
+    with pytest.raises(UnsupportedConstructError, match="traversed again") as ei:
+        _lower(src % "a with { val == 1; };")
+    assert ei.value.loc is not None and ei.value.loc.line == 5
+    _lower(src % "{ a with { val == 1; }; }")
+    _lower(src % "a;")

@@ -455,6 +455,24 @@ offset and refuses the rest before running anything (P1-D6). Tests:
 `test_lookahead.py` (Ex 179/180/183/184, 200 seeds) and `test_scope_solve.py`
 (`with`, activity constraints, Ex 84, the unsat error).
 
+**Components are one object too.** ir-core's `xf/pss_lower/comp_tree.py`
+elaborates the tree under the root (`ScenarioModule.comp_tree`): every
+instance a slot range of one component object, numbered in pre-order, so
+`comp.sub1` is `comp` plus a static offset. bc reads and writes it with
+`LD_COMP`/`ST_COMP` relative to the frame's instance; a component function is
+inlined in the instance its call names (`comp.a.f()`, `self.sub.f()` inside
+one). `$comp_init` constructs the tree before the entry: initial values,
+`init_down` top-down, `init_up` bottom-up (Ex 281). Every action of an
+instantiated component is lowered: the root's coroutines keep simple names,
+another component's are qualified (`sub_c::S`), and `coro_key` resolves an
+export or entry given either way. A node runs in one of its candidates (the
+instances of its component type under its parent's, 9.1.5.1; none is a
+located error, Ex 51); with more than one, `comp` is a variable of its cone
+(P1-D4), steered by `with { comp == this.comp.x; }`. The engine refuses all
+of it (`ZBC_HDR_COMP_INIT`, the two ops). Spec: be-bc
+`docs/spec/components.md`. Tests: `test_component_tree.py`,
+`test_comp_choice.py`.
+
 **Enums, not strings.** `JoinSpec.kind` is a `JoinKind` and
 `DataTypeStruct.flow_kind` is a `FlowKind`; `test_flow_kind.py` holds the
 second. The SV target keeps strings in its *own* binding records and converts

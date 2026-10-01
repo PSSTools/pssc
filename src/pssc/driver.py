@@ -121,7 +121,7 @@ def translate(sources: Union[PathLike, Sequence[PathLike]],
         root = parser.link()
     except ParseException as e:
         raise _parse_error(e, prelude) from None
-    ctx = AstToIrTranslator().translate(root)
+    ctx = AstToIrTranslator().translate(root, files=parser.file_map)
     if reg_rmw == "expand":
         _reg_rmw.expand_all(ctx)
     ctx.ir_context = to_core_context(ctx)

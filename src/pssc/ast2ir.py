@@ -11,6 +11,7 @@ import enum
 import logging
 from typing import Dict, List, Optional, Any, Set, Tuple, TYPE_CHECKING
 import zuspec.ir.core as ir
+from zuspec.ir.core.base import Loc
 
 if TYPE_CHECKING:
     import pssparser.ast as pss_ast
@@ -52,6 +53,18 @@ def _ast_where(node: Any) -> str:
     except Exception:
         return ""
     return f"line {line}: " if line and line > 0 else ""
+
+
+def ast_loc(node: Any, files: Dict[int, str]) -> Optional[Loc]:
+    """An AST node's source location as an IR ``Loc``, or None if the parser
+    did not locate it."""
+    try:
+        loc = node.getLocation()
+    except Exception:
+        return None
+    if loc is None or not loc.lineno or loc.lineno <= 0:
+        return None
+    return Loc(file=files.get(loc.fileid) or None, line=loc.lineno, pos=loc.linepos)
 
 
 def ast_doc(node: Any) -> Optional[str]:
@@ -319,15 +332,20 @@ class AstToIrTranslator:
             self.logger.setLevel(logging.DEBUG)
         self._type_chain_stack: list = []  # enclosing type names during traversal
 
-    def translate(self, ast_root: pss_ast.GlobalScope) -> AstToIrContext:
+    def translate(self, ast_root: pss_ast.GlobalScope,
+                  files: Optional[Dict[int, str]] = None) -> AstToIrContext:
         """Translate the entire AST to IR.
 
         Args:
             ast_root:    Root AST node (GlobalScope)
+            files:       The parser's ``file_map`` (fileid -> path), which
+                         names the file of an IR node's location
         Returns:
             Translation context with IR and type registry
         """
         self._type_chain_stack = []
+        #: fileid -> path, for an IR node's location (``ast_loc``)
+        self._files = dict(files or {})
 
         ctx = AstToIrContext()
         ctx.symbol_root = ast_root
@@ -1668,6 +1686,9 @@ class AstToIrTranslator:
         stmt = self._translate_activity_stmt_body(ctx, node)
         if stmt is None:
             return None
+        if stmt.loc is None:
+            # Where a consumer that refuses the statement points (P1-D5).
+            stmt.loc = ast_loc(node, getattr(self, "_files", {}))
         label = self._activity_label(node)
         if label is not None:
             if isinstance(node, pss_ast.ActivityReplicate):

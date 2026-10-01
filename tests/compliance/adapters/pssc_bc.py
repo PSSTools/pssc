@@ -92,7 +92,7 @@ def _run(sources, root, seed, lines, diags):
         diags.extend(diagnostics.from_exception(e))
         return "compile_error", f"parse/link: {e}"
     try:
-        ctx = AstToIrTranslator().translate(linked)
+        ctx = AstToIrTranslator().translate(linked, files=parser.file_map)
     except Exception:
         return "compile_error", "crash in ast2ir:\n" + traceback.format_exc(limit=4)
     if ctx.errors:

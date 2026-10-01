@@ -29,7 +29,7 @@ def _lower(src: str, root: str = "pss_top::T"):
         os.close(fd)
         parser = pssc.Parser()
         parser.parse([fname])
-        ctx = AstToIrTranslator().translate(parser.link())
+        ctx = AstToIrTranslator().translate(parser.link(), files=parser.file_map)
     finally:
         os.unlink(fname)
     assert not ctx.errors, ctx.errors
@@ -108,9 +108,9 @@ def test_unresolved_target_is_an_error():
         lower_module(module, entry_action="T", solve_unconstrained=True)
 
 
-def test_handle_of_other_component_is_rejected():
-    """Actions of a sub-component are not lowered until P1: refused, with the
-    target named -- not run as coroutine 0."""
+def test_handle_of_a_sub_component_action_runs():
+    """A sub-component's action runs (P1.5): in the sub-component's one
+    instance."""
     src = """\
 import std_pkg::*;
 component sub_c { action S { exec body { message(NONE, "S"); } } }
@@ -120,7 +120,21 @@ component pss_top {
     action T { sub_c::S s; activity { s; } }
 }
 """
-    with pytest.raises(UnsupportedConstructError, match="S"):
+    assert trace(src) == ["S"]
+
+
+def test_an_action_of_a_component_not_instantiated_is_rejected():
+    """9.1.5.1: only actions of instantiated components can run -- refused,
+    with the target named, never run as coroutine 0."""
+    src = """\
+import std_pkg::*;
+component sub_c { action S { exec body { message(NONE, "S"); } } }
+component pss_top {
+    action A { exec body { message(NONE, "A"); } }
+    action T { sub_c::S s; activity { s; } }
+}
+"""
+    with pytest.raises(UnsupportedConstructError, match="sub_c::S.*not instantiated"):
         _lower(src)
 
 

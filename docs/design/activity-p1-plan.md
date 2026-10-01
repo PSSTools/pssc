@@ -1,6 +1,6 @@
 # P1 "Compound-scope solving": implementation, test and doc plan
 
-Status: **reviewed** (2026-09-30, §7); P1.0–P1.3 committed; P1.4 done (uncommitted); P1.5 next. This file
+Status: **reviewed** (2026-09-30, §7); P1.0–P1.4 committed; P1.5 done (uncommitted); P1.6 next. This file
 tracks P1 of [activity-flow-resource-bc-design.md](activity-flow-resource-bc-design.md)
 (§10); P0 is [activity-p0-plan.md](activity-p0-plan.md). Tick items as they land.
 
@@ -353,24 +353,63 @@ Each lands with its tests; the progress log (§8) records the counts.
 
 ### P1.5 Components: instance tree, `comp`, non-root actions
 
-- [ ] **Component instance tree** in ir-core (this is the first slice of P2's
-  static elaboration: instances only, no pools): paths, types, component `Obj`
-  layout (flattened, P1-D1), init blocks per instance.
-- [ ] bc: component `Obj` built and `init_down`/`init_up` run per instance in
-  LRM order before the root action; `comp.x` reads/writes and deep calls
-  (`comp.a.f()`, `ch[i].f()` with constant `i`) resolve through the frame's
-  component base. Closes the `comp.*`/`sync.channel.*` entries whose only gap
-  is the path (each re-checked; an entry that then fails differently is
-  re-listed with its next gap).
-- [ ] **Qualified coroutine keys (O5)**, moved from P1.0: key coroutines by
-  qualified name, drop the duplicate-simple-name refusal; `exports` keep
-  accepting a simple name when it is unambiguous.
-- [ ] **`comp` choice** (P1-D4): a traversal of a non-root action gets a
-  `comp` variable over its candidates; `comp ==` (S2, handle and `do` forms)
-  constrains it. Remove the root-only refusals (`lower.py:176, 236, 431,
-  445`). Closes `act.multi_comp.001`.
-- [ ] 9.1.5.1: a traversal of an action whose component is not in the
-  context's subtree is a located error (Ex 51).
+- [x] **Component instance tree** (ir-core `xf/pss_lower/comp_tree.py`;
+  `ScComponentTree`, `ScCompInstance`, `ScCompInit`): every instance under the
+  root, a slot range of ONE component object (P1-D1), a type's subtree laid out
+  the same wherever it is instantiated, base type's fields first; component
+  arrays need a constant size. Instances are numbered in pre-order, so a
+  sub-instance is its parent's number plus a static offset.
+- [x] bc: the component object is built and constructed by `$comp_init`
+  before the root action: every instance's initial values, `init_down`
+  top-down, `init_up` bottom-up (Ex 281's order). `comp.x` reads, component
+  functions reading and writing their own instance (`self.x`), and deep calls
+  (`comp.a.f()`, `self.sub.f()`, `comp.ch[1].f()`) resolve through the frame's
+  instance with static offsets: `LD_COMP`/`ST_COMP` (be-bc
+  `docs/spec/components.md`). Component inheritance: a base's fields, its
+  init blocks when the derived type has none, virtual functions. Closes
+  `comp.func.calls`, `comp.init.order`, `comp.init.solve_fn`,
+  `comp.instances`, `comp.attr.struct`. `comp.array` (computed index), the
+  three `sync.channel.*` (channel built-ins) and `types.string.match`
+  (string compare) are re-listed with their next gap.
+- [x] **Qualified coroutine keys (O5).** **Change from the draft:** keys are
+  qualified *relative to the root component*: the root's actions keep their
+  simple names (`T`), another component's are qualified (`sub_c::S`). Unique
+  either way, and a model of the root's actions alone keeps its coroutine
+  names, so be-sw (which uses them as C identifiers) and every golden are
+  unchanged. `coro_key` resolves an export or entry given as a key, a
+  qualified name, or an unambiguous simple name; an ambiguous one is an error.
+- [x] **`comp` choice** (P1-D4): a node's candidates are the instances of its
+  action's component type under its parent's instance. One: static. More: a
+  variable of its cone, in a slot past the action subtrees
+  (`ScActionNode.comp_slot`), kept among the candidates by a `COMP` constraint;
+  `SOLVE_NODE` sets the frame's instance from it. `comp == X` (handle and `do`
+  forms) is a `WITH` constraint between instances, decided at lowering when
+  both are static. The root-only refusals are gone. Closes
+  `act.multi_comp.001`. Ex 50 chooses all three instances about equally
+  (300 seeds); Ex 143's steer holds.
+- [x] 9.1.5.1: a node with no candidate is a located error (Ex 51).
+- [x] Found and fixed on the way:
+  - **activity statements had no source location**: ast2ir never set `loc`,
+    so every "located" refusal of an activity statement printed none. ast2ir
+    now sets it (file from the parser's `file_map`, passed to `translate`).
+  - **O-P1-3 was never implemented**: a handle traversed again in the same
+    scope with a `with` was accepted. Now a located error. The pass now
+    reports why an action has no tree, instead of "needs the action tree".
+  - The engine refuses an image that constructs a component tree
+    (`ZBC_HDR_COMP_INIT`, new header flag; rt-core's generated `zbc_format.h`)
+    as well as `LD_COMP`/`ST_COMP`, so an init block that only calls imports
+    is never silently skipped.
+- [ ] Deferred from P1.5:
+  - a component-array element with a computed index (`comp.ch[j]`,
+    `foreach (ch[i])` in a component function): no indexed access on bc;
+  - a constraint reading a component attribute (`v < comp.f`): refused by
+    name. Needs a pin from the component object, and a table lookup when the
+    instance is a choice;
+  - candidates are found from the action's declaring component type, so an
+    instance only a derived type of it adds is not one;
+  - `pre_solve` reading `comp` when the solve chooses the instance is a
+    run-time error (it runs before the choice);
+  - channel built-ins (`try_put`/`try_get`) and string compare.
 
 ### P1.6 Lookahead calibration and fault injection
 
@@ -408,7 +447,7 @@ SV/C (the construct-test harness). Each refusal gets a located-error test.
 | P1.2 | `test_action_tree.py` (layout, recursion refused), `test_scope_cone.py` (singletons keep `SOLVE`; cones, tags) |
 | P1.3 | `test_bc_struct_values.py`, `test_bc_attribute_paths.py` |
 | P1.4 | `test_lookahead.py` (Ex 179/180/183/184, 200 seeds; the calibration run is P1.6), `test_scope_solve.py` (`with`, activity constraints, child reads, Ex 84, labeled replicate, the unsat error), rt-eng `test_engine_activation.py` (base offset, refusals) |
-| P1.5 | `test_component_tree.py`, `test_comp_choice.py` (Ex 50 distribution over 3 instances; Ex 143 steer), `test_comp_attr_paths.py`, Ex 51 refusal |
+| P1.5 | `test_component_tree.py` (layout, Ex 281 order, initial values, inheritance, per-instance state, index refusals), `test_comp_choice.py` (Ex 50 distribution over 3 instances, Ex 143 steer, static steer, a child relative to a chosen parent, Ex 51 refusal, qualified keys); component paths are covered there and by the five corpus entries closed; rt-eng `test_engine_components.py` |
 
 ## 5. Docs
 
@@ -466,3 +505,4 @@ SV/C (the construct-test harness). Each refusal gets a located-error test.
 | 2026-10-01 | P1.3 | flattened struct layout (ir-core `layout.py`), struct values on bc, rand struct attributes, attribute initial values applied (found), `static const` folding through the linker. Closes 11 strict entries: 5 struct/bitpack + 2 const on bc, 2 const each on op-model-py/sv. Unit 1980 passed / 4 (docs); progseq 8 pre-existing, goldens identical; compliance 256 / 50 xfailed; ir-core 88, be-bc 310; be-sw unchanged from baseline |
 | 2026-10-01 | P1.2 | `ScActionTree` per export (nodes, scopes, sites), cones (`ScScopeProblem`, TYPE/ACTIVITY/WITH), `ScInvoke.child_base`, `Field.type_qname`; S1 lifted for a constant index. Solve-node choice moved to run time (P1.4), see P1.2. Unit 2002 passed / 4 (docs); progseq 8 pre-existing, goldens identical; compliance 256 / 50 xfailed; ir-core 88, be-bc 310; be-sw unchanged from baseline |
 | 2026-10-01 | P1.4 | one-object activation (`INSTR_F_NODE` base offsets in both engines), `SOLVE_NODE` cone solve with lookahead (per-enabled-set problem + `pin`, no enable literals), `SCOPE_ENTER` resets, `LOOP_BODY_CERTAIN`, traversal initializers (`ScInvoke.init`, `INSTR_F_INITED`), labeled `replicate` unrolled, child reads through handles; rt-eng refuses the P1 ops at load. Found, not fixed: a constraint's `x + 1` wraps at the operand width in bc's own SOLVE too. Unit 2018 passed / 4 (docs); progseq 8 pre-existing; compliance 256 / 50 xfailed (no entry closes: none waits only on P1.4); ir-core 89, be-bc 310, rt-eng 102; be-sw unchanged from baseline |
+| 2026-10-01 | P1.5 | component tree as one object (ir-core `comp_tree.py`), `$comp_init` construction (Ex 281 order), `LD_COMP`/`ST_COMP`, component functions in their instance, root-relative coroutine keys (`coro_key`), `comp` choice as a cone variable with `comp ==` steering, Ex 51 refusal; found and fixed: activity statements had no location, O-P1-3 not implemented. Closes 6 strict bc entries (`act.multi_comp` + 5 `comp.*`); 5 re-listed with their next gap. Unit 2040 passed / 4 (docs); progseq 8 pre-existing, goldens identical; compliance 262 / 44 xfailed; ir-core 89, be-bc 310, rt-eng 105, rt-core 38; be-sw unchanged from baseline |
