@@ -60,6 +60,15 @@ CASES = {
         Refused("ActivityConstraintForall")),
     "ActivityDoWhile": (lambda: A.ActivityDoWhile(condition=_c(0), body=[_b()]),
                         LOWERS),
+    "ActivityFieldDecl": (
+        lambda: A.ActivityFieldDecl(
+            field=ir.Field(name="bb", datatype=ir.DataTypeRef(ref_name="pss_top::B")),
+            type_qname="pss_top::B"),
+        LOWERS),
+    "ActivityFieldDecl[data]": (
+        lambda: A.ActivityFieldDecl(
+            field=ir.Field(name="n", datatype=ir.DataTypeInt(bits=4, signed=False))),
+        Refused("data field 'n' declared in an activity block")),
     "ActivityFill": (lambda: A.ActivityFill(), Refused("ActivityFill")),
     "ActivityForeach": (
         lambda: A.ActivityForeach(iterator="v", collection=_self("vals"),
@@ -110,6 +119,10 @@ CASES = {
     "ActivitySequenceBlock": (lambda: A.ActivitySequenceBlock(stmts=[_b()]), LOWERS),
     "ActivitySuper": (lambda: A.ActivitySuper(), Refused("ActivitySuper")),
     "ActivityTraversal": (lambda: A.ActivityTraversal(handle="b1"), LOWERS),
+    "ActivityTraversal[initializers]": (
+        lambda: A.ActivityTraversal(handle="b1", initializers=[
+            (ir.ExprAttribute(value=ir.TypeExprRefTraversed(), attr="x"), _c(1))]),
+        Refused("traversal initializers")),
     "ActivityWhileDo": (lambda: A.ActivityWhileDo(condition=_c(0), body=[_b()]),
                         Refused("ActivityWhileDo")),
 }

@@ -412,6 +412,12 @@ statements too (`test_constraint_stmt_registry.py`): one with no IR form yet
 it (`collect_solve_problem` does); the op-model targets, which never solve,
 are unaffected.
 
+**Whose name it is comes from the linker.** In a traversal's `with` block
+and on the left of an initializer, a name the linker found in the traversed
+action (an `ElemKind_Inline` step in its path) is rooted at
+`ir.TypeExprRefTraversed`, never `self` (LRM 13.1.4); `this.x` is `self.x`.
+A traversal carries its handle declaration's initializers, then its own.
+
 **Enums, not strings.** `JoinSpec.kind` is a `JoinKind` and
 `DataTypeStruct.flow_kind` is a `FlowKind`; `test_flow_kind.py` holds the
 second. The SV target keeps strings in its *own* binding records and converts

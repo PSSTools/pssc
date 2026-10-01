@@ -187,6 +187,10 @@ class AstToIrContext:
         # unaffected. None outside a constraint block, where such a
         # statement is a translation error instead.
         self.constraint_ledger: Optional[list] = None
+        # While a traversal's `with` block or initializers are translated: the
+        # root a name the linker resolved in the traversed action is rooted at
+        # (``ir.TypeExprRefTraversed``). None elsewhere.
+        self.inline_root: Optional[ir.Expr] = None
         # How many generic constraint references have been instantiated so far.
         # Each reference gets the next number, which is what makes two
         # references to one declaration distinguishable after their bodies have
@@ -1498,20 +1502,38 @@ class AstToIrTranslator:
         11.8.2, pssparser X-8). An action handle declared there is not a
         statement: a traversal of it resolves to its type through the
         linker (``type_qname``). An ``action`` data field declared in a
-        block is refused until P1 gives activity-local data a home.
+        block is an ``ActivityFieldDecl`` too: the scope owns it.
         """
         result: List[ir.ActivityStmt] = []
         for child in children:
-            if child is None or isinstance(child, pss_ast.ActionHandleField):
+            if child is None:
                 continue
-            if isinstance(child, pss_ast.Field):
-                ctx.add_error(f"{_ast_where(child)}data fields declared in an "
-                              f"activity block are not supported yet (P1)")
+            if isinstance(child, (pss_ast.ActionHandleField, pss_ast.Field)):
+                decl = self._activity_field_decl(ctx, child)
+                if decl is not None:
+                    result.append(decl)
                 continue
             stmt = self._translate_activity_stmt(ctx, child)
             if stmt is not None:
                 result.append(stmt)
         return result
+
+    def _activity_field_decl(self, ctx, child) -> Optional['ir.ActivityFieldDecl']:
+        """A handle (``B b2;``) or a data field (``action bit[4] n;``)
+        declared in an activity block (LRM 11.2.1)."""
+        if isinstance(child, pss_ast.Field):
+            field = self._translate_field(ctx, child)
+            return ir.ActivityFieldDecl(field=field) if field is not None else None
+        name_node = child.getName()
+        name = name_node.getId() if hasattr(name_node, "getId") else str(name_node)
+        datatype = self._translate_data_type(ctx, child.getType())
+        if datatype is None:
+            ctx.add_error(f"{_ast_where(child)}the type of action handle "
+                          f"'{name}' could not be translated")
+            return None
+        return ir.ActivityFieldDecl(
+            field=ir.Field(name=name, datatype=datatype),
+            type_qname=self._traversed_type_qname(ctx, child))
 
     def _activity_body(self, ctx: 'AstToIrContext', body) -> List['ir.ActivityStmt']:
         """A compound statement's body as a statement list.
@@ -1553,9 +1575,10 @@ class AstToIrTranslator:
         label = self._activity_label(node)
         if label is not None:
             if isinstance(node, pss_ast.ActivityReplicate):
-                # ActivityReplicate.label is the `R[]:` iteration label.
-                ctx.add_error(f"{_ast_where(node)}a labeled replicate "
-                              f"statement is not supported yet (P1)")
+                # `L: replicate ...`: ActivityReplicate.label already holds
+                # the `R[]:` iteration label, so the statement's has no slot.
+                ctx.add_error(f"{_ast_where(node)}a label on a replicate "
+                              f"statement is not supported yet")
                 return None
             stmt.label = label
         return stmt
@@ -1718,8 +1741,6 @@ class AstToIrTranslator:
         target = node.getTarget()
         hier_id = target.getHier_id()
         where = _ast_where(node)
-        if not self._check_no_initializers(ctx, node):
-            return None
         parts: List[str] = []
         for i in range(hier_id.numElems()):
             elem = hier_id.getElem(i)
@@ -1746,11 +1767,14 @@ class AstToIrTranslator:
         # `comp == X` steers the traversal (LRM 13.4.5); it is taken out the
         # same way as for `do T with`, so no consumer reads it as data.
         comp_expr, inline_constraints = self._extract_comp_expr(inline_constraints)
+        decl = self._symbol_scope_at(ctx, target.getTarget(), depth=0)
+        # The declaration's initializers first, then the traversal's (11.3.1).
+        initializers = self._translate_initializers(ctx, decl) \
+            + self._translate_initializers(ctx, node)
         return ir.ActivityTraversal(
             handle=handle, index=index, inline_constraints=inline_constraints,
-            comp_expr=comp_expr,
-            type_qname=self._traversed_type_qname(
-                ctx, self._symbol_scope_at(ctx, target.getTarget(), depth=0)))
+            comp_expr=comp_expr, initializers=initializers,
+            type_qname=self._traversed_type_qname(ctx, decl))
 
     def _traversed_type_qname(self, ctx: AstToIrContext, decl) -> Optional[str]:
         """The qualified action type a traversal reference was LINKED to.
@@ -1790,8 +1814,6 @@ class AstToIrTranslator:
         node: 'pss_ast.ActivityActionTypeTraversal',
     ) -> 'ir.ActivityAnonTraversal':
         """Extract action type name and optional label; build ActivityAnonTraversal."""
-        if not self._check_no_initializers(ctx, node):
-            return None
         target = node.getTarget()
         type_id = target.getType_id()
         parts: List[str] = []
@@ -1824,18 +1846,40 @@ class AstToIrTranslator:
             label=label,
             inline_constraints=filtered,
             comp_expr=comp_expr,
+            initializers=self._translate_initializers(ctx, node),
         )
 
-    @staticmethod
-    def _check_no_initializers(ctx, node) -> bool:
-        """``do A {.x = 1};`` / ``a1 {.x = 2};`` (LRM 11.3.1) set a field
-        before the solve. Nothing below carries them yet, so they are a
-        located error rather than dropped."""
-        if node.numInitializers() == 0:
-            return True
-        ctx.add_error(f"{_ast_where(node)}traversal initializers are not "
-                      f"supported yet (P1)")
-        return False
+    def _translate_initializers(self, ctx, node) -> list:
+        """``{.x = 1, .s.f = q}`` on *node* -- a traversal, or the handle
+        declaration a traversal names (LRM 11.3.1) -- as ``(target, value)``
+        pairs. The target names a member of the traversed action, so it is
+        rooted at ``TypeExprRefTraversed``; the value resolves wherever the
+        linker resolved it."""
+        if node is None or not hasattr(node, "numInitializers"):
+            return []
+        out = []
+        for i in range(node.numInitializers()):
+            init = node.getInitializer(i)
+            target = self._in_traversed(ctx, init.getPath())
+            value = self._in_traversed(ctx, init.getValue())
+            root = target
+            while isinstance(root, (ir.ExprAttribute, ir.ExprSubscript)):
+                root = root.value
+            if not isinstance(root, ir.TypeExprRefTraversed) or value is None:
+                ctx.add_error(f"{_ast_where(init) or _ast_where(node)}an "
+                              f"initializer could not be translated")
+                continue
+            out.append((target, value))
+        return out
+
+    def _in_traversed(self, ctx, expr_node):
+        """*expr_node* translated with names the linker resolved in the
+        traversed action rooted at ``TypeExprRefTraversed`` (13.1.4)."""
+        outer, ctx.inline_root = ctx.inline_root, ir.TypeExprRefTraversed()
+        try:
+            return self._translate_expression(ctx, expr_node)
+        finally:
+            ctx.inline_root = outer
 
     @staticmethod
     def _constraint_exprs(ctx, stmts, where: str, what: str) -> list:
@@ -1863,6 +1907,13 @@ class AstToIrTranslator:
         with_c = node.getWith_c() if hasattr(node, 'getWith_c') else None
         if not with_c:
             return []
+        outer, ctx.inline_root = ctx.inline_root, ir.TypeExprRefTraversed()
+        try:
+            return self._inline_constraint_exprs(ctx, node, with_c)
+        finally:
+            ctx.inline_root = outer
+
+    def _inline_constraint_exprs(self, ctx, node, with_c) -> list:
         results = []
         # Block form: constraint scope containing multiple items
         if hasattr(with_c, 'numConstraints'):
@@ -3490,6 +3541,8 @@ class AstToIrTranslator:
             datatype=field_type,
             kind=ir.FieldKind.Field,
             rand_kind=rand_kind,
+            # `action bit[4] n;` (13.4.1, Ex 173): randomized when traversed.
+            action_qualified=bool(attr & pss_ast.FieldAttr.Action),
             initial_value=initial_value,
             doc=field_doc,
             doc_trailing=field_doc_trailing,
@@ -4297,6 +4350,24 @@ class AstToIrTranslator:
         if isinstance(expr, pss_ast.ExprRefPathSuper):
             return self._translate_ref_chain(ctx, expr, elems,
                                              ir.TypeExprRefSuper())
+
+        # The linker's path says where the name was found, and so whose it is.
+        # `this` (13.1.4) is the enclosing type, written as the path's first
+        # name: `this.q` is `self.q`. A name found in a traversed action
+        # (ElemKind_Inline: a `with` block, an initializer) is that action's,
+        # not `self`'s -- `b1 with { x < px; }` reads `b1.x` and `self.px`.
+        ref = expr.getTarget() if hasattr(expr, 'getTarget') else None
+        kinds = [pe.kind for pe in ref.getPathList()] if ref is not None else []
+        K = pss_ast.SymbolRefPathElemKind
+        if kinds and kinds[-1] == K.ElemKind_This:
+            return self._translate_ref_chain(ctx, expr, elems[1:],
+                                             ir.TypeExprRefSelf())
+        if K.ElemKind_Inline in kinds:
+            if ctx.inline_root is None:
+                ctx.add_error(f"{_ast_where(expr)}a reference into a "
+                              f"randomized target is not supported here")
+                return ir.ExprRefUnresolved(name="unknown")
+            return self._translate_ref_chain(ctx, expr, elems, ctx.inline_root)
 
         # Check if the first element is a known local variable (e.g. foreach iterator 'p').
         # Single-element: return ExprRefLocal('p').

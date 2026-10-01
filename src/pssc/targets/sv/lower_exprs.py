@@ -125,6 +125,11 @@ def lower_expr(ctx: LoweringContext, expr: ir.Expr) -> str:
     if isinstance(expr, ir.TypeExprRefSelf):
         return "this"
 
+    if isinstance(expr, ir.TypeExprRefTraversed):
+        # Only in a traversal's `randomize() with`, where SV, like PSS
+        # (13.1.4), resolves a bare name in the randomized object first.
+        return ""
+
     if isinstance(expr, ir.ExprRefField):
         base = lower_expr(ctx, expr.base)
         if base == "" or base == "self" or base == "this":

@@ -1,6 +1,6 @@
 # P1 "Compound-scope solving": implementation, test and doc plan
 
-Status: **reviewed** (2026-09-30, §7); P1.0 done (uncommitted), P1.1 next. This file
+Status: **reviewed** (2026-09-30, §7); P1.0 committed, P1.1 done (uncommitted), P1.2 next. This file
 tracks P1 of [activity-flow-resource-bc-design.md](activity-flow-resource-bc-design.md)
 (§10); P0 is [activity-p0-plan.md](activity-p0-plan.md). Tick items as they land.
 
@@ -201,27 +201,41 @@ Each lands with its tests; the progress log (§8) records the counts.
 
 ### P1.1 Front end: scope of names in `with`; initializers; activity data
 
-- [ ] **S5**: in an inline `with`, a name the linker resolved to the
-  traversed action's field becomes `ExprAttribute(<handle ref>, name)` — the
-  same shape a parent constraint `b1.x` has — and a parent name stays
-  `self.name`. Read the linker's resolution (`_linked_type_name`-style), never
-  re-resolve (fix-at-source rule). For `do T with`, the "handle" is the
-  anonymous site's node (P1.2 names it `__site<k>`). `this.x` stays parent.
-- [ ] **Traversal initializers (O3)**: IR `initializers: List[(field, Expr)]`
-  on both traversal kinds; lowered in P1.4 as assignments before `pre_solve`
-  (11.3.1 b steps i–ii). Remove the P0 refusal.
-- [ ] **Activity-block data fields** (`action int n;` in an activity block):
-  a node-owned slot of the enclosing activation. Remove the P0 refusal.
-- [ ] **Labeled `replicate` (O4)**: `L[k].h` names per-iteration nodes; with a
-  constant count they are N nodes; otherwise refused (P1-D1).
-- [ ] Registry tests updated: the P0 "P1" refusals are now rows that
-  translate.
+- [x] **S5**: a name the linker resolved in the traversed action (its path
+  has an `ElemKind_Inline` step) is rooted at a new ir-core node,
+  `TypeExprRefTraversed`; a name of the enclosing scope stays `self.name`.
+  *Changed from the draft* (`ExprAttribute(<handle ref>, name)`): one root
+  serves both traversal forms, since `do T with` has no handle to name until
+  P1.2 numbers its site, and P1.2 binds the root to the node either way.
+  The linker's resolution decides, never a re-resolution (fix-at-source rule).
+- [x] **`this`** (found while doing S5): `this.q` translated as
+  `self.this.q` everywhere, not only in a `with`. A path ending in
+  `ElemKind_This` now roots at `self`.
+- [x] **Traversal initializers (O3)**: `initializers: List[(target, value)]`
+  on both traversal kinds, target rooted at `TypeExprRefTraversed`. A handle
+  traversal carries its DECLARATION's initializers first (11.3.1 b i-ii) —
+  on a handle declared in an action body they were silently dropped. The
+  ast2ir refusal is gone; `PSSToScenarioPass` refuses until P1.4; SV warns.
+- [x] **Activity-block declarations**: a handle or data field declared in an
+  activity block is an `ActivityFieldDecl` (a handle used to be skipped, a
+  data field refused). The pass lowers a handle declaration to nothing (its
+  traversal names its type) and refuses a data field until P1.4. A field
+  declared `action` (Ex 173) now has `Field.action_qualified`, in an action
+  body too, where it read as a plain non-rand field.
+- [x] **Labeled `replicate` (O4), front-end part**: already carried
+  (`ActivityReplicate.label` is the `R[]:` label, `R[0].b.x` translates as
+  `self.R[0].b.x`). The N nodes per iteration are action-tree work: moved to
+  P1.2. A *statement* label on a replicate (`L: replicate ...`) stays a
+  located error: `ActivityReplicate.label` shadows the base `label`.
+- [x] Registry tests updated (`test_activity_ir_registry.py` rows for
+  `ActivityFieldDecl` and initializers); `test_activity_names.py` (17).
 
 ### P1.2 ir-core: the action tree and the cone
 
 - [ ] **Action tree** (`xf/pss_lower/action_tree.py`): from an exported
   action, the static tree of nodes (handle fields, anonymous sites, labeled
-  replicate iterations, activity data), each with its type, qualified path
+  replicate iterations -- N nodes for a constant count, else refused (O4) --
+  `ActivityFieldDecl`s, activity data), each with its type, qualified path
   (`s1.a`), slot range in the activation `Obj`, and the activity scope that
   owns it (for handle reset, 13.4.8). Recursion is a located error.
 - [ ] **Constraint collection over the tree**: every type constraint of every
@@ -328,7 +342,7 @@ SV/C (the construct-test harness). Each refusal gets a located-error test.
 | Item | Tests |
 |---|---|
 | P1.0 | `test_activity_silent_drops.py` (S1–S4 each refused or translated); `test_bc_yield.py`; `test_coroutine_qualified_keys.py`; dv-solve `test_pin.py` |
-| P1.1 | `test_with_scoping.py` (child vs parent vs `this.`), `test_traversal_initializers.py`, registry rows |
+| P1.1 | `test_activity_names.py` (child vs parent vs `this.`, initializers, declarations), registry rows |
 | P1.2 | `test_action_tree.py` (layout, recursion refused), `test_scope_cone.py` (singletons keep `SOLVE`; cones, tags) |
 | P1.3 | `test_bc_struct_values.py`, `test_bc_attribute_paths.py` |
 | P1.4 | `test_lookahead_ex179_183_184.py` (200 seeds, calibration), `test_handle_reset.py` (Ex 180), `test_with_semantics.py`, `test_activity_constraint.py`, `test_scope_unsat_error.py`, rt-eng refusal test |
@@ -386,3 +400,4 @@ SV/C (the construct-test harness). Each refusal gets a located-error test.
 |---|---|---|
 | 2026-09-30 | plan drafted | from three code surveys (ir-core pass, bc solve/INVOKE, LRM + front end + corpus) |
 | 2026-09-30 | P1.0 | S1–S4, constraint-statement registry + ledger, `yield`, `SolveCtx.pin`; O5 moved to P1.5. Unit 1931 passed / 4 (docs); progseq 8 pre-existing; compliance bc 165 / 42 xfailed (`proc.yield.single.001` closed), op-model-sv 80 / 19; sim 13 pre-existing; ir-core 83, be-bc 310, dv-solve 790 (ex. scipy-only `test_dist_quality.py`) |
+| 2026-10-01 | P1.1 | `TypeExprRefTraversed` (S5), `this` fixed, initializers carried (decl first), `ActivityFieldDecl`, `Field.action_qualified`; O4 remainder to P1.2. Unit 1952 passed / 4 (docs); progseq 8 pre-existing; compliance bc 165 / 42, op-model-sv 80 / 19; ir-core 83, be-bc 310; be-sw unchanged from baseline |

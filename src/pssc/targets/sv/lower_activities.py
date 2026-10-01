@@ -387,6 +387,13 @@ def _lower_activity_stmt(
         lines.append(trace_schedule_exit())
         return lines
 
+    if isinstance(stmt, ir.ActivityFieldDecl):
+        if stmt.type_qname is not None:
+            return []  # a handle: its traversal names its type
+        ctx.warn(f"data field '{stmt.field.name}' declared in an activity "
+                 f"block is not lowered by this target", "ActivityFieldDecl")
+        return [f"// unsupported activity: data field {stmt.field.name} (not declared)"]
+
     if isinstance(stmt, ir.ActivityBind):
         # When flow context is active, bindings are handled by traversal wiring
         if fctx is not None:
@@ -468,12 +475,15 @@ def _lower_traversal(
 
 def _warn_unlowered_traversal_parts(ctx: LoweringContext, trav, what: str) -> None:
     """Warn about what a traversal carries that this target does not lower:
-    an array element (`h[i]` runs as `h`) and a `comp == X` steer."""
+    an array element (`h[i]` runs as `h`), a `comp == X` steer and
+    initializers."""
     if getattr(trav, "index", None) is not None:
         ctx.warn(f"traversal of an element of '{what}' runs the whole handle; "
                  f"the index is not lowered", what)
     if getattr(trav, "comp_expr", None) is not None:
         ctx.warn(f"'comp ==' on the traversal of '{what}' is not lowered", what)
+    if getattr(trav, "initializers", None):
+        ctx.warn(f"initializers on the traversal of '{what}' are not lowered", what)
 
 
 def _lower_anon_traversal(

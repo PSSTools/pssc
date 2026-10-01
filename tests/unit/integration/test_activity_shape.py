@@ -131,11 +131,12 @@ def test_indexed_handle_keeps_index():
     assert s.type_qname == "pss_top::A"
 
 
-@pytest.mark.parametrize("body", ["do A {.x = 1};", "a1 {.x = 2};"])
-def test_initializer_is_a_located_error(body):
-    errs = _errors(body)
-    assert any("traversal initializers are not supported" in e and "line 12" in e
-               for e in errs), errs
+@pytest.mark.parametrize("body,cls", [("do A {.x = 1};", A.ActivityAnonTraversal),
+                                      ("a1 {.x = 1};", A.ActivityTraversal)])
+def test_initializer_is_carried(body, cls):
+    """It was a located error in P0; P1.1 carries it (test_activity_names.py)."""
+    (target, value), = _one(body, cls).initializers
+    assert target.attr == "x" and value.value == 1
 
 
 # --- F7: join specs --------------------------------------------------------
@@ -203,11 +204,13 @@ def test_symbol_call_is_a_located_error():
                for e in errs), errs
 
 
-def test_block_handle_declaration_is_not_a_statement():
-    """A handle declared in a block (LRM 11.8.2, pssparser X-8) is a
-    declaration: it neither becomes a statement nor is an error, and a
-    traversal of it resolves to its type."""
+def test_block_handle_declaration_is_a_declaration():
+    """A handle declared in a block (LRM 11.8.2, pssparser X-8) is an
+    ActivityFieldDecl, owned by the block, and a traversal of it resolves
+    to its type."""
     s = _one("L1: sequence { B bb; bb; }", A.ActivitySequenceBlock)
-    assert len(s.stmts) == 1
-    assert isinstance(s.stmts[0], A.ActivityTraversal)
-    assert s.stmts[0].type_qname == "pss_top::B"
+    decl, trav = s.stmts
+    assert isinstance(decl, A.ActivityFieldDecl) and decl.field.name == "bb"
+    assert decl.type_qname == "pss_top::B"
+    assert isinstance(trav, A.ActivityTraversal)
+    assert trav.type_qname == "pss_top::B"
