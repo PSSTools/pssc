@@ -418,6 +418,27 @@ action (an `ElemKind_Inline` step in its path) is rooted at
 `ir.TypeExprRefTraversed`, never `self` (LRM 13.1.4); `this.x` is `self.x`.
 A traversal carries its handle declaration's initializers, then its own.
 
+**A slot means one thing everywhere.** ir-core's `xf/pss_lower/layout.py`
+lays out an action object: a plain-data struct is one slot per scalar leaf,
+base fields first, named by dotted path (`s.csr.eol`). `ScField`, the solve
+problem's `ScSolveVar.slot` and bc's struct locals all take it from there; do
+not count slots anywhere else. bc moves a struct leaf by leaf (`StructT` in a
+`_Place`) and never holds one in a register. An attribute's initial value is
+the coroutine's first block, `ScExecBlock(kind="init")`. A `static const`
+reference folds from its declaration, found through the linker
+(`_linked_static_const`), never by name alone
+(`test_bc_struct_values.py`, `test_bc_attribute_paths.py`).
+
+**An activation is one object; its actions are nodes.** The scenario pass
+builds an `ScActionTree` per export (`xf/pss_lower/action_tree.py`): every
+handle, anonymous site and labeled-replicate instance has a slot range, its
+type's layout followed by its children's subtrees, so `ScInvoke.child_base`
+is static per (type, site). Constraints that tie nodes -- a parent's over
+`b1.x`, a `with`, an activity `constraint` -- are resolved to slots and
+grouped into cones (`ScScopeProblem`); a node tied to nothing keeps its own
+`ScSolveProblem` (`test_action_tree.py`, `test_scope_cone.py`). Nothing
+solves a cone until P1.4.
+
 **Enums, not strings.** `JoinSpec.kind` is a `JoinKind` and
 `DataTypeStruct.flow_kind` is a `FlowKind`; `test_flow_kind.py` holds the
 second. The SV target keeps strings in its *own* binding records and converts

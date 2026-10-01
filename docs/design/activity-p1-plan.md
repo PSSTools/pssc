@@ -1,6 +1,6 @@
 # P1 "Compound-scope solving": implementation, test and doc plan
 
-Status: **reviewed** (2026-09-30, §7); P1.0 committed, P1.1 done (uncommitted), P1.2 next. This file
+Status: **reviewed** (2026-09-30, §7); P1.0, P1.1 committed; P1.2, P1.3 done (uncommitted); P1.4 next. This file
 tracks P1 of [activity-flow-resource-bc-design.md](activity-flow-resource-bc-design.md)
 (§10); P0 is [activity-p0-plan.md](activity-p0-plan.md). Tick items as they land.
 
@@ -232,40 +232,76 @@ Each lands with its tests; the progress log (§8) records the counts.
 
 ### P1.2 ir-core: the action tree and the cone
 
-- [ ] **Action tree** (`xf/pss_lower/action_tree.py`): from an exported
-  action, the static tree of nodes (handle fields, anonymous sites, labeled
-  replicate iterations -- N nodes for a constant count, else refused (O4) --
-  `ActivityFieldDecl`s, activity data), each with its type, qualified path
-  (`s1.a`), slot range in the activation `Obj`, and the activity scope that
-  owns it (for handle reset, 13.4.8). Recursion is a located error.
-- [ ] **Constraint collection over the tree**: every type constraint of every
-  node, parent member constraints (`b1.x < b2.x`), inline `with` (tagged with
-  its traversal site), activity constraints (tagged with their scope),
-  rewritten from `ExprAttribute` paths to (node, slot) variables. Non-rand
-  fields a constraint reads become variables that are **pinned** at solve time
-  from the `Obj` (fixes "not a declared rand var").
-- [ ] **Static cones**: connected components of the node/constraint graph.
-  A singleton cone keeps today's `ScSolveProblem` (P1-D3). A larger cone gets a
-  `ScScopeProblem` (new IR node, docstring citing 13.4.9/13.4.10): its
-  variables as (node, slot), its constraints each tagged with the structure
-  condition under which it is in force (always / on entry to scope S / at
-  traversal site T only).
-- [ ] `ScInvoke` gains `node` (the child's node id → base offset); the
-  traversal of a node in a connected cone lowers to
-  `SOLVE_NODE(problem, node)` inside the child coroutine in place of `SOLVE`.
-- [ ] Serializer round-trip and `test_activity_ir_registry.py` rows for the new
-  nodes.
+- [x] **Action tree** (`xf/pss_lower/action_tree.py`; IR `ScActionTree`,
+  `ScActionNode`, `ScActivityScope`, `ScTraversalSite`): from an exported
+  action, every handle attribute (each element of a handle array), each
+  activity-block handle (`ActivityFieldDecl`), each anonymous site, and each
+  iteration's instance under a labeled `replicate` (constant count, else
+  refused, O4), recursively. A node owns its type's layout
+  (`layout.object_layout`); its children's subtrees follow in declaration
+  order, so a type's subtree is the same wherever it sits. Each node records
+  the scope that resets it (13.4.8): its parent's ACTIVITY scope for an
+  attribute handle, its block for a block handle. A site in a loop is ONE
+  node. Recursion is a located error naming the chain.
+  `ScenarioModule.trees[export]` holds one per export.
+- [x] **Constraint collection over the tree**: each node type's constraints
+  (and its struct attributes'), activity constraints (tagged with their
+  scope), inline `with` (tagged with its site; `TypeExprRefTraversed` is the
+  site's target), resolved to absolute slots through handle paths
+  (`s1.a.val`, `arr[1].s.f`). A non-rand slot a constraint reads is a
+  variable with `rand=False`, pinned at solve time. A reference the tree
+  cannot resolve (`comp.x`, until P1.5) stays as written for bc to refuse.
+- [x] **Static cones** (`ScScopeProblem`, `ScScopeVar`,
+  `ScScopeConstraint` with `ScopeConstraintKind` TYPE / ACTIVITY / WITH):
+  connected components of nodes tied by constraints. A node tied to no other,
+  with only its type's constraints, is in no cone and keeps its
+  `ScSolveProblem` (P1-D3). A `with` makes a cone even of one node: it holds
+  at that traversal only.
+- [x] `ScInvoke.child_base` (the plan said `node`): the child's subtree offset
+  from the invoking action's base, static per (type, site). **Change from the
+  draft:** a coroutine is per action TYPE, and one type can be a singleton
+  node in one place and a cone member in another, so "SOLVE_NODE in place of
+  SOLVE" cannot be decided per coroutine. P1.4's solve looks the frame's node
+  up in the tree's cones at run time instead; the type's `ScSolveProblem`
+  stays as the singleton path.
+- [x] Side effects: `Field.type_qname` (the linker's name for a field's
+  declared type; a handle field's `DataTypeRef` names it as written). P1.0's
+  S1 refusal is lifted for a CONSTANT index (`bs[1]` has a node); a computed
+  index is still refused. A labeled `replicate` is still refused by the pass
+  (P1.4 unrolls it), with the O4 message when its count is not constant.
+- [x] No new activity IR node, so no registry row; the scenario dialect has no
+  serializer, so there is nothing to round-trip.
 
 ### P1.3 bc: flattened structs and attribute paths (independent of P1.2)
 
-- [ ] `lower/types.py`: `DataTypeStruct` → a flattened layout (slot map by
-  field path), copy/param/return as N moves. Closes `types.struct.*` and
-  `types.bitpack.001`.
-- [ ] `_resolve_name`/`_store`: `ExprAttribute` chains over self, struct
-  fields and (after P1.4) child nodes resolve to slots; package constants
-  (`cfg_pkg::X`) fold at lowering. Closes `types.const.package.001` and the
-  `proc.compile_if.001` entry if that is its only gap.
-- [ ] Constraint lowering accepts the same resolved paths.
+- [x] **One layout** (`xf/pss_lower/layout.py`, ir-core): a plain-data
+  struct is one slot per scalar leaf, base struct's fields first, named by its
+  dotted path (`s.csr.eol`). `ScField` is now one per slot; the solve
+  problem, the scenario pass and bc's locals all take slots from it. An
+  action handle, flow reference or array stays one opaque slot, so a model
+  without struct attributes keeps its exact slots (and bytecode).
+- [x] bc (`lower/types.py`, `lower/procedural.py`): a struct value is a
+  `StructT` held in a `_Place` (one location per leaf), never a register:
+  locals with their fields' initial values, deep copy, `==`/`!=` field by
+  field (7.8), a struct parameter as a handle to the caller's instance
+  (20.3.2), struct return. A struct where a scalar is needed is an error.
+  Closes `types.struct.{copy,fields,param,return}.001`, `types.bitpack.001`.
+- [x] Solve: a rand struct attribute is one variable per rand leaf (it was ONE
+  32-bit variable), under its type's constraints and its bases', with `self`
+  meaning the attribute; `self.s.f` paths resolve to leaf slots. A struct's
+  `pre_solve`/`post_solve` is refused (nothing runs it yet).
+- [x] **Found and fixed: attribute initial values were never applied** on bc
+  (`bit[4] g = 3;` read 0). The pass now emits them as the object's first
+  block, `ScExecBlock(kind="init")`, a struct field's initializer rooted at
+  its attribute (`layout.prefix_self`).
+- [x] Constants (ast2ir): a `static const` folds from an expression
+  initializer and from `true`/`false`, and a reference follows the linker's
+  target to its declaration (`_linked_static_const`), so a component's
+  `static const` folds too. They used to become `self.cfg_pkg.X`. Closes
+  `types.const.package.001` and `proc.compile_if.001` on bc, op-model-py and
+  op-model-sv.
+- [x] Constraint lowering accepts the same resolved paths (they arrive as
+  `ExprRefField` slots).
 
 ### P1.4 bc: activations, base offsets, the scope solve
 
@@ -401,3 +437,5 @@ SV/C (the construct-test harness). Each refusal gets a located-error test.
 | 2026-09-30 | plan drafted | from three code surveys (ir-core pass, bc solve/INVOKE, LRM + front end + corpus) |
 | 2026-09-30 | P1.0 | S1–S4, constraint-statement registry + ledger, `yield`, `SolveCtx.pin`; O5 moved to P1.5. Unit 1931 passed / 4 (docs); progseq 8 pre-existing; compliance bc 165 / 42 xfailed (`proc.yield.single.001` closed), op-model-sv 80 / 19; sim 13 pre-existing; ir-core 83, be-bc 310, dv-solve 790 (ex. scipy-only `test_dist_quality.py`) |
 | 2026-10-01 | P1.1 | `TypeExprRefTraversed` (S5), `this` fixed, initializers carried (decl first), `ActivityFieldDecl`, `Field.action_qualified`; O4 remainder to P1.2. Unit 1952 passed / 4 (docs); progseq 8 pre-existing; compliance bc 165 / 42, op-model-sv 80 / 19; ir-core 83, be-bc 310; be-sw unchanged from baseline |
+| 2026-10-01 | P1.3 | flattened struct layout (ir-core `layout.py`), struct values on bc, rand struct attributes, attribute initial values applied (found), `static const` folding through the linker. Closes 11 strict entries: 5 struct/bitpack + 2 const on bc, 2 const each on op-model-py/sv. Unit 1980 passed / 4 (docs); progseq 8 pre-existing, goldens identical; compliance 256 / 50 xfailed; ir-core 88, be-bc 310; be-sw unchanged from baseline |
+| 2026-10-01 | P1.2 | `ScActionTree` per export (nodes, scopes, sites), cones (`ScScopeProblem`, TYPE/ACTIVITY/WITH), `ScInvoke.child_base`, `Field.type_qname`; S1 lifted for a constant index. Solve-node choice moved to run time (P1.4), see P1.2. Unit 2002 passed / 4 (docs); progseq 8 pre-existing, goldens identical; compliance 256 / 50 xfailed; ir-core 88, be-bc 310; be-sw unchanged from baseline |

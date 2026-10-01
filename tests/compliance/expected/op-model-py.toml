@@ -17,10 +17,6 @@ reason = "not an operation-model entry: the root action has an activity (export_
 verdict = "UNSUPPORTED"
 reason = "not an operation-model entry: the root action has an activity (export_action.py)"
 
-[expected."proc.compile_if.001"]
-verdict = "UNSUPPORTED"
-reason = "op-model-py gap: message() argument typing (expr_types.py) does not resolve a package constant, so %n cannot be checked"
-
 [expected."proc.field.rw.001"]
 verdict = "UNSUPPORTED"
 reason = "not an operation-model entry: the action reads its own attributes; entries take no parameters yet (export_action.py)"
@@ -36,10 +32,6 @@ reason = "not an operation-model entry: the action has rand attributes (export_a
 [expected."sync.channel.depth.001"]
 verdict = "UNSUPPORTED"
 reason = "op-model-py sync form: blocking channel get()/put() need --py-await async (HAVE_EVENT_WAIT=false)"
-
-[expected."types.const.package.001"]
-verdict = "UNSUPPORTED"
-reason = "op-model-py gap: a field initializer that is an expression over package constants (ExprBin) is not lowered"
 
 [expected."types.enum.match.001"]
 verdict = "UNSUPPORTED"

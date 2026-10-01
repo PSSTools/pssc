@@ -4,6 +4,7 @@ The P1 survey found four things the scenario pass read past, each producing a
 different scenario from the one written:
 
 * S1 ``h[i]``: the index was dropped, so the traversal ran the element TYPE.
+  Since P1.2 a constant index names its node; a computed one is refused.
 * S2 ``comp == X``: taken out of the ``with`` and ignored, so the action ran
   in whatever instance. On a handle traversal it was not even taken out.
 * S3 ``init_bindings`` (Python front end): not bound.
@@ -40,7 +41,9 @@ def _activity(ctx, action="pss_top::A"):
     return ctx.type_map[action].activity_ir.stmts
 
 
-def test_s1_an_array_element_traversal_is_refused_by_the_pass():
+def test_s1_an_array_element_traversal_runs_its_element_node():
+    """P1.2: a constant index names a node of the action tree, and the
+    traversal carries that node's offset."""
     ctx = _translate("""\
 component pss_top {
     action B { }
@@ -49,7 +52,21 @@ component pss_top {
 """)
     assert not ctx.errors, ctx.errors
     assert _activity(ctx)[0].index is not None
-    with pytest.raises(UnsupportedConstructError, match="handle array 'bs'"):
+    m = PSSToScenarioPass(root="pss_top", exports=["A"]).lower(ctx)
+    inv, = [s for s in m.coroutines["A"].body if type(s).__name__ == "ScInvoke"]
+    assert inv.child_base == m.trees["A"].node_at("bs[1]").base
+
+
+def test_s1_a_computed_array_index_is_refused_by_the_pass():
+    ctx = _translate("""\
+component pss_top {
+    action B { }
+    action A { rand bit[1] i; B bs[2]; activity { bs[i]; } }
+}
+""")
+    assert not ctx.errors, ctx.errors
+    with pytest.raises(UnsupportedConstructError,
+                       match="handle array 'bs' with a computed index"):
         PSSToScenarioPass(root="pss_top", exports=["A"]).lower(ctx)
 
 

@@ -45,10 +45,6 @@ reason = "bc gap: a call through a component path deeper than `comp.f()` (`comp.
 verdict = "UNSUPPORTED"
 reason = "bc gap: a call through a component path deeper than `comp.f()` (`comp.a.f()`, `comp.c.try_get()`, `ch[i].f()`) -- _call_name returns None (lower/procedural.py)"
 
-[expected."proc.compile_if.001"]
-verdict = "UNSUPPORTED"
-reason = "bc gap: a component attribute or package constant reached through a path (`comp.ch.chan`, `cfg_pkg::X`) -- 'reference through ExprAttribute' (lower/procedural.py)"
-
 [expected."sync.channel.depth.001"]
 verdict = "UNSUPPORTED"
 reason = "bc gap: a call through a component path deeper than `comp.f()` (`comp.a.f()`, `comp.c.try_get()`, `ch[i].f()`) -- _call_name returns None (lower/procedural.py)"
@@ -61,33 +57,9 @@ reason = "bc gap: a call through a component path deeper than `comp.f()` (`comp.
 verdict = "UNSUPPORTED"
 reason = "bc gap: a call through a component path deeper than `comp.f()` (`comp.a.f()`, `comp.c.try_get()`, `ch[i].f()`) -- _call_name returns None (lower/procedural.py)"
 
-[expected."types.bitpack.001"]
-verdict = "UNSUPPORTED"
-reason = "bc gap: struct types in procedural code -- 'DataTypeStruct is not supported' (lower/types.py from_datatype)"
-
-[expected."types.const.package.001"]
-verdict = "UNSUPPORTED"
-reason = "bc gap: a component attribute or package constant reached through a path (`comp.ch.chan`, `cfg_pkg::X`) -- 'reference through ExprAttribute' (lower/procedural.py)"
-
 [expected."types.string.match.001"]
 verdict = "UNSUPPORTED"
 reason = "bc gap: a call through a component path deeper than `comp.f()` (`comp.a.f()`, `comp.c.try_get()`, `ch[i].f()`) -- _call_name returns None (lower/procedural.py)"
-
-[expected."types.struct.copy.001"]
-verdict = "UNSUPPORTED"
-reason = "bc gap: struct types in procedural code -- 'DataTypeStruct is not supported' (lower/types.py from_datatype)"
-
-[expected."types.struct.fields.001"]
-verdict = "UNSUPPORTED"
-reason = "bc gap: struct types in procedural code -- 'DataTypeStruct is not supported' (lower/types.py from_datatype)"
-
-[expected."types.struct.param.001"]
-verdict = "UNSUPPORTED"
-reason = "bc gap: struct types in procedural code -- 'DataTypeStruct is not supported' (lower/types.py from_datatype)"
-
-[expected."types.struct.return.001"]
-verdict = "UNSUPPORTED"
-reason = "bc gap: struct types in procedural code -- 'DataTypeStruct is not supported' (lower/types.py from_datatype)"
 
 [expected."L0P.tap.rw8.001"]
 verdict = "UNSUPPORTED"

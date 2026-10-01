@@ -81,6 +81,55 @@ class Export:
     where: str = ""
 
 
+def _eval_const_ir(e):
+    """The value of constant IR expression *e* (an int or a bool), or None.
+
+    Integer arithmetic, bitwise, shift, comparison and logical operators,
+    unary operators and `?:` over constants -- what a `static const`
+    initializer is written with.
+    """
+    if isinstance(e, ir.ExprConstant):
+        v = e.value
+        return v if isinstance(v, (int, bool)) else None
+    if isinstance(e, ir.ExprUnary):
+        v = _eval_const_ir(e.operand)
+        if v is None:
+            return None
+        if e.op == ir.UnaryOp.Not:
+            return not v
+        if e.op == ir.UnaryOp.USub:
+            return -v
+        if e.op == ir.UnaryOp.Invert:
+            return ~v
+        if e.op == ir.UnaryOp.UAdd:
+            return v
+        return None
+    if isinstance(e, ir.ExprBin):
+        a, b = _eval_const_ir(e.lhs), _eval_const_ir(e.rhs)
+        if a is None or b is None:
+            return None
+        B = ir.BinOp
+        ops = {
+            B.Add: lambda: a + b, B.Sub: lambda: a - b, B.Mult: lambda: a * b,
+            B.BitAnd: lambda: a & b, B.BitOr: lambda: a | b, B.BitXor: lambda: a ^ b,
+            B.LShift: lambda: a << b, B.RShift: lambda: a >> b,
+            B.Eq: lambda: a == b, B.NotEq: lambda: a != b, B.Lt: lambda: a < b,
+            B.LtE: lambda: a <= b, B.Gt: lambda: a > b, B.GtE: lambda: a >= b,
+            B.And: lambda: bool(a) and bool(b), B.Or: lambda: bool(a) or bool(b),
+        }
+        if e.op in (B.Div, B.FloorDiv, B.Mod):
+            if b == 0:
+                return None
+            q = abs(a) // abs(b) * (1 if (a < 0) == (b < 0) else -1)
+            return q if e.op != B.Mod else a - q * b
+        f = ops.get(e.op)
+        return f() if f is not None else None
+    if type(e).__name__ == "ExprIfExp":
+        c = _eval_const_ir(e.test)
+        return None if c is None else _eval_const_ir(e.body if c else e.orelse)
+    return None
+
+
 @dataclasses.dataclass(frozen=True)
 class _GenericRef:
     """A generic constraint declaration visible from some referencing type.
@@ -166,6 +215,9 @@ class AstToIrContext:
         # name. Consumed where a compile-time constant must become a number --
         # array sizes, today.
         self.const_map: Dict[str, int] = {}
+        # `static const` fields folded so far, by AST node id (None: does not
+        # fold); see _static_const_value.
+        self.static_consts: Dict[int, object] = {}
         # Package- and global-scope generic constraints, by qualified name
         # (`p::lt`). A package is only a namespace prefix in this translator --
         # it has no IR type -- so a generic constraint declared in one has
@@ -609,13 +661,56 @@ class AstToIrTranslator:
         """
         name_node = field.getName()
         name = name_node.getId() if isinstance(name_node, pss_ast.ExprId) else str(name_node)
-        init = field.getInit() if hasattr(field, 'getInit') else None
-        value = getattr(init, 'getValue', lambda: None)() if init is not None else None
-        if not isinstance(value, int) or isinstance(value, bool):
+        value = self._static_const_value(ctx, field)
+        if value is None:
             return
         ctx.const_map[name] = value
         if namespace_prefix:
             ctx.const_map[f"{namespace_prefix}{name}"] = value
+
+    def _static_const_value(self, ctx: AstToIrContext, field):
+        """The value of `static const` *field*, folded from its initializer,
+        or None if it does not fold.
+
+        An initializer may be an expression over other constants
+        (`REG_SPAN = 0x20 + MAX_CH * 0x20`) and a constant may be a bool; both
+        used to be left unfolded, and a reference to one then became
+        `self.cfg_pkg.REG_SPAN`, an attribute of the action that does not
+        exist. A constant referring to itself does not fold.
+        """
+        attr = int(field.getAttr()) if hasattr(field, 'getAttr') else 0
+        if not attr & int(pss_ast.FieldAttr.Const):
+            return None
+        key = id(field)
+        if key in ctx.static_consts:
+            return ctx.static_consts[key]
+        ctx.static_consts[key] = None             # a cycle folds to nothing
+        init = field.getInit() if hasattr(field, 'getInit') else None
+        value = getattr(init, 'getValue', lambda: None)() if init is not None else None
+        if not isinstance(value, int):
+            value = None
+            if init is not None:
+                saved = list(ctx.errors)
+                try:
+                    value = _eval_const_ir(self._translate_expression(ctx, init))
+                except Exception:
+                    value = None
+                # A failed fold is "unknown", not an error of the model.
+                ctx.errors[:] = saved
+        ctx.static_consts[key] = value
+        return value
+
+    def _linked_static_const(self, ctx: AstToIrContext, expr):
+        """The folded value of the `static const` *expr*'s linker target
+        names, or None."""
+        ref = expr.getTarget() if hasattr(expr, 'getTarget') else None
+        decl = self._symbol_scope_at(ctx, ref, depth=0) if ref is not None else None
+        if not isinstance(decl, pss_ast.Field):
+            return None
+        attr = int(decl.getAttr()) if hasattr(decl, 'getAttr') else 0
+        if not attr & int(pss_ast.FieldAttr.Static):
+            return None
+        return self._static_const_value(ctx, decl)
 
     def _record_scope_generic_constraint(self, ctx: AstToIrContext, decl,
                                          namespace_prefix: str = "") -> None:
@@ -1531,9 +1626,10 @@ class AstToIrTranslator:
             ctx.add_error(f"{_ast_where(child)}the type of action handle "
                           f"'{name}' could not be translated")
             return None
+        type_qname = self._traversed_type_qname(ctx, child)
         return ir.ActivityFieldDecl(
-            field=ir.Field(name=name, datatype=datatype),
-            type_qname=self._traversed_type_qname(ctx, child))
+            field=ir.Field(name=name, datatype=datatype, type_qname=type_qname),
+            type_qname=type_qname)
 
     def _activity_body(self, ctx: 'AstToIrContext', body) -> List['ir.ActivityStmt']:
         """A compound statement's body as a statement list.
@@ -1796,7 +1892,7 @@ class AstToIrTranslator:
             return None
         # A handle array `A arr[3]` is declared as `array<A,3>`; `arr[i]`
         # traverses its element type.
-        if type_id.numElems() == 1:
+        if getattr(type_id, "numElems", lambda: 0)() == 1:
             elem = type_id.getElem(0)
             params = elem.getParams()
             if elem.getId().getId() == "array" and params is not None \
@@ -3543,6 +3639,7 @@ class AstToIrTranslator:
             rand_kind=rand_kind,
             # `action bit[4] n;` (13.4.1, Ex 173): randomized when traversed.
             action_qualified=bool(attr & pss_ast.FieldAttr.Action),
+            type_qname=self._traversed_type_qname(ctx, field),
             initial_value=initial_value,
             doc=field_doc,
             doc_trailing=field_doc_trailing,
@@ -4122,6 +4219,9 @@ class AstToIrTranslator:
             return None
 
         qualified = "::".join(parts)
+        linked = self._linked_static_const(ctx, expr)
+        if linked is not None:
+            return ir.ExprConstant(value=linked)
         for key in (qualified, parts[-1]):
             if key in ctx.const_map:
                 return ir.ExprConstant(value=ctx.const_map[key])
@@ -4441,6 +4541,10 @@ class AstToIrTranslator:
                 return ir.ExprConstant(value=enum_val)
             if name in ctx.const_map and name not in ctx.local_vars:
                 return ir.ExprConstant(value=ctx.const_map[name])
+            if name not in ctx.local_vars:
+                linked = self._linked_static_const(ctx, expr)
+                if linked is not None:
+                    return ir.ExprConstant(value=linked)
 
         # Build the ExprAttribute chain starting from self. (`super.x` was
         # handled above: the front end gives it its own node, ExprRefPathSuper.)

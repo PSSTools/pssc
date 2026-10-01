@@ -34,10 +34,6 @@ reason = "op-model-sv gap: no executor delegation (supports_executor_delegation)
 verdict = "UNSUPPORTED"
 reason = "op-model-sv gap: no executor delegation (supports_executor_delegation), so the executor tap's set_executor/overrides are refused"
 
-[expected."proc.compile_if.001"]
-verdict = "UNSUPPORTED"
-reason = "op-model-sv gap: message() argument typing (expr_types.py) does not resolve a package constant, so %n cannot be checked (same gap as op-model-py)"
-
 [expected."proc.field.rw.001"]
 verdict = "UNSUPPORTED"
 reason = "not an operation-model entry: the action reads its own attributes; entries take no parameters yet (export_action.py)"
@@ -45,10 +41,6 @@ reason = "not an operation-model entry: the action reads its own attributes; ent
 [expected."proc.rand.input.001"]
 verdict = "UNSUPPORTED"
 reason = "not an operation-model entry: the action has rand attributes (export_action.py)"
-
-[expected."types.const.package.001"]
-verdict = "UNSUPPORTED"
-reason = "op-model-sv gap: message() argument typing (expr_types.py) does not resolve a package constant, so %n cannot be checked (same gap as op-model-py)"
 
 [expected."types.string.match.001"]
 verdict = "UNSUPPORTED"
