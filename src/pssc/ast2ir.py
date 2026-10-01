@@ -179,6 +179,14 @@ class AstToIrContext:
         # be reported by name -- §13.3 g forbids `default` there, and nowhere
         # else.
         self.generic_constraint_name: Optional[str] = None
+        # While a constraint block is translated: the statements in it that
+        # have no IR form yet (`soft`, `dist`, `default`), as
+        # ``(kind, where)``. They end up on the block's function as
+        # ``metadata["untranslated"]``, so a consumer that SOLVES the block
+        # refuses it; one that only reads its types (the op-model targets) is
+        # unaffected. None outside a constraint block, where such a
+        # statement is a translation error instead.
+        self.constraint_ledger: Optional[list] = None
         # How many generic constraint references have been instantiated so far.
         # Each reference gets the next number, which is what makes two
         # references to one declaration distinguishable after their bodies have
@@ -1666,9 +1674,9 @@ class AstToIrTranslator:
             if c is not None:
                 stmts: List[ir.Stmt] = []
                 self._collect_constraint_stmt(ctx, c, stmts)
-                for s in stmts:
-                    if isinstance(s, ir.StmtExpr):
-                        exprs.append(s.expr)
+                exprs = self._constraint_exprs(
+                    ctx, stmts, _ast_where(c) or _ast_where(node),
+                    "an activity constraint")
             return ir.ActivityConstraint(constraints=exprs)
 
         if isinstance(node, pss_ast.ActivitySchedulingConstraint):
@@ -1735,8 +1743,12 @@ class AstToIrTranslator:
                 ctx.add_error(f"{where}the index of '{handle}' could not be translated")
                 return None
         inline_constraints = self._extract_inline_constraints(ctx, node)
+        # `comp == X` steers the traversal (LRM 13.4.5); it is taken out the
+        # same way as for `do T with`, so no consumer reads it as data.
+        comp_expr, inline_constraints = self._extract_comp_expr(inline_constraints)
         return ir.ActivityTraversal(
             handle=handle, index=index, inline_constraints=inline_constraints,
+            comp_expr=comp_expr,
             type_qname=self._traversed_type_qname(
                 ctx, self._symbol_scope_at(ctx, target.getTarget(), depth=0)))
 
@@ -1801,10 +1813,9 @@ class AstToIrTranslator:
             label = label_node.getId() if hasattr(label_node, 'getId') else str(label_node)
 
         inline_constraints = self._extract_inline_constraints(ctx, node)
-        # WI-6: detect and strip ``comp == expr`` from inline constraints.
-        # PSS allows ``do T with comp == target;`` to route the traversal to a
-        # specific component instance.  Extract it as comp_expr so the activity
-        # runner can pass it as a comp_override to _traverse.
+        # `do T with comp == X;` steers the traversal to a component instance
+        # (LRM 13.4.5): taken out as comp_expr, which a consumer lowers or
+        # refuses.
         comp_expr, filtered = self._extract_comp_expr(inline_constraints)
         return ir.ActivityAnonTraversal(
             action_type=action_type,
@@ -1826,6 +1837,22 @@ class AstToIrTranslator:
                       f"supported yet (P1)")
         return False
 
+    @staticmethod
+    def _constraint_exprs(ctx, stmts, where: str, what: str) -> list:
+        """The expressions of constraint statements *stmts*, for a list typed
+        ``List[Expr]``. A statement that is not an expression (an ``if``, a
+        ``foreach``) is a located error: it used to be dropped, which
+        silently removed a constraint the user wrote."""
+        exprs = []
+        for s in stmts:
+            if isinstance(s, ir.StmtExpr):
+                exprs.append(s.expr)
+            else:
+                kind = type(s).__name__.removeprefix("Stmt").lower()
+                ctx.add_error(f"{where}'{kind}' inside {what} is not "
+                              f"supported yet")
+        return exprs
+
     def _extract_inline_constraints(self, ctx, node) -> list:
         """Extract `with` constraint expressions from a traversal node.
 
@@ -1845,9 +1872,9 @@ class AstToIrTranslator:
                     continue
                 stmts: list = []
                 self._collect_constraint_stmt(ctx, cs, stmts)
-                for s in stmts:
-                    if isinstance(s, ir.StmtExpr):
-                        results.append(s.expr)
+                results.extend(self._constraint_exprs(
+                    ctx, stmts, _ast_where(cs) or _ast_where(node),
+                    "an inline 'with' constraint"))
         # Single-expression form: do T with expr; -> ConstraintStmtExpr
         elif hasattr(with_c, 'getExpr'):
             expr_node = with_c.getExpr()
@@ -2868,17 +2895,19 @@ class AstToIrTranslator:
             cond_expr = self._translate_expression(ctx, cond_node)
             if cond_expr is None:
                 return
-            for j in range(stmt.numConstraints()):
-                sub = stmt.getConstraint(j)
-                if sub and isinstance(sub, pss_ast.ConstraintStmtExpr):
-                    sub_expr_node = sub.getExpr()
-                    if sub_expr_node is not None:
-                        sub_ir = self._translate_expression(ctx, sub_expr_node)
-                        if sub_ir is not None:
-                            body.append(ir.StmtExpr(expr=ir.ExprCall(
-                                func=ir.ExprRefUnresolved(name='implies'),
-                                args=[cond_expr, sub_ir],
-                            )))
+            subs = self._collect_constraint_body(
+                ctx, (stmt.getConstraint(j) for j in range(stmt.numConstraints())))
+            if all(isinstance(x, ir.StmtExpr) for x in subs):
+                for x in subs:
+                    body.append(ir.StmtExpr(expr=ir.ExprCall(
+                        func=ir.ExprRefUnresolved(name='implies'),
+                        args=[cond_expr, x.expr],
+                    )))
+            else:
+                # `c -> { if (d) {...} }` means `if (c) { if (d) {...} }`.
+                # Only expression consequents used to survive; anything
+                # else under an implication was dropped.
+                body.append(ir.StmtIf(test=cond_expr, body=subs, orelse=[]))
 
         elif isinstance(stmt, pss_ast.ConstraintStmtIf):
             cond_node = stmt.getCond()
@@ -2887,34 +2916,23 @@ class AstToIrTranslator:
             cond_expr = self._translate_expression(ctx, cond_node)
             if cond_expr is None:
                 return
-            true_stmts: List[ir.Stmt] = []
-            true_c = stmt.getTrue_c()
-            if true_c is not None:
-                for j in range(true_c.numConstraints()):
-                    sub = true_c.getConstraint(j)
-                    if sub and isinstance(sub, pss_ast.ConstraintStmtExpr):
-                        sub_expr_node = sub.getExpr()
-                        if sub_expr_node is not None:
-                            sub_ir = self._translate_expression(ctx, sub_expr_node)
-                            if sub_ir is not None:
-                                true_stmts.append(ir.StmtExpr(expr=sub_ir))
-            false_stmts: List[ir.Stmt] = []
-            false_c = stmt.getFalse_c()
-            if false_c is not None:
-                for j in range(false_c.numConstraints()):
-                    sub = false_c.getConstraint(j)
-                    if sub and isinstance(sub, pss_ast.ConstraintStmtExpr):
-                        sub_expr_node = sub.getExpr()
-                        if sub_expr_node is not None:
-                            sub_ir = self._translate_expression(ctx, sub_expr_node)
-                            if sub_ir is not None:
-                                false_stmts.append(ir.StmtExpr(expr=sub_ir))
+            true_c, false_c = stmt.getTrue_c(), stmt.getFalse_c()
+            true_stmts = self._collect_constraint_body(
+                ctx, (true_c.getConstraint(j) for j in range(true_c.numConstraints()))
+                if true_c is not None else ())
+            false_stmts = self._collect_constraint_body(
+                ctx, (false_c.getConstraint(j) for j in range(false_c.numConstraints()))
+                if false_c is not None else ())
+            # Each branch holds any constraint statement, nested `if` and
+            # `foreach` included; only expressions used to survive, and an
+            # empty true branch took its `else` with it.
             if true_stmts:
+                body.append(ir.StmtIf(test=cond_expr, body=true_stmts,
+                                      orelse=false_stmts))
+            elif false_stmts:
                 body.append(ir.StmtIf(
-                    test=cond_expr,
-                    body=true_stmts,
-                    orelse=false_stmts,
-                ))
+                    test=ir.ExprUnary(op=ir.UnaryOp.Not, operand=cond_expr),
+                    body=false_stmts, orelse=[]))
 
         # ConstraintStmtForeach is a subclass of ConstraintScope, so it MUST be
         # checked before the generic ConstraintScope branch.
@@ -3030,20 +3048,51 @@ class AstToIrTranslator:
             # it is a silently weaker model: a generic constraint whose body is
             # `default x == 3; x < 100;` would drop the default and compile, with
             # `x < 100` the only thing left.
+            kind = "default disable" if isinstance(
+                stmt, pss_ast.ConstraintStmtDefaultDisable) else "default"
             if ctx.generic_constraint_name is not None:
-                kind = "default disable" if isinstance(
-                    stmt, pss_ast.ConstraintStmtDefaultDisable) else "default"
                 ctx.errors.append(
                     f"'{kind}' may not be used inside generic constraint "
                     f"'{ctx.generic_constraint_name}' (PSS 3.1 §13.3 g)")
-            elif self.debug:
-                self.logger.debug("`default` constraints are not implemented")
+            else:
+                self._untranslated(ctx, stmt, kind)
+
+        elif isinstance(stmt, (pss_ast.ConstraintStmtSoft,
+                               pss_ast.ConstraintStmtDist)):
+            # No target lowers either from PSS yet (bc can lower both once the
+            # IR spells them). Dropping them silently removed a constraint.
+            # pssparser leaves a `dist` statement (and its operand) unlocated:
+            # pssc-requests-2026-09-30.md P2.
+            self._untranslated(
+                ctx, stmt,
+                "soft" if isinstance(stmt, pss_ast.ConstraintStmtSoft) else "dist")
 
         else:
-            if self.debug:
-                self.logger.debug(
-                    f"Unsupported constraint stmt type: {type(stmt).__name__}; skipping"
-                )
+            # Every constraint statement is translated or refused, never
+            # dropped; test_constraint_stmt_registry.py holds the list.
+            ctx.add_error(f"{_ast_where(stmt)}constraint statement "
+                          f"'{type(stmt).__name__}' is not supported yet")
+
+    @staticmethod
+    def _untranslated(ctx: AstToIrContext, stmt, kind: str) -> None:
+        """A constraint statement with no IR form yet. Dropping it compiled a
+        weaker model without a word; it is recorded on the enclosing
+        constraint block for a solving consumer to refuse, or is an error
+        where there is no block to carry it (a `with`, an activity
+        constraint)."""
+        where = _ast_where(stmt)
+        if ctx.constraint_ledger is not None:
+            ctx.constraint_ledger.append((kind, where))
+        else:
+            ctx.add_error(f"{where}'{kind}' constraints are not supported yet")
+
+    def _collect_constraint_body(self, ctx: AstToIrContext, subs) -> List[ir.Stmt]:
+        """The IR statements of a nested constraint body, any kind each."""
+        out: List[ir.Stmt] = []
+        for sub in subs:
+            if sub is not None:
+                self._collect_constraint_stmt(ctx, sub, out)
+        return out
 
     def _translate_constraint_block(
         self,
@@ -3088,6 +3137,7 @@ class AstToIrTranslator:
             ctx.generic_constraint_name = func_name
 
         body: List[ir.Stmt] = []
+        outer_ledger, ctx.constraint_ledger = ctx.constraint_ledger, []
 
         for i in range(constraint_block.numConstraints()):
             stmt = constraint_block.getConstraint(i)
@@ -3136,8 +3186,9 @@ class AstToIrTranslator:
 
         ctx.local_vars -= shadowed
         ctx.generic_constraint_name = outer_generic
+        ledger, ctx.constraint_ledger = ctx.constraint_ledger, outer_ledger
 
-        if not body and not is_generic:
+        if not body and not is_generic and not ledger:
             return None
 
         if is_generic:
@@ -3171,7 +3222,8 @@ class AstToIrTranslator:
             name=func_name,
             is_async=False,
             body=body,
-            metadata={'_is_constraint': True},
+            metadata=({'_is_constraint': True, 'untranslated': ledger}
+                      if ledger else {'_is_constraint': True}),
         )
 
     @staticmethod

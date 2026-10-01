@@ -372,8 +372,10 @@ def _lower_activity_stmt(
         return _lower_parallel(ctx, stmt, comp_expr)
 
     if isinstance(stmt, ir.ActivityConstraint):
-        # Inline constraints in activity context are informational
-        return [f"// activity constraint (handled at randomize time)"]
+        # Nothing applies it at randomize time: say so rather than emit a
+        # comment claiming it is handled.
+        ctx.warn("activity constraint is not applied by this target", "ActivityConstraint")
+        return ["// unsupported activity: ActivityConstraint (not applied)"]
 
     if isinstance(stmt, ir.ActivitySchedule):
         # Schedule block: lower as a sequence of staged fork/join blocks.
@@ -411,6 +413,7 @@ def _lower_traversal(
     - Producer: capture output into local variable after body()
     """
     handle = trav.handle
+    _warn_unlowered_traversal_parts(ctx, trav, handle)
     lines = ["begin"]
 
     # --- Consumer: inject buffer inputs before pre_solve ---
@@ -463,6 +466,16 @@ def _lower_traversal(
     return wrap_traversal_with_trace(handle, comp_expr, lines)
 
 
+def _warn_unlowered_traversal_parts(ctx: LoweringContext, trav, what: str) -> None:
+    """Warn about what a traversal carries that this target does not lower:
+    an array element (`h[i]` runs as `h`) and a `comp == X` steer."""
+    if getattr(trav, "index", None) is not None:
+        ctx.warn(f"traversal of an element of '{what}' runs the whole handle; "
+                 f"the index is not lowered", what)
+    if getattr(trav, "comp_expr", None) is not None:
+        ctx.warn(f"'comp ==' on the traversal of '{what}' is not lowered", what)
+
+
 def _lower_anon_traversal(
     ctx: LoweringContext,
     trav: ir.ActivityAnonTraversal,
@@ -475,6 +488,7 @@ def _lower_anon_traversal(
     - Consumer: inject pinned buffer values before pre_solve; add with-constraints
     - Producer: capture buffer outputs into local variables after body()
     """
+    _warn_unlowered_traversal_parts(ctx, trav, trav.action_type)
     type_name = ctx.resolve_sv_class_name(trav.action_type)
     var_name = trav.label if trav.label else f"_anon_{type_name}"
 

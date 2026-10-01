@@ -747,9 +747,11 @@ def test_a_default_disable_under_a_generic_is_rejected():
 def test_a_default_outside_a_generic_constraint_is_not_rejected():
     """The control: §13.3 g is about generic constraints specifically.
 
-    `default` is still unimplemented in a fixed constraint, and this test pins
-    that W3 did not turn that gap into an error -- which would reject models that
-    compile today, for a rule the spec does not state.
+    `default` is still unimplemented in a fixed constraint. It is not an error
+    there -- which would reject models that compile today (WB DMA's value
+    structs), for a rule the spec does not state -- but it is no longer
+    dropped either: it is recorded on the block, and a consumer that solves
+    the block refuses it (test_constraint_stmt_registry.py).
     """
     ctx = translate("""
         component pss_top {
@@ -757,6 +759,8 @@ def test_a_default_outside_a_generic_constraint_is_not_rejected():
         }
     """)
     assert not ctx.errors, ctx.errors
+    c = [f for f in ctx.type_map["pss_top::A"].functions if f.name == "c"][0]
+    assert [k for k, _ in c.metadata["untranslated"]] == ["default"]
 
 
 @_NEEDS_1A

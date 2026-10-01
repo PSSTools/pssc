@@ -691,7 +691,9 @@ parallel.
   one. It needs a field such as `"traced": false`. (b) A compound action's
   own exec blocks (`pre_solve`/`post_solve` checkpoints) have nowhere to
   go: the P1 checker rejects a `chk` before any `act`. Both are
-  corpus-owned design decisions.
+  corpus-owned design decisions. **Decided 2026-09-30** (P1 plan §7,
+  O-P1-6): `"traced": false` for (a); observers + order signatures, the
+  existing COMPLIANCE-DESIGN §4.3/§4.4, for (b). Built in P1.7.
 
 ## 9. Progress log
 

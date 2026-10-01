@@ -49,10 +49,6 @@ reason = "bc gap: a call through a component path deeper than `comp.f()` (`comp.
 verdict = "UNSUPPORTED"
 reason = "bc gap: a component attribute or package constant reached through a path (`comp.ch.chan`, `cfg_pkg::X`) -- 'reference through ExprAttribute' (lower/procedural.py)"
 
-[expected."proc.yield.single.001"]
-verdict = "UNSUPPORTED"
-reason = "bc gap: the yield statement in procedural code (lower/procedural.py)"
-
 [expected."sync.channel.depth.001"]
 verdict = "UNSUPPORTED"
 reason = "bc gap: a call through a component path deeper than `comp.f()` (`comp.a.f()`, `comp.c.try_get()`, `ch[i].f()`) -- _call_name returns None (lower/procedural.py)"
