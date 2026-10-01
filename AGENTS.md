@@ -486,6 +486,20 @@ cones never see a symbol; a recursive call is a located error. `s;` with no
 argument list parses as a traversal that the linker resolved to the symbol
 (`test_activity_symbols.py`).
 
+**Procedural code on bc** (`docs/design/bc-procedural-gaps-plan.md`). A
+string is its interned index, so `==`/`!=` compare indices and ordering is
+refused. A component-array element with a run-time index is a dispatch, one
+copy of the access per element, and `foreach` over a component array is
+unrolled: no opcode takes a slot from a register. A channel is `2 + depth`
+slots of its instance (ir-core `comp_tree.channel_leaves`); a blocking
+`get`/`put` spins on a SPIN yield (temporary), and a deadlock, or a run that
+ends with its entry unfinished, is an error. A call to a function already
+being inlined is a `CALL` of its called form (`ARG`/`LD_ARG`), so a model with
+no recursion keeps its bytecode. An `addr_handle_t` is its address
+(transparent spaces only); a memory primitive goes to the executor
+`set_executor` names, resolved at lowering, else to a builtin import. Specs:
+be-bc `docs/spec/{components,calls,memory}.md`.
+
 **Enums, not strings.** `JoinSpec.kind` is a `JoinKind` and
 `DataTypeStruct.flow_kind` is a `FlowKind`; `test_flow_kind.py` holds the
 second. The SV target keeps strings in its *own* binding records and converts

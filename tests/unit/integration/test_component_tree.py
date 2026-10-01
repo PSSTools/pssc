@@ -122,17 +122,19 @@ component pss_top {
     assert trace(src, root="pss_top::A") == ["2 1"]
 
 
-def test_an_element_of_a_component_array_with_a_computed_index_is_refused():
+def test_an_element_of_a_component_array_with_a_computed_index_is_its_element():
+    """A dispatch over the elements (bc procedural gaps B-D2); more in
+    test_bc_comp_array.py."""
     src = """
 import std_pkg::*;
 component ch_c { int id; }
 component pss_top {
     ch_c ch[2];
+    exec init_down { ch[1].id = 5; }
     action A { exec body { int j = 1; message(NONE, "%d", comp.ch[j].id); } }
 }
 """
-    with pytest.raises(LoweringError, match="computed index"):
-        _lower(src, root="pss_top::A")
+    assert trace(src, root="pss_top::A") == ["5"]
 
 
 def test_a_component_array_index_out_of_bounds_is_an_error():
