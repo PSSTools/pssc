@@ -1,6 +1,6 @@
 # P1 "Compound-scope solving": implementation, test and doc plan
 
-Status: **reviewed** (2026-09-30, §7); P1.0, P1.1 committed; P1.2, P1.3 done (uncommitted); P1.4 next. This file
+Status: **reviewed** (2026-09-30, §7); P1.0–P1.3 committed; P1.4 done (uncommitted); P1.5 next. This file
 tracks P1 of [activity-flow-resource-bc-design.md](activity-flow-resource-bc-design.md)
 (§10); P0 is [activity-p0-plan.md](activity-p0-plan.md). Tick items as they land.
 
@@ -305,25 +305,51 @@ Each lands with its tests; the progress log (§8) records the counts.
 
 ### P1.4 bc: activations, base offsets, the scope solve
 
-- [ ] **Frame base offset**: every `LD_FIELD`/`ST_FIELD` is relative to the
-  frame's base; `INVOKE`/`SPAWN` take the child node's base (P1-D1). Python VM
-  and `zbc_interp.c` together (fixes the shared-`Obj` divergence).
-- [ ] **Scope solve context**: one per activation of a connected cone; holds a
-  `SolveCtx` over the cone's blob and the committed (node, slot) values.
-  `SOLVE_NODE`: checkpoint → pin committed values and runtime-read non-rand
-  values → enable the constraints in force (scope entry, this site's `with`) →
-  solve with the frame's seed draw → write back the node's slots → commit →
-  restore. UNSAT is the 13.4.13-style error naming the traversal and the
-  constraints, never a silent fallback.
-- [ ] **Handle reset** (13.4.8): on entry to an activity block (and each loop
-  iteration), un-commit the nodes that block owns.
-- [ ] **Lifecycle order** (11.3.1 b): initializers → `pre_solve` → solve →
-  `post_solve` → body/activity, per traversal, unchanged in shape; only the
-  solve step changes.
-- [ ] **Parent reads of child attributes** after traversal (`b1.x` in the
-  parent's exec code) read the node's slots.
-- [ ] rt-eng: refuses `SOLVE_NODE` by name (P1-D6) and implements the base
-  offset.
+- [x] **Frame base offset**: `LD_FIELD`/`ST_FIELD` and SOLVE write-back are
+  relative to the frame's base. `INVOKE` with `INSTR_F_NODE` runs the child at
+  `base + imm`; `arg2` names the traversal site (`ScInvoke.site`). The root's
+  object is the entry type's subtree layout (`ScCoroutine.subtree`). Done in the
+  Python VM and `zbc_interp.c` together, so both engines agree on INVOKE's
+  operand. An INVOKE without the flag keeps its M1 meaning (hand-built
+  scenarios).
+- [x] **Scope solve** (`interp/activation.py`, `docs/spec/activation.md` in
+  be-bc): `SOLVE_NODE` solves the frame's node in its cone with committed
+  values pinned and the constraints in force enabled, then commits the node.
+  Non-rand values are pinned too: the object's value for a started node, the
+  constant initial value otherwise. **Change from the draft:** there is no
+  solver checkpoint and no enable literal per tag. The problem for each set of
+  constraints in force is built from the cone's IR and cached; dv-solve's
+  `pin` fixes the committed values. Every cone is built once with all of its
+  constraints at lowering, so a constraint the solver cannot take is a lowering
+  error. UNSAT is a `ScopeUnsatError` naming the traversal, the constraints in
+  force and the pinned values.
+- [x] **Handle reset** (13.4.8): entering a node resets its subtree.
+  `SCOPE_ENTER` on entry to any block resets the nodes traversed in it, and for
+  a branch body records that it was entered. Liveness follows P1-D2. One
+  refinement: a loop body that surely runs (a positive constant count, or
+  do-while) is `LOOP_BODY_CERTAIN`, which commits with its loop. Without it,
+  Ex 180's `a` was chosen blind to `b` and `c` and failed on some seeds.
+- [x] **Lifecycle order** (11.3.1 b): initializers → `pre_solve` → solve →
+  `post_solve` → body/activity. Traversal initializers are now lowered, no
+  longer refused: `ScInvoke.init` carries the child's initial values, then its
+  handle's initializers, then the traversal's. The parent runs them on the
+  child's slots, and the child starts past its own initial values
+  (`INSTR_F_INITED`). Ex 84 holds.
+- [x] **Parent reads of child attributes**: `self.b1.x` and `self.bs[1].x`
+  read the node's slots through the subtree layout (procedural `_index_handles`).
+  They are not checked against an uninitialized handle (Ex 181's error); that
+  is open.
+- [x] `with` and activity `constraint` are no longer refused by the pass (the
+  tree holds them). A labeled `replicate` is unrolled onto its nodes, each
+  iteration with its index variable fixed (`layout.subst_names`).
+- [x] rt-eng implements the base offset. It refuses `SCOPE_ENTER`,
+  `SOLVE_NODE` and an `INSTR_F_INITED` INVOKE at load, naming the opcode
+  (P1-D6).
+- [ ] Deferred from P1.4:
+  - an activity data field (`action bit[4] n; n;`, 11.3.1 a) has no node kind
+    yet and stays refused;
+  - a constraint naming a replicate iteration (`R[1]…`) stays unresolved;
+  - `replicate` directly in `parallel`/`schedule` stays refused.
 
 ### P1.5 Components: instance tree, `comp`, non-root actions
 
@@ -381,7 +407,7 @@ SV/C (the construct-test harness). Each refusal gets a located-error test.
 | P1.1 | `test_activity_names.py` (child vs parent vs `this.`, initializers, declarations), registry rows |
 | P1.2 | `test_action_tree.py` (layout, recursion refused), `test_scope_cone.py` (singletons keep `SOLVE`; cones, tags) |
 | P1.3 | `test_bc_struct_values.py`, `test_bc_attribute_paths.py` |
-| P1.4 | `test_lookahead_ex179_183_184.py` (200 seeds, calibration), `test_handle_reset.py` (Ex 180), `test_with_semantics.py`, `test_activity_constraint.py`, `test_scope_unsat_error.py`, rt-eng refusal test |
+| P1.4 | `test_lookahead.py` (Ex 179/180/183/184, 200 seeds; the calibration run is P1.6), `test_scope_solve.py` (`with`, activity constraints, child reads, Ex 84, labeled replicate, the unsat error), rt-eng `test_engine_activation.py` (base offset, refusals) |
 | P1.5 | `test_component_tree.py`, `test_comp_choice.py` (Ex 50 distribution over 3 instances; Ex 143 steer), `test_comp_attr_paths.py`, Ex 51 refusal |
 
 ## 5. Docs
@@ -439,3 +465,4 @@ SV/C (the construct-test harness). Each refusal gets a located-error test.
 | 2026-10-01 | P1.1 | `TypeExprRefTraversed` (S5), `this` fixed, initializers carried (decl first), `ActivityFieldDecl`, `Field.action_qualified`; O4 remainder to P1.2. Unit 1952 passed / 4 (docs); progseq 8 pre-existing; compliance bc 165 / 42, op-model-sv 80 / 19; ir-core 83, be-bc 310; be-sw unchanged from baseline |
 | 2026-10-01 | P1.3 | flattened struct layout (ir-core `layout.py`), struct values on bc, rand struct attributes, attribute initial values applied (found), `static const` folding through the linker. Closes 11 strict entries: 5 struct/bitpack + 2 const on bc, 2 const each on op-model-py/sv. Unit 1980 passed / 4 (docs); progseq 8 pre-existing, goldens identical; compliance 256 / 50 xfailed; ir-core 88, be-bc 310; be-sw unchanged from baseline |
 | 2026-10-01 | P1.2 | `ScActionTree` per export (nodes, scopes, sites), cones (`ScScopeProblem`, TYPE/ACTIVITY/WITH), `ScInvoke.child_base`, `Field.type_qname`; S1 lifted for a constant index. Solve-node choice moved to run time (P1.4), see P1.2. Unit 2002 passed / 4 (docs); progseq 8 pre-existing, goldens identical; compliance 256 / 50 xfailed; ir-core 88, be-bc 310; be-sw unchanged from baseline |
+| 2026-10-01 | P1.4 | one-object activation (`INSTR_F_NODE` base offsets in both engines), `SOLVE_NODE` cone solve with lookahead (per-enabled-set problem + `pin`, no enable literals), `SCOPE_ENTER` resets, `LOOP_BODY_CERTAIN`, traversal initializers (`ScInvoke.init`, `INSTR_F_INITED`), labeled `replicate` unrolled, child reads through handles; rt-eng refuses the P1 ops at load. Found, not fixed: a constraint's `x + 1` wraps at the operand width in bc's own SOLVE too. Unit 2018 passed / 4 (docs); progseq 8 pre-existing; compliance 256 / 50 xfailed (no entry closes: none waits only on P1.4); ir-core 89, be-bc 310, rt-eng 102; be-sw unchanged from baseline |

@@ -53,8 +53,10 @@ CASES = {
     "ActivityBind": (lambda: A.ActivityBind(src=_self("a"), dst=_self("b")),
                      Refused("ActivityBind")),
     "ActivityChain": (lambda: A.ActivityChain(), Refused("ActivityChain")),
+    # In force while its scope is (13.1.9 b.3): a constraint of the action
+    # tree's cone (P1.4).
     "ActivityConstraint": (lambda: A.ActivityConstraint(constraints=[_c(True)]),
-                           Refused("ActivityConstraint")),
+                           LOWERS),
     "ActivityConstraintForall": (
         lambda: A.ActivityConstraintForall(var_name="x", type_name="B"),
         Refused("ActivityConstraintForall")),
@@ -101,9 +103,10 @@ CASES = {
     "ActivityRepeat": (lambda: A.ActivityRepeat(count=_c(2), body=[_b()]), LOWERS),
     "ActivityReplicate": (lambda: A.ActivityReplicate(count=_c(2), body=[_b()]),
                           LOWERS),
+    # Unrolled: each iteration runs its own nodes (P1.4).
     "ActivityReplicate[label]": (
         lambda: A.ActivityReplicate(count=_c(2), label="R", body=[_b()]),
-        Refused("replicate")),
+        LOWERS),
     "ActivitySchedule": (lambda: A.ActivitySchedule(stmts=[_b(), _b()]), LOWERS),
     "ActivitySchedule[constraint]": (
         lambda: A.ActivitySchedule(stmts=[_b(), A.ActivitySchedulingConstraint(
@@ -122,7 +125,7 @@ CASES = {
     "ActivityTraversal[initializers]": (
         lambda: A.ActivityTraversal(handle="b1", initializers=[
             (ir.ExprAttribute(value=ir.TypeExprRefTraversed(), attr="x"), _c(1))]),
-        Refused("traversal initializers")),
+        LOWERS),
     "ActivityWhileDo": (lambda: A.ActivityWhileDo(condition=_c(0), body=[_b()]),
                         Refused("ActivityWhileDo")),
 }
@@ -137,8 +140,10 @@ def _ir_classes():
 
 
 def _type_map(stmt):
-    """pss_top with an atomic `B` and a compound `T` running *stmt*."""
+    """pss_top with an atomic `B` (attribute `x`) and a compound `T`
+    running *stmt*."""
     b = ir.DataTypeClass(name="B", super=None)
+    b.fields = [ir.Field(name="x", datatype=ir.DataTypeInt(bits=4, signed=False))]
     b.functions = [ir.Function(name="body", body=[])]
     t = ir.DataTypeClass(name="T", super=None)
     t.fields = [ir.Field(name="b1", datatype=ir.DataTypeRef(ref_name="pss_top::B"))]

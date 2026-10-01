@@ -4,7 +4,7 @@ Every action an activation can run is a node with its own slots in one
 flattened object: its type's layout, then its children's subtrees in
 declaration order. A type's subtree is the same wherever it is instantiated,
 so a traversal's ``ScInvoke.child_base`` -- the child's offset from the
-invoking action -- is static. Nothing consumes the tree yet (P1.4 does).
+invoking action -- is static. bc runs an activation on it (P1.4).
 """
 import os
 import tempfile
@@ -40,8 +40,7 @@ def _module(src: str, export: str = "T"):
 
 
 def _tree(src: str, export: str = "T") -> SC.ScActionTree:
-    """The tree alone: the pass still refuses some of what it holds (a
-    labeled replicate, until P1.4)."""
+    """The tree alone, without lowering the coroutines."""
     return build_tree(Layouts(_translate(src).type_map), export, "pss_top::" + export)
 
 
@@ -85,7 +84,7 @@ def test_every_action_is_a_node_with_its_own_slots():
 
 def test_child_base_is_the_childs_offset_from_the_invoker():
     """Static per type: S1 lays out the same as the root and nested in T."""
-    m = _module(_SRC.replace("replicate (2) R[]: do L;", ""))
+    m = _module(_SRC)
     t = m.trees["T"]
     by_path = {n.path: n for n in t.nodes}
 
@@ -122,7 +121,8 @@ def test_handle_reset_scopes():
     root_activity = t.scopes[by_path["s1"].decl_scope]
     assert root_activity.kind == SC.ScopeKind.ACTIVITY and root_activity.node == 0
     loop = t.scopes[by_path["#1"].decl_scope]
-    assert loop.kind == SC.ScopeKind.LOOP_BODY
+    # `repeat (3)` surely runs its body: it commits with the loop (Ex 180).
+    assert loop.kind == SC.ScopeKind.LOOP_BODY_CERTAIN
     assert [t.scopes[by_path[p].decl_scope].kind for p in ("R[0].#0", "#2")] == [
         SC.ScopeKind.REPLICATE_ITER, SC.ScopeKind.SELECT_BRANCH]
     # s1's own children are reset by S1's activity, inside T's.
@@ -165,14 +165,24 @@ component pss_top {
 
 
 def test_the_pass_builds_a_tree_per_export():
-    m = _module(_SRC.replace("replicate (2) R[]: do L;", ""))
+    m = _module(_SRC)
     assert list(m.trees) == ["T"] and m.trees["T"].type_qname == "pss_top::T"
 
 
-def test_a_labeled_replicate_is_refused_by_the_pass_until_p1_4():
-    ctx = _translate(_SRC)
-    with pytest.raises(UnsupportedConstructError, match=r"\(R\[\]\) is not supported yet"):
-        PSSToScenarioPass(root="pss_top", exports=["T"]).lower(ctx)
+def test_the_pass_unrolls_a_labeled_replicate_onto_its_nodes():
+    """P1.4: each iteration traverses its own node, at its own base."""
+    m = _module(_SRC)
+    t = m.trees["T"]
+    by_path = {n.path: n for n in t.nodes}
+    rep = [st for st in m.coroutines["T"].body
+           if isinstance(st, SC.ScSeq) and all(isinstance(b, SC.ScSeq) for b in st.body)
+           and len(st.body) == 2]
+    it0, it1 = rep[0].body
+    assert [st.child_base for st in it0.body + it1.body] == [
+        by_path["R[0].#0"].base, by_path["R[1].#0"].base]
+    # The root's scopes come first in the tree, so its local index is global.
+    assert [t.scopes[st.scope].kind for st in (it0, it1)] == [
+        SC.ScopeKind.REPLICATE_ITER] * 2
 
 
 def test_an_atomic_export_is_a_one_node_tree():

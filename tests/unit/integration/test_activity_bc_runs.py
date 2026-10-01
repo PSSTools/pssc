@@ -188,11 +188,11 @@ def test_replicate_runs_count_times():
     assert trace(src) == ["B", "B", "B"]
 
 
-def test_labeled_replicate_rejected():
-    """`R[]` names each iteration's instances; nothing carries them before P1."""
+def test_labeled_replicate_runs_each_iteration():
+    """`R[]` names each iteration's instances: P1.4 unrolls it, each
+    iteration on its own node of the action tree."""
     src = _ACTIONS % "action T { activity { replicate (2) R[]: do B; } }"
-    with pytest.raises(UnsupportedConstructError, match="replicate"):
-        _lower(src)
+    assert trace(src) == ["B", "B"]
 
 
 # --- P0.24: a compound action's own pre_solve / post_solve ---------------------

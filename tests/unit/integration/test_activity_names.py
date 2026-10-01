@@ -21,6 +21,7 @@ import pssc
 from pssc.ast2ir import AstToIrTranslator
 from zuspec.ir import core as ir
 from zuspec.ir.core import activity as A
+from zuspec.ir.core import scenario as SC
 from zuspec.ir.core.xf import PSSToScenarioPass
 from zuspec.ir.core.xf.validate import UnsupportedConstructError
 
@@ -138,15 +139,28 @@ def test_a_block_handles_initializers_come_first():
     assert _inits(trav) == ["<T>.x=1", "<T>.px=2"]
 
 
-def test_the_pass_refuses_initializers_until_p1_4():
+def _path(e):
+    out = []
+    while isinstance(e, ir.ExprAttribute):
+        out.append(e.attr)
+        e = e.value
+    assert isinstance(e, ir.TypeExprRefSelf)
+    return list(reversed(out))
+
+
+def test_the_pass_runs_initializers_in_the_invoking_action():
+    """11.3.1 b i-ii: the child's initial values, then its initializers,
+    rooted at its node, on ``ScInvoke.init`` (P1.4)."""
     ctx = _translate("""\
 component pss_top {
-    action B { rand bit[4] x; }
+    action B { rand bit[4] x; bit[4] y = 5; }
     action A { activity { do B {.x = 1}; } }
 }
 """)
-    with pytest.raises(UnsupportedConstructError, match="traversal initializers"):
-        PSSToScenarioPass(root="pss_top", exports=["A"]).lower(ctx)
+    module = PSSToScenarioPass(root="pss_top", exports=["A"]).lower(ctx)
+    inv, = [s for s in module.coroutines["A"].body if isinstance(s, SC.ScInvoke)]
+    got = [(".".join(_path(st.targets[0])), st.value.value) for st in inv.init]
+    assert got == [("#0.y", 5), ("#0.x", 1)]
 
 
 # -- declarations in an activity block ---------------------------------------

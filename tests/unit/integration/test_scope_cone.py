@@ -5,7 +5,7 @@ of its flattened object and tagged with when it holds: a node type's own
 (TYPE), an activity ``constraint`` (ACTIVITY, with its scope, 13.1.9), an
 inline ``with`` (WITH, with its traversal, 13.1.4). Nodes a constraint ties
 together form a cone; a node nothing ties to another keeps its coroutine's
-own solve (P1-D3). Nothing solves a cone yet: P1.4 does.
+own solve (P1-D3). bc solves the cones (P1.4, ``test_lookahead.py``).
 """
 import os
 import tempfile

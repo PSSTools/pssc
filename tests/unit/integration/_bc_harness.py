@@ -33,7 +33,7 @@ import pssc
 from pssc.ast2ir import AstToIrTranslator
 from zuspec.ir.core import Function
 from zuspec.ir.core.xf import PSSToScenarioPass
-from zuspec.be.bc.interp import NativeBlobBackend, Obj, run_model
+from zuspec.be.bc.interp import NativeBlobBackend, run_model
 from zuspec.be.bc.lower import lower_module
 
 
@@ -88,10 +88,9 @@ def solve_many(src: str, *, action: str = "pss_top::A",
     model = lower_module(PSSToScenarioPass(exports=[simple]).lower(ctx),
                          entry_action=simple)
 
-    names = [f.name for f in getattr(dt, "fields", [])
-             if getattr(f, "rand_kind", None) is not None]
-    return [run_model(model, obj=Obj(field_names=names), seed=seed,
-                      solve_backend=NativeBlobBackend()).fields
+    # The run's object is the action's own layout (its activation, P1.4);
+    # values are read back by attribute name.
+    return [run_model(model, seed=seed, solve_backend=NativeBlobBackend()).fields
             for seed in seeds]
 
 

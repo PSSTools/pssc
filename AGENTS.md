@@ -436,8 +436,24 @@ type's layout followed by its children's subtrees, so `ScInvoke.child_base`
 is static per (type, site). Constraints that tie nodes -- a parent's over
 `b1.x`, a `with`, an activity `constraint` -- are resolved to slots and
 grouped into cones (`ScScopeProblem`); a node tied to nothing keeps its own
-`ScSolveProblem` (`test_action_tree.py`, `test_scope_cone.py`). Nothing
-solves a cone until P1.4.
+`ScSolveProblem` (`test_action_tree.py`, `test_scope_cone.py`).
+
+**bc runs the activation on one object.** A traversal is an INVOKE with
+`INSTR_F_NODE`: the child runs on its parent's object at its node's base, and
+every field access and SOLVE write-back is relative to the frame's base. A
+type with a node in a cone solves through `SOLVE_NODE`, which looks the frame's
+node up at run time. A member node is solved in its cone: committed values are
+pinned, the constraints in force are enabled, and later traversals' values are
+free, which is the lookahead. A node in no cone solves its own problem, so a
+model with no cone keeps its bytecode (P1-D3). `SCOPE_ENTER` marks entry to an
+activity block, which resets the handles traversed in it (13.4.8). Traversal
+initializers run in the parent, on the child's slots, and the child then starts
+past its own initial values (`INSTR_F_INITED`). A labeled `replicate` is
+unrolled onto its nodes. The run-time side is `interp/activation.py`, specified
+in be-bc's `docs/spec/activation.md`. The native engine implements the base
+offset and refuses the rest before running anything (P1-D6). Tests:
+`test_lookahead.py` (Ex 179/180/183/184, 200 seeds) and `test_scope_solve.py`
+(`with`, activity constraints, Ex 84, the unsat error).
 
 **Enums, not strings.** `JoinSpec.kind` is a `JoinKind` and
 `DataTypeStruct.flow_kind` is a `FlowKind`; `test_flow_kind.py` holds the
