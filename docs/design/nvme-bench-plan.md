@@ -726,13 +726,18 @@ design), and timing-fuzz invariance.
       checker command, the checker's verdict per seed. **Done.** It drops
       the run's event trace (`--trace` keeps it): the trace holds every
       event, so it grows with the run and nothing in the report reads it.
-- [ ] **B6b** A variety report: the distribution of every `rand` leaf of
+- [x] **B6b** A variety report: the distribution of every `rand` leaf of
       every action, as solved, and of selected tuples (here
       `(op, lba_bytes, nlb)`). It is collected through one optional hook,
       `run_model(on_solve=...)`, called after each solve writes back; a run
       without it is unchanged. In the values-only run `lba_bytes` was 512 in
       89% of IOs. That is legal (4096-byte IOs are limited to 64 blocks),
       and D-B7 is decided by comparing it with `SolveCache(fair_pick=True)`.
+      **Done (2026-10-02).** Every `(op, lba_bytes)` combination comes up,
+      4096 is about half of each op, and the ops are even (FLUSH 32%). It
+      took three fixes, all below: kept draws with set-size MRV (dv-solve),
+      the comp-read tie (ir-core, be-bc) and the `% c` value pick
+      (dv-solve).
       **Measured (2026-10-02, `bench_seq`, N=1000, seeds 1-3):** 4096 is 5.0%
       of IOs by default and 6.0% with `fair_pick`, and FLUSH is 39% of ops
       either way. Every other leaf is well spread. So `fair_pick` is not the
@@ -825,11 +830,32 @@ design), and timing-fuzz invariance.
       - Run time is 5-15% lower.
       - dv-solve's unit tests and ctest show no new failures.
 
-      What is left:
-      - **`% 8`.** With the rule in, 4096 stays at about 5%. A random
-        `slba` meets `slba % 8 == 0` one time in 8. This needs the `% c`
-        value pick.
-      - ~~**`bench_seq`'s cone.**~~ **Fixed (ir-core, be-bc, uncommitted).**
+      What was left, and how each was fixed:
+      - ~~**`% 8`.**~~ **Fixed (dv-solve, uncommitted).** With the rule in,
+        4096 stayed at about 5%. bc writes the rule as the clause
+        `lba_bytes != 4096 || slba % 8 == 0`. Once `lba_bytes` is 4096 the
+        remainder is fixed to 0, but the modulo propagator aligns only
+        `slba`'s bounds, so a uniform draw between them met the rule one
+        time in 8 and the other seven were conflicts. dv-solve now records
+        each `r == a % c` with `c` a positive constant (unsigned) when its
+        propagator is added (`DvsModLink`, rolled back with it on restore).
+        When it draws `a` and `r`'s domain is narrower than `0..c-1`, it
+        keeps the draw's quotient and takes a remainder at random from `r`'s
+        domain (`_pick_mod_aligned`). While the guard is undecided `r` spans
+        every remainder and nothing moves: a 512-byte `slba` is aligned
+        12.5% of the time, exactly 1 in 8. Test: dv-solve
+        `test_mod_value_pick.py` (calibrated: the previous library gives
+        600 of 1000 4096s on that descriptor, this one 509).
+
+        | Run (N = 1000, seeds 1-3) | before | `% c` pick |
+        |---|---|---|
+        | `bench_seq` | 23 / 20 / 11 (20%) | **50 / 49 / 51 (32%)** |
+        | `bench_par` | 24 / 21 / 11 (23%) | **50 / 49 / 49 (35%)** |
+        | `bench_rw` | 6 / 6 | **51 / 51** |
+
+        All seeds pass the checker. Run time drops: `bench_seq` 1.24 s to
+        1.05 s, `bench_rw` 4.3 s to 3.0 s.
+      - ~~**`bench_seq`'s cone.**~~ **Fixed (ir-core, be-bc).**
         READ/WRITE reached 24%, not 50%. Traced over 200 `io_a` solves:
         `lba_bytes` is drawn first, and 4096 about half the time. In
         READ/WRITE solves, a learnt clause set it back to 512 after a
@@ -861,8 +887,8 @@ design), and timing-fuzz invariance.
         | `bench_rw` as is | 6 / 6 | 6 / 6 |
 
         All seeds pass the checker, and run time is unchanged. With `% 8`
-        in, FLUSH falls to 20% of ops: the `% 8` conflicts now dominate,
-        and they are the next item.
+        in, FLUSH fell to 20% of ops: the `% 8` conflicts then dominated
+        (fixed above).
 - [x] **B6c** N = 10 000 (bc has no `repeat` count limit), to show the line
       keeps going. **Done.** The first run passed but was superlinear (35 s
       and 412 MB for `bench_seq`, 72 s and 654 MB for `bench_rw`). Four
