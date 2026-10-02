@@ -119,3 +119,50 @@ def test_successive_traversals_each_choose():
             assert lane == lid and x == lid * 10 + 1
             lids[lid] += 1
     assert set(lids) == {2, 3, 4, 5, 9}
+
+
+def test_a_component_attribute_read_is_bounded_by_its_instances_values():
+    """With several candidates, `comp.id` is one value per instance, chosen
+    by `comp`. Once the instances' values are pinned, propagation alone must
+    bound the read by them, before `comp` is chosen. Left the attribute
+    type's whole range, `lane == comp.id` was drawn from 0..255 and rejected
+    value by value, and the conflicts reshaped unrelated distributions
+    (the NVMe bench's READ/WRITE sizes)."""
+    import ctypes
+    from dv_solve.ctx import SolveCtx
+
+    src = """
+import std_pkg::*;
+component lane_c {
+    bit[8] id;
+    action A { rand bit[8] lane; constraint lane == comp.id; }
+}
+component pss_top {
+    lane_c l[4];
+    exec init_down { foreach (l[i]) { l[i].id = i + 10; } }
+    action T { activity { do lane_c::A; } }
+}
+"""
+    model = _lower(src, root="pss_top::T")
+    (cone,) = [c for t in model.activations.values() for c in t.cones]
+    table, = model.activations.values()
+    names = [v.name for v in cone.vars]
+    blob = table.blob(cone, tuple(range(len(cone.constraints))))
+    ctx = SolveCtx((ctypes.c_uint8 * len(blob)).from_buffer_copy(blob))
+    lib = ctx._lib
+    for f in (lib.dvs_var_lo64, lib.dvs_var_hi64):
+        f.restype = ctypes.c_int64
+        f.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    inputs = sorted(i for i, n in enumerate(names) if "comp.id@" in n)
+    assert len(inputs) == 4, names
+    for k, i in enumerate(inputs):
+        assert ctx.pin(i, k + 10)
+    ctx.propagate_only()
+    # `lane == comp.id` makes the two one variable at compile; the one the
+    # solver keeps is the one it bounds (and the one the search draws).
+    read = names.index(next(n for n in names if n.endswith("comp.id")))
+    lane = names.index("#0.lane")
+    bounds = {(lib.dvs_var_lo64(ctx._ctx, v), lib.dvs_var_hi64(ctx._ctx, v))
+              for v in (read, lane)}
+    ctx.destroy()
+    assert (10, 13) in bounds, bounds

@@ -733,6 +733,136 @@ design), and timing-fuzz invariance.
       without it is unchanged. In the values-only run `lba_bytes` was 512 in
       89% of IOs. That is legal (4096-byte IOs are limited to 64 blocks),
       and D-B7 is decided by comparing it with `SolveCache(fair_pick=True)`.
+      **Measured (2026-10-02, `bench_seq`, N=1000, seeds 1-3):** 4096 is 5.0%
+      of IOs by default and 6.0% with `fair_pick`, and FLUSH is 39% of ops
+      either way. Every other leaf is well spread. So `fair_pick` is not the
+      lever, and D-B7 is to leave it off. The skew is dv-solve's search, and a
+      model of `io_s` alone reproduces it (4096 8%, FLUSH 39%):
+      - MRV sizes a domain by its bounds, so `lba_bytes in [512, 4096]`
+        counts as 3585 values, not 2. Smaller domains (`nlb`, `n_ptrs`) are
+        decided first and mostly leave 512 as the only legal value. Taking
+        the set's size for MRV (a prototype) makes `lba_bytes` the first
+        decision at 50/50, but the result only rose from 8% to 15%.
+      - The rest is restarts. A conflict deep in the 4096 branch (most often
+        `slba % 8 == 0`, which a random `slba` meets one time in 8) restarts
+        the search, and the restart decides `lba_bytes` again. A branch that
+        conflicts more is rejected more, so the run samples each choice
+        weighted by how easily it solves. Without the `% 8` rule, FLUSH IOs
+        are 50/50, and the others are 26%, held down by `n_ptrs`'s division.
+      - In the bench's 66-variable cone the effect is stronger. With the MRV
+        prototype, 4096 was 4% in `bench_seq` and 1.4% in `bench_rw`.
+
+      **The ceiling for picking values that meet `x % c == 0`** (measured by
+      dropping the rule from a scratch copy of the model; N=1000, seeds 1-3):
+
+      | | 4096 overall | 4096 in READ / WRITE / FLUSH | FLUSH share |
+      |---|---|---|---|
+      | `bench_seq` as is | 5.0% | 4% / 5% / 5% | 39% |
+      | `bench_seq` without `% 8` | 29.5% | 16% / 18% / 49% | 40% |
+      | `bench_rw` as is | 1.0% | 1% / 1% / n/a | n/a |
+      | `bench_rw` without `% 8` | 12.7% | 13% / 13% / n/a | n/a |
+
+      The set-size MRV prototype changes none of these on the bench (4.1%
+      and 28.4% for `bench_seq`), so it is not part of the fix. It mattered
+      only in the descriptor-only model. FLUSH's share does not move at all.
+
+      **Why READ/WRITE stay low** (a trace of 400 solves of the descriptor
+      alone, with the `% 8` rule dropped). Ablations: dropping
+      `nbytes <= MDTS_BYTES` lifts READ/WRITE 4096 from 23% to 57%, and
+      dropping `qid == sq_slot / 4 + 1` brings FLUSH from 39% to 23% of ops.
+      Neither rule is the problem. They matter because of how the search
+      treats the conflicts other rules cause:
+      - A solve averages 5-8 conflicts. Most are local to one later
+        variable: `first_off % 4 == 0` (a random `first_off` meets it one
+        time in 4), and `sq_slot` after `qid` (the division does not narrow
+        `sq_slot` once `qid` is fixed, so 3 picks in 4 fail). The clause
+        learnt from such a conflict often names only that variable, so it
+        backjumps to level 0 (2.5-3.5 times per solve), and every earlier
+        decision goes with it.
+      - The decisions are then made again, at random, and in a different
+        order: after the first conflict, VSIDS activity replaces MRV. `op`
+        was decided more than once in 356 of 400 solves. `lba_bytes`, with no
+        activity, now comes after `nlb`, which leaves 4096 legal only when
+        `nlb <= 64` (1 in 4). That is the transfer limit's effect.
+      - A branch that conflicts more is redrawn more. READ/WRITE solves
+        average 8.1 conflicts and FLUSH solves 5.5, so FLUSH keeps its
+        draws and ends at 39%.
+
+      So the skew is the search re-sampling its decisions on every backjump,
+      and each conflict source (`% c`, a division's reverse, the 64-bit
+      `slba + nlb` wrap) only feeds it. Fixing value picks for `% c`
+      removes one source. Keeping a decision's value when the search makes
+      it again (phase saving in seeded solves, made safe against B18's
+      infeasible saved values) removes the mechanism.
+
+      **Prototype (2026-10-02, dv-solve, uncommitted).** Two changes:
+      - *Kept draws.* A seeded solve keeps each variable's first drawn
+        value. When the search decides the variable again it takes that
+        value if the domain still allows it. A value whose own decision
+        conflicts is dropped for the rest of the solve, and keeping stops
+        at the first restart. So an infeasible kept value (B18's case) is
+        tried at most once. `DVS_KEEP_DRAWS=0` turns it off.
+      - *MRV by set size.* An unconditional `x in [..]` records how many
+        values `x` has, and variable order uses that, not the bounds' span.
+
+      N = 1000, seeds 1-3. Each cell is the 4096 share within READ / WRITE /
+      FLUSH, with FLUSH's share of ops in brackets. The isolated rows are
+      the `io_s` descriptor alone, 3000 solves.
+
+      | Run | before | kept draws | kept draws + MRV |
+      |---|---|---|---|
+      | `bench_seq` as is | 4 / 5 / 5 (39%) | 4 / 4 / 7 (32%) | 5 / 4 / 8 (30%) |
+      | `bench_seq` without `% 8` | 16 / 18 / 49 (40%) | 17 / 18 / 49 (32%) | 24 / 25 / 51 (32%) |
+      | `bench_rw` as is | 1 / 1 | 2 / 2 | 6 / 6 |
+      | `bench_rw` without `% 8` | 13 / 13 | 13 / 13 | **50 / 50** |
+      | descriptor alone, without `% 8` | | | **56 / 50 / 50 (34%)** |
+
+      The MRV change alone, on the descriptor, gives 28 / 25 / 47 (35%).
+
+      - Kept draws fix the op skew: FLUSH goes from 39% to 32%.
+      - Kept draws with MRV give the even split wherever the descriptor's
+        own rules are what's in play.
+      - Run time is 5-15% lower.
+      - dv-solve's unit tests and ctest show no new failures.
+
+      What is left:
+      - **`% 8`.** With the rule in, 4096 stays at about 5%. A random
+        `slba` meets `slba % 8 == 0` one time in 8. This needs the `% c`
+        value pick.
+      - ~~**`bench_seq`'s cone.**~~ **Fixed (ir-core, be-bc, uncommitted).**
+        READ/WRITE reached 24%, not 50%. Traced over 200 `io_a` solves:
+        `lba_bytes` is drawn first, and 4096 about half the time. In
+        READ/WRITE solves, a learnt clause set it back to 512 after a
+        backjump in about half of those (28 of 56); in FLUSH, never (0 of
+        37). The backjumps came from `io.lane`: `io.lane == comp.lane_id`
+        did not narrow `lane`, so it was drawn from 0..255 and rejected one
+        value at a time (up to 15 times in a row). Ablations, without
+        `% 8`: dropping the lane rule or the `qid` rule each give 52-57%,
+        and adding `io.lane < 4` alone gives 52 / 50 / 51.
+
+        Cause: with several candidate instances, `comp.lane_id` was a
+        variable tied to each instance's value by one implication per
+        instance (`comp == k -> v == in_k`). Until `comp` is chosen those
+        propagate nothing, so `v` kept the attribute type's whole range.
+        The tie is now one conditional value, `v == (comp == k0 ? in0 :
+        comp == k1 ? in1 : ...)` (`action_tree._comp_attr`), which the
+        solver bounds by the inputs once they are pinned, and from which it
+        narrows `comp`. bc lowers `ExprIfExp` in a constraint to the
+        solver's if-then-else value (before, it refused a `?:` in a
+        constraint). Tests: `test_bc_comp_attr_constraints.py` (the bound,
+        calibrated: the implication encoding leaves 0..255) and
+        `test_bc_conditional_value.py`.
+
+        | Run (kept draws + MRV) | before | conditional tie |
+        |---|---|---|
+        | `bench_seq` without `% 8` | 24 / 25 / 51 (32%) | **52 / 50 / 51 (32%)** |
+        | `bench_seq` as is | 5 / 4 / 8 (30%) | 23 / 20 / 11 (20%) |
+        | `bench_par` as is | | 24 / 21 / 11 (23%) |
+        | `bench_rw` as is | 6 / 6 | 6 / 6 |
+
+        All seeds pass the checker, and run time is unchanged. With `% 8`
+        in, FLUSH falls to 20% of ops: the `% 8` conflicts now dominate,
+        and they are the next item.
 - [x] **B6c** N = 10 000 (bc has no `repeat` count limit), to show the line
       keeps going. **Done.** The first run passed but was superlinear (35 s
       and 412 MB for `bench_seq`, 72 s and 654 MB for `bench_rw`). Four
