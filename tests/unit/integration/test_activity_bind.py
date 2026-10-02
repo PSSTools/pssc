@@ -131,12 +131,13 @@ component pss_top {
     assert _attr_chain(binds[0].dst) == ["c", "in_data"]
 
 
-def test_bc_refuses_activity_bind():
-    """bc has no flow-object semantics until P3, so an activity `bind` is
-    refused by the scenario pass -- never lowered as if it were not there."""
+def test_bc_refuses_a_stream_bind():
+    """bc binds buffers and states (B5), not streams yet: a stream reference
+    is refused by the scenario pass -- never lowered as if it were not
+    there. Buffer binds run in test_bc_flow_objects.py."""
     from zuspec.ir.core.xf import PSSToScenarioPass
     from zuspec.ir.core.xf.validate import UnsupportedConstructError
     ctx = _build_ctx(PSS_SRC)
     assert not ctx.errors, ctx.errors
-    with pytest.raises(UnsupportedConstructError, match="ActivityBind"):
+    with pytest.raises(UnsupportedConstructError, match="stream reference"):
         PSSToScenarioPass(exports=["test"]).lower(ctx)

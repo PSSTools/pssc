@@ -500,6 +500,19 @@ no recursion keeps its bytecode. An `addr_handle_t` is its address
 `set_executor` names, resolved at lowering, else to a builtin import. Specs:
 be-bc `docs/spec/{components,calls,memory}.md`.
 
+**Flow objects and resources on bc** (`docs/design/nvme-bench-plan.md` §6,
+B5). Which pool a reference uses is ONE walk, ir-core
+`xf/pss_lower/pools.py` (12.3); do not fold binding rules anywhere else. A
+reference is laid out in its action like a struct attribute (`inp.tag`,
+`chan.instance_id`). `bind` is a leaf-by-leaf equality in the cone (D-B13).
+State pools, claims and buffer picks are activation hooks at a node's solve
+and completion (`interp/activation.py`, D-B12), not opcodes; the native
+engine refuses activations anyway. A `parallel` whose branches lock the same
+pools gives each branch a footprint on entry, by probing one traversal of
+it. Streams, inference, resource attributes and claim arrays are refused
+with a location. Tests: `test_bc_flow_objects.py`, `test_bc_resources.py`
+(calibrated: fails with footprints off), `test_pool_binding.py`.
+
 **Enums, not strings.** `JoinSpec.kind` is a `JoinKind` and
 `DataTypeStruct.flow_kind` is a `FlowKind`; `test_flow_kind.py` holds the
 second. The SV target keeps strings in its *own* binding records and converts

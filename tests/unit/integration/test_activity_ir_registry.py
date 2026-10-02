@@ -50,8 +50,11 @@ CASES = {
                                         inline_constraints=[_c(True)]),
         Refused("inline traversal constraints")),
     "ActivityAtomic": (lambda: A.ActivityAtomic(stmts=[_b()]), LOWERS),
+    # An equality of the two references' objects in the cone (B5, D-B13);
+    # these operands are not references. A bind of two references runs in
+    # test_bc_flow_objects.py.
     "ActivityBind": (lambda: A.ActivityBind(src=_self("a"), dst=_self("b")),
-                     Refused("ActivityBind")),
+                     Refused("bind operands must be two flow-object references")),
     "ActivityChain": (lambda: A.ActivityChain(), Refused("ActivityChain")),
     # In force while its scope is (13.1.9 b.3): a constraint of the action
     # tree's cone (P1.4).

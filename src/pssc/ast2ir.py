@@ -1458,7 +1458,8 @@ class AstToIrTranslator:
                 p for p in (self._bind_target_path(ctx, t) for t in targets)
                 if p is not None
             ],
-            is_wildcard=child.getIs_wildcard(),
+            is_wildcard=any(t.getIs_wildcard() and t.numPath() == 0
+                            for t in targets),
         ))
 
     @staticmethod
@@ -1467,16 +1468,15 @@ class AstToIrTranslator:
 
         The parser splits ``gfx0.producer.out`` three ways: the component
         instances crossed (``getPath()``), the action type (``getType_id()``)
-        and the trailing member (``getField()``, an ``ExprRefName``). A
+        and the trailing member (``getField()``, an ``ExprRefName``). A bare
         wildcard target (``bind dpool *;``) names no path at all -- the
-        wildcard is already recorded on the enclosing ``PoolBind``.
+        wildcard is recorded on the enclosing ``PoolBind`` -- and one under
+        instances (``dma0.*``) is that path with ``*`` last.
 
         A range (``gfx[0..1].producer.out``) selects several instances, which
         only the pool-binding table (P2) can represent: it is a located error,
         never dropped.
         """
-        if target.getIs_wildcard():
-            return None
         parts: List[str] = []
         ranged = target.getRange() is not None
         for i in range(target.numPath()):
@@ -1487,6 +1487,10 @@ class AstToIrTranslator:
             ctx.add_error(f"{_ast_where(target)}bind ranges are not supported "
                           f"yet (P2 pool-binding table)")
             return None
+        if target.getIs_wildcard():
+            # `sub.*` binds the subtree of `sub` (LRM Ex 134); a bare `*`,
+            # the binding component's own, recorded on the PoolBind.
+            return ".".join(parts + ["*"]) if parts else None
         type_id = target.getType_id()
         if type_id is not None:
             for i in range(type_id.numElems()):

@@ -5,8 +5,8 @@ the decisions when implementation started; D-B8 turned out to be moot (§2).
 B1 and B2 are done (committed 2026-10-02). B4's dv-solve
 work landed upstream; D-B11 option 2 is done and option 1 (lifted
 explanations, learning on in bc) is done. B3 (G2–G6) is done and its gate is
-met (committed 2026-10-02); G7 is open and off the model's path. Next: B5, which is what the
-unmodified files still need.
+met (committed 2026-10-02); G7 is open and off the model's path. B5 is done:
+the unmodified files pass every test (uncommitted). Next: B6.
 
 **Why this plan.** `nvme_pss_bench/` (untracked, in the pssc root; never
 committed) is a cut-down IO model from a real NVMe verification library. Its
@@ -588,67 +588,128 @@ This is a slice of design P2 and P3. It is built the way that design says
 together with the design's own use cases. Each item names the use case it
 closes.
 
-**B5a — static elaboration (P2 subset).**
-- [ ] The pool-binding table, as one walk (design §4.2): `(component
-      instance, action type, ref field) -> pool instance`, following 12.3's
-      top-down, explicit-first precedence. The model needs
-      `bind cfg_pool *` in `pss_top` to reach `lane_c`'s actions, and each
-      lane's own pools. Whether the SV target moves onto it now is D-B4.
-- [ ] Each flow and resource reference becomes an object in the action
-      tree: a slot range laid out by `layout.py`. A resource reference also
-      gets an `instance_id` slot.
+**How it is built (2026-10-02).** bc already solves each traversal in its
+cone, with committed history pinned and later traversals free. B5 keeps that
+shape and adds flow and resource semantics where it already has hooks, rather
+than building the design's global planner (P3), which this model does not
+need (§1.4).
 
-**B5b — explicit binding and state (UC1, UC6 without `prev`).**
-- [ ] `bind a.out b.inp` makes the two references one object: one slot
-      range, so `out.tag == inp.tag` is an ordinary cone constraint. Ordering
-      is already given by the sequence. In global mode with planned
-      arbitration, the `EV_SET`/`EV_WAIT` monitor (design §6) asserts it.
-- [ ] A state input binds to the pool's current state object, which is
-      committed history, so it is pinned. A state output replaces the current
-      object. The `initial` constraint holds on the first object.
-      `constraint cfg.ready;` is then a pinned check: if no committed state
-      satisfies it, that is a located error, because inference is P4 and
-      this model needs none (`sys_bringup_a` is traversed explicitly).
+- **A reference is an object in its node.** A flow or resource reference
+  takes one slot per scalar of its type, laid out by `layout.py` like a struct
+  attribute (`inp.tag`, `chan.instance_id`). Exec bodies and constraints
+  reach it the way they reach a struct.
+- **`bind` is equality** (D-B13). `bind a.out b.inp` is the cone constraint
+  `a.out == b.inp`, leaf by leaf, in force in the bind's scope. Each reference
+  keeps its own slots. The producer has committed by the time the consumer
+  solves, so the consumer's values are pinned to the producer's. A value the
+  producer's exec body wrote is pinned too, because pins read the object.
+- **A state pool's current object lives in the activation object** (D-B14),
+  in slots past the subtrees. Its initial object is solved with the root,
+  with `initial` true. A state input is pinned to those slots when its own
+  node is solved, and is free before that (lookahead). A state output has
+  `initial` false, and is copied into those slots when its node completes.
+- **The runtime primitives are activation hooks** (D-B12). Claims, releases,
+  state reads and state writes all happen at a node boundary the activation
+  already sees: the node's solve (`SOLVE_NODE`) and its frame's completion.
+  So they are built there, not as the new opcodes of design D2.
+  - A claim is recorded when the node's solve commits, and released when its
+    frame completes or is cancelled.
+  - A lock's `instance_id` is excluded from the instances busy at its solve:
+    one bit-mask input per candidate pool, pinned at the node's own solve
+    and free before.
+  - The native engine already refuses activations (P1-D6). The opcodes come
+    with P3's global mode, which needs them as monitors.
+- **Nodes with flow or resource semantics are always solved in a cone**, as
+  nodes reading `comp` are (B3 G4), so their own per-type problem never
+  solves them without the pins.
 
-**B5c — locks (UC7, UC8, UC9).**
-- [ ] A lock's `instance_id` is a cone variable with domain
-      `[0, pool size)`. At solve time, instances held by actions that are
-      concurrent with this one are excluded. For sequential IOs that set is
-      empty; the claim table (`CLAIM`/`RELEASE`, design D2) records holds
-      and releases. A compound's lock (`io_a.sq`) is held for the compound's
-      whole run.
-- [ ] Over-subscription among concurrent actions is an error (LRM resource
-      scheduling rules, item 2), never an implicit wait.
+**B5a — static elaboration (P2 subset).** DONE.
+- [x] The pool-binding table, as one walk: ir-core `xf/pss_lower/pools.py`
+      (`PoolTable.pool_of(instance, action, field)`). It applies 12.3 c
+      (explicit over default), e (the top-most instance wins), and refuses
+      d, f and g with the clause in the message. The SV target is not moved
+      onto it (D-B4). It found an ast2ir bug, fixed at the source:
+      `bind p {sub.*}` (LRM Ex 134) reached the IR as a bare `*`, which binds
+      every instance. It is now `sub.*`.
+- [x] A reference is laid out by `layout.ref_leaves`, one slot per scalar of
+      its object. A claim's `instance_id` and a state's `initial` are solved
+      with the action. Tests: `test_pool_binding.py` (6).
 
-**B5d — choosing a producer (`bench_rw_pool`).**
-- [ ] A buffer input that is not bound explicitly is bound to an output that
-      already completed in the same pool, chosen at solve time. The
-      candidates are the pool's completed objects, which are committed
-      history. They are tried in a seeded random order, each with a pinned
-      solve of the consumer's compiled cone (about 0.03 ms after B2). The
-      first that is satisfiable wins. This is complete (every candidate is
-      tried before unsat) and linear in practice. A buffer object may have
-      several consumers. Which design is used is D-B5.
-- [ ] The extent pool is per lane, so a read's candidates are its lane's
-      writes. The read's `comp` choice and its producer choice are made
-      together: try a (lane, producer) pair, then solve.
+**B5b — explicit binding and state (UC1, UC6 without `prev`).** DONE.
+- [x] `bind` is a cone equality, leaf by leaf, in force in its scope
+      (D-B13), including a compound passing a child's output on. Operands
+      that are not two references are refused.
+- [x] State pools as described above (D-B14). `constraint cfg.ready;` on an
+      object that does not satisfy it is a located `ScopeUnsatError`.
+      Tests: `test_bc_flow_objects.py` (10, including the pick tests below).
 
-**B5e — claims across parallel branches (`probe_par_unpinned`).**
-- [ ] Within a `parallel`, every lock in one branch is concurrent with every
-      lock in every other branch (§1.5). Encoding that pair by pair is
-      O(N²), which is the trap this benchmark exists to expose. Instead, the
-      `parallel` scope gets **footprint variables**: one boolean per
-      (branch, pool, instance), saying whether the branch ever holds that
-      instance. Each pool instance can be in at most one branch's footprint.
-      Each lock in a branch must pick an instance in its branch's footprint.
-      The footprints are solved once, on entry to the `parallel`, and the
-      variable count depends on branches × instances, not on N. This is the
-      "loop summarization" cone break of design §4.7 (D15/D18), and the
-      benchmark is the measurement D18 asked for. Whether to adopt it is
-      D-B6.
+**B5c — locks (UC7, UC8, UC9).** DONE for lock and share. Resource
+attributes other than `instance_id`, and claim arrays (UC9), are refused.
+- [x] `instance_id` is in `[0, size)` of the pool its node's instance
+      reaches, and outside a busy mask pinned at the node's own solve. The
+      mask holds the instances a conflicting claim holds now (other than an
+      ancestor's), and those a claim in another branch of an enclosing
+      `parallel` took since that `parallel` was entered. A compound's lock
+      is held until its frame completes.
+- [x] Over-subscription in a `parallel` is a located error (UC8).
 
-**Gate:** design gate 1, plus the use cases named here, on the corpus; P3's
-timing-fuzz invariance for these primitives; B5's tests at N = 100–1000.
+**B5d — choosing a producer (`bench_rw_pool`).** DONE.
+- [x] An unbound buffer input picks one of the objects that completed
+      actions output to its pool. A pool selector, tied to the node's `comp`,
+      makes the lane and the pick one choice. Candidates are tried in a
+      seeded order, the least-consumed first, and the first the cone
+      accepts wins. With no candidate the error says inference is not
+      supported. Consumption counts matter here: any pick is legal, but the
+      model derives each read's tag from its write's, and the checker wants
+      unique tags. Picking at random made two reads of one write, so this
+      goes to the benchmark's owners too (D-B10).
+
+**B5e — claims across parallel branches (`probe_par_unpinned`).** DONE,
+built differently from the plan.
+- [x] Built first as planned: footprint variables in the `parallel`'s owner,
+      solved with lookahead over one traversal of each branch. That cone
+      holds four whole IOs, descriptors included, and the root's solve
+      exhausted the 10 000-restart budget even for `bench_par`. That is
+      B4's finding again: IOs solved jointly are hard.
+- [x] Now: on entry to the `parallel`, the activation probes each branch in
+      turn. A probe is an uncommitted solve of the cone of the branch's
+      first locking node, with the instances earlier branches reserved
+      excluded. A branch's footprint is what its probe locked. Every
+      instance no probe took is dealt out at random among the branches that
+      use its pool. Each lock then stays inside its branch's footprint, as
+      part of its busy mask.
+  - The cones stay one IO wide, and the work per `parallel` entry is
+    branches × one IO solve, independent of N.
+  - Calibrated: on a two-lane model where each lane has one channel, the
+    test fails on some seed with footprints off
+    (`test_footprints_spread_branches_over_lanes`).
+  - LRM Ex 134 runs. The shared core is the located conflict the example
+    calls one. Tests: `test_bc_resources.py` (9).
+  - It is greedy across branches: a branch probed early can take what a
+    later one needed. That gives a located error, never a wrong result.
+
+**Gate.** Met for the benchmark. Every test passes its checker from the
+unmodified files: `bench_seq`, `bench_par`, `bench_rw`, `bench_rw_pool` and
+`probe_par_unpinned` at N = 100, 200, 500 and 1000. All three probes pass
+on 50 seeds out of 50. Every `op` is a member of `op_e`, and `bench_seq`
+shows all six `(op, lba_bytes)` combinations.
+
+| Test (end to end, one process) | N=100 | N=200 | N=500 | N=1000 | RSS at 1000 |
+|---|---|---|---|---|---|
+| `bench_seq` | 0.49 s | 0.67 s | 1.36 s | 2.59 s | 158 MB |
+| `bench_par` | 0.56 s | 0.77 s | 1.43 s | 2.64 s | 164 MB |
+| `bench_rw` | 1.45 s | 2.60 s | 6.05 s | 11.96 s | 268 MB |
+| `bench_rw_pool` | 0.57 s | 0.86 s | 1.77 s | 3.41 s | 185 MB |
+| `probe_par_unpinned` | 0.57 s | 0.78 s | 1.49 s | 2.75 s | 164 MB |
+
+`bench_seq` at N=1000 takes 5.3× its N=100 time, against the 12× bound.
+`bench_rw` is about 2× its B3 time: each of a pair's ~25 traversals solves
+the pair's whole cone, which now has a reference per stage (2,502 solves at
+0.65 ms each at N=200). Reusing a cone's last solution when it still holds
+would remove most of them. That is for B6.
+
+Not done: the corpus use cases (no L4 corpus tests exist yet, §8.4 of the
+design), and timing-fuzz invariance.
 
 ## 7. B6 — Scale, telemetry and the report
 
@@ -695,11 +756,14 @@ every bc user immediately.
 | D-B2 | Must the context cache be invisible, i.e. byte-identical logs? | Yes, and test it (§3). Measured identical in 319 of 319 cases. If a dv-solve change ever breaks this, fix `restore` rather than accept drift. |
 | D-B3 | Default solve budget | ~~`max_conflicts` = 100 000~~ (that is dv-solve's restart unit, §5.1). Taken: `max_restarts` = 10 000 (dv-solve's default), overridable per run. Exhausting it is a located error. |
 | D-B4 | Build the pool-binding table now without moving the SV target onto it | Yes. The table lands in ir-core `xf/` as design D1 says; moving SV onto it stays in P2 with its golden-snapshot gate. |
-| D-B5 | Producer choice in B5d: try candidates in random order, or one selector variable over all candidates | Random-order tries. A selector over N/2 candidates makes each read's cone O(N), so the run is O(N²). |
-| D-B6 | Adopt footprint variables (a cone break) for claims across parallel branches | Yes, with design §9.3's enumeration oracle on small cases (2–4 branches, 2–3 instances) as the soundness check, since D18 asked for data and this is the data. |
+| D-B5 | Producer choice in B5d: try candidates in random order, or one selector variable over all candidates | Random-order tries. A selector over N/2 candidates makes each read's cone O(N), so the run is O(N²). **Built** (B5d), least-consumed first. |
+| D-B6 | Adopt footprint variables (a cone break) for claims across parallel branches | Yes, with design §9.3's enumeration oracle on small cases (2–4 branches, 2–3 instances) as the soundness check, since D18 asked for data and this is the data. **Built** (B5e) as probed footprints, not variables: as variables, the root's cone held one IO per branch and did not solve. The enumeration oracle is not built yet. |
 | D-B7 | `fair_pick` for SOLVE_NODE | Measure both in B6 and decide on the data; don't change the default blind (it changes every scenario's values). |
 | D-B8 | Fold inline field domains (`x in [0..9]`) into B1 | Yes. It's the same helper and removes a refusal. |
 | D-B9 | Priority against the op-model gaps (status doc: "next") | B1 and B2 now (small, they fix correctness and speed for every bc user). The user then picks B3–B5 or the op-model gaps. |
-| D-B10 | Report §1.5 and the checker's missing `op` range check to the benchmark's owners | Yes. Don't edit their files. |
+| D-B10 | Report §1.5 and the checker's missing `op` range check to the benchmark's owners | Yes. Don't edit their files. Add (B5d): `read_verify_a` derives its tag from its source's, and nothing makes two reads take different sources, so a legal `bench_rw_pool` scenario can fail the checker's unique-tag rule. |
+| D-B12 | (new, B5) Build claims, releases and state reads/writes as activation hooks at the node's solve and completion, instead of the opcodes of design D2? | Yes, for now. Every one of them happens at a node boundary the activation already sees, and the native engine refuses activations anyway. The opcodes come with P3's global mode. |
+| D-B13 | (new, B5) `bind` as leaf-by-leaf equality between two references' own slots, instead of one shared slot range? | Yes. Shared slots would need an indirect load in bc. With the producer committed first, equality pins the consumer to exactly the producer's values, including values its exec body wrote. |
+| D-B14 | (new, B5) A state pool's current object in slots of the activation object, with the initial object solved with the root? | Yes. One activation runs one export, so the activation object is the pool's lifetime. Moving pools into the component object is for when several activations share a component tree. |
 | D-B11 | (new, from B4; **decided 2026-10-02: option 2 now, then option 1**) dv-solve's clause learning is the lever for this model's hard solves (median 2.2 s -> 0.3 ms on the two-IO problem), but it is unsound and cannot lift explanations. Rework dv-solve's conflict analysis now (explanations at trail position + lifting), or ship B4 with the cycle detector and LCG off (bench_rw runs, slowly) and do the rework as its own plan? | Open. |
 
