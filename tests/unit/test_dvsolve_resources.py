@@ -11,6 +11,8 @@ checkout -- failing for everyone on released wheels with
 
     fatal error: zsp_block_alloc.h: No such file or directory
 
+(dv-solve's headers have since been renamed: the public one is ``dv_solve.h``.)
+
 A test that only builds from this monorepo would keep passing throughout.
 """
 import shutil
@@ -32,8 +34,8 @@ def test_returns_dirs_that_actually_hold_the_artifacts():
     compile or link anything.
     """
     incs, libdir = _dvsolve_share()
-    assert any((Path(d) / "zsp_block_alloc.h").is_file() for d in incs), \
-        "no include dir holds zsp_block_alloc.h: %s" % incs
+    assert any((Path(d) / "dv_solve.h").is_file() for d in incs), \
+        "no include dir holds dv_solve.h: %s" % incs
     assert (Path(libdir) / "libdv_solve.so").is_file(), \
         "reported lib dir has no linkable libdv_solve.so: %s" % libdir
 
@@ -71,15 +73,9 @@ def test_generated_solver_tu_compiles_against_the_reported_dirs(tmp_path):
     if shutil.which("gcc") is None:
         pytest.skip("gcc not available")
     incs, _libdir = _dvsolve_share()
+    from pssc.targets.sw_tgt import _solve_c
     src = tmp_path / "pssc_solve.c"
-    src.write_text(
-        '#include <stdint.h>\n'
-        '#include <string.h>\n'
-        '#include "zsp_block_alloc.h"\n'
-        '#include "zsp_problem.h"\n'
-        '#include "zsp_ctx.h"\n'
-        '#include "zsp_search.h"\n'
-        'int probe(void) { return 0; }\n')
+    src.write_text(_solve_c([]))
     r = subprocess.run(
         ["gcc", "-c", "-fPIC", "-w", *["-I%s" % i for i in incs],
          str(src), "-o", str(tmp_path / "pssc_solve.o")],
@@ -88,11 +84,10 @@ def test_generated_solver_tu_compiles_against_the_reported_dirs(tmp_path):
 
 
 def test_solver_includes_stay_separate_from_the_backend_set():
-    """dv-solve and zuspec-be-sw both ship a ``zsp_alloc.h`` declaring an
-    incompatible ``struct zsp_alloc_s``. The two include sets must never be
-    merged into one ``-I`` list; this pins that they are in fact distinct, so
-    a future refactor that "simplifies" them into one is a test failure and
-    not a debugging session.
+    """The solver translation unit is built with dv-solve's include set only,
+    never merged with be-sw's. They used to ship colliding ``zsp_alloc.h``
+    headers; dv-solve's are now ``dvs_``-prefixed, but each set still comes
+    from its own installation and is passed to its own translation unit.
     """
     besw = pytest.importorskip("zuspec.be.sw")
     incs, _libdir = _dvsolve_share()
@@ -100,9 +95,7 @@ def test_solver_includes_stay_separate_from_the_backend_set():
     if not backend_inc.is_dir():
         pytest.skip("be-sw include dir not present")
     assert backend_inc not in [Path(d) for d in incs]
-    # And both really do ship the colliding header.
-    assert (backend_inc / "zsp_alloc.h").is_file()
-    assert any((Path(d) / "zsp_alloc.h").is_file() for d in incs)
+    assert not any((Path(d) / "zsp_alloc.h").is_file() for d in incs)
 
 
 def test_unlinkable_selected_installation_is_an_error_not_a_fallback(

@@ -107,17 +107,14 @@ endmodule
 
 
 def _solve_c(plan) -> str:
-    """The ``pssc_solve.c`` translation unit: includes only dv-solve headers (kept
-    separate from the runtime headers, which carry a conflicting ``zsp_alloc.h``).
-    Defines the solved-field globals and ``pssc_solve_all`` which solves each
-    traversal's embedded problem with a per-run seed."""
+    """The ``pssc_solve.c`` translation unit: includes only dv-solve's public
+    header (kept separate from the runtime headers). Defines the solved-field
+    globals and ``pssc_solve_all`` which solves each traversal's embedded
+    problem with a per-run seed."""
     lines = [
         "#include <stdint.h>",
         "#include <string.h>",
-        '#include "zsp_block_alloc.h"',
-        '#include "zsp_problem.h"',
-        '#include "zsp_ctx.h"',
-        '#include "zsp_search.h"',
+        '#include "dv_solve.h"',
         "",
     ]
     for g, _vid, _i in _plan_globals(plan):
@@ -130,16 +127,16 @@ def _solve_c(plan) -> str:
               "    static unsigned char cbuf[1<<20];"]
     for i, entry in enumerate(plan):
         lines.append("    {")
-        lines.append("        zsp_block_alloc_t *ba = zsp_block_alloc_create(0, 1<<20);")
-        lines.append("        SolveCtx *c = solver_create(cbuf, sizeof(cbuf), ba);")
-        lines.append(f"        solver_compile(c, (SolveProblem*)prob_{i});")
-        lines.append("        SolveOpts o; memset(&o, 0, sizeof(o));")
+        lines.append("        dvs_block_alloc_t *ba = dvs_block_alloc_create(0, 1<<20);")
+        lines.append("        dvs_ctx_t *c = dvs_solver_create(cbuf, sizeof(cbuf), ba);")
+        lines.append(f"        dvs_solver_compile(c, (dvs_problem_t*)prob_{i});")
+        lines.append("        dvs_solve_opts_t o; memset(&o, 0, sizeof(o));")
         lines.append(f"        o.seed = seed + {i}ull; o.fair_pick = 1;")
-        lines.append("        solver_solve(c, &o);")
+        lines.append("        dvs_solver_solve(c, &o);")
         for slot in entry["slots"]:
             g = "g_" + entry["prefix"] + slot.cname
-            lines.append(f"        {g} = (int32_t)solver_get_value(c, {slot.var_id});")
-        lines.append("        solver_destroy(c); zsp_block_alloc_destroy(ba);")
+            lines.append(f"        {g} = (int32_t)dvs_solver_get_value(c, {slot.var_id});")
+        lines.append("        dvs_solver_destroy(c); dvs_block_alloc_destroy(ba);")
         lines.append("    }")
     lines += ["}", ""]
     return "\n".join(lines)

@@ -9,9 +9,9 @@ costs (see `test_a_default_constraint_carries_its_body`):
     one plain + one default  -> 2 blocks, 2 statements
     only a default           -> 1 block,  1 statement
 
-What remains open is downstream: no target yet distinguishes a default from a
-hard constraint, which is what `test_the_models_defaults_should_be_visible_in_the_ir`
-still records (C6.5).
+The IR carries a default as its own statement, ``StmtDefault`` (LRM 13.1.11),
+which is what `test_the_models_defaults_are_visible_in_the_ir` checks against
+the real model; bc resolves and solves them.
 
 SCOPE -- this does NOT affect either shipping op-model API. Constraints and
 actions are deliberately excluded from an operation model: there is no solver in
@@ -22,10 +22,8 @@ defaults on `wb_dma_ch_cfg_s` are absent from both APIs by design, not by this
 defect, and a C-side `_DEFAULT` macro knob (plan C6.5) is out of scope rather
 than blocked.
 
-Where it WOULD matter is a solver-capable target, which is the only kind that
-consumes constraints at all. The remaining `xfail(strict=True)` marker below
-describes the behaviour that should hold at the IR level for such a target, and
-will start failing loudly -- as XPASS -- the day the value is carried through.
+Where it matters is a solver-capable target, which is the only kind that
+consumes constraints at all.
 """
 import os
 
@@ -112,33 +110,23 @@ def test_a_default_constraint_should_reach_the_ast():
     assert _blocks_and_stmts("        constraint default a == 7;")[1] == 1
 
 
-@pytest.mark.xfail(strict=True,
-                   reason="nothing in the IR distinguishes a default constraint's "
-                          "value, so a solver target cannot reach it (C6.5)")
-def test_the_models_defaults_should_be_visible_in_the_ir():
+def test_the_models_defaults_are_visible_in_the_ir():
     """The same question, stated against the REAL model rather than a probe.
 
-    `wb_dma_ch_cfg_s` documents `src_mask == 0xfffffffc`; nothing in the IR says
-    so. The body now survives the parser (see above), so what is missing is an IR
-    representation a solver-capable target can read -- and that target has no
-    other source for the value. Asserting it here means the fix is detected
-    against the real model, not just a two-field probe.
+    `wb_dma_ch_cfg_s` states `constraint default src_mask == 0xfffffffc`. The
+    IR carries it as a ``StmtDefault`` -- a default, not a hard constraint --
+    which is what a solver-capable target reads (bc resolves it per LRM
+    13.1.11 d).
     """
+    from zuspec.ir import core as ir
     ctx = driver.translate(op_model_sources()).ir_context
     cfg = ctx.type_m["wb_dma_ch_cfg_s"]
-
-    # Whichever way it eventually arrives -- a field initial_value, or a
-    # constraint the backend can recognise as an equality default -- the value
-    # has to be findable. Accept either shape so this test survives the fix.
-    by_field = {f.name: getattr(f, "initial_value", None) for f in cfg.fields}
-    if by_field.get("src_mask") is not None:
-        assert getattr(by_field["src_mask"], "value", None) == 0xfffffffc
-        return
-
-    text = " ".join(str(f.body) for f in cfg.functions)
-    assert "4294967292" in text or "fffffffc" in text.lower(), (
-        "the model states `constraint default src_mask == 0xfffffffc` and "
-        "nothing in the IR carries it")
+    found = {}
+    for fn in cfg.functions:
+        for st in fn.body:
+            if isinstance(st, ir.StmtDefault):
+                found[getattr(st.target, "attr", None)] = getattr(st.value, "value", None)
+    assert found.get("src_mask") == 0xfffffffc, found
 
 
 # --- the exclusion itself, as behaviour rather than prose -------------------

@@ -194,17 +194,19 @@ component pss_top { c_c c1, c2; action T { activity { do c_c::A; } } }
         trace(src)
 
 
-def test_a_constraint_reading_a_component_attribute_is_refused():
+def test_a_constraint_reading_a_component_attribute():
+    """`comp.f` is an input of the solve, pinned from the component object
+    (test_bc_comp_attr_constraints.py has the cases)."""
     src = """
 import std_pkg::*;
 component c_c {
     int f = 5;
-    action A { rand bit[4] v; constraint v < comp.f; exec body { } }
+    action A { rand bit[4] v; constraint v < comp.f; exec body { message(NONE, "%d", v); } }
 }
 component pss_top { c_c c1; action T { activity { do c_c::A; } } }
 """
-    with pytest.raises(LoweringError, match=r"component attribute \(comp.f\)"):
-        _lower(src)
+    got = {v for r in _runs(src, "pss_top::T", range(60)) for v in r}
+    assert got == {"0", "1", "2", "3", "4"}
 
 
 # --- coroutine keys (O5) ----------------------------------------------------

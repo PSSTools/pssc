@@ -7,10 +7,12 @@ nested `if` and anything under an implication vanished, most often taking the
 whole constraint block with them. The scope solve P1 builds is exactly as
 right as the constraints that reach it.
 
-A statement with no IR form yet (`soft`, `dist`, `default`) is recorded on its
+A statement with no IR form yet (`soft`, `dist`) is recorded on its
 block, ``metadata["untranslated"]``, with its line: a consumer that SOLVES the
 block refuses it (``collect_solve_problem``), and one that only reads types
-(the op-model targets, over WB DMA's `default`s) is unaffected.
+(the op-model targets) is unaffected. `default` and `default disable` are
+IR statements of their own (LRM 13.1.11), resolved where the object is laid
+out (`test_bc_default_constraints.py`).
 
 This test enumerates pssparser's ``ConstraintStmt`` classes BY INTROSPECTION
 and requires a row for each. The twins are ``test_activity_registry.py`` and
@@ -87,8 +89,9 @@ CASES = {
     "ConstraintStmtSoft":        ("soft x == 3;", Ledger("soft")),
     # pssparser does not locate a dist statement (pssc-requests-2026-09-30.md P2).
     "ConstraintStmtDist":        ("dist x in [0..3 := 1, 4 := 5];", Ledger("dist", located=False)),
-    "ConstraintStmtDefault":     ("default x == 3;", Ledger("default")),
-    "ConstraintStmtDefaultDisable": ("default disable x;", Ledger("default disable")),
+    "ConstraintStmtDefault":     ("default x == 3;", lambda b: _shape(b) == ["StmtDefault"]),
+    "ConstraintStmtDefaultDisable": ("default disable x;",
+                                     lambda b: _shape(b) == ["StmtDefaultDisable"]),
 }
 
 #: Not statements a constraint body holds on its own, and why.
@@ -155,7 +158,6 @@ def test_an_empty_true_branch_keeps_its_else_under_the_negated_condition():
 @pytest.mark.parametrize("body,kind", [
     ("x > 1 -> { soft z == 1; }", "soft"),
     ("foreach (a[i]) { soft a[i] == 1; }", "soft"),
-    ("if (x > 1) { default z == 1; }", "default"),
 ])
 def test_an_untranslated_statement_is_recorded_at_any_depth(body, kind):
     ctx = _translate(body)

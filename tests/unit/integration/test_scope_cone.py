@@ -191,7 +191,8 @@ component pss_top {
 
 
 def test_a_reference_the_tree_cannot_resolve_is_left_for_the_backend():
-    """`comp` is P1.5: the reference stays as written, and bc refuses it."""
+    """Without a component tree, `comp.lim` names nothing: the reference
+    stays as written, and bc refuses it."""
     t = _tree("""\
 component pss_top {
     bit[4] lim;

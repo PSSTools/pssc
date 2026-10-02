@@ -3357,8 +3357,24 @@ class AstToIrTranslator:
                 ctx.errors.append(
                     f"'{kind}' may not be used inside generic constraint "
                     f"'{ctx.generic_constraint_name}' (PSS 3.1 §13.3 g)")
+                return
+            # Which default holds depends on every context that reaches the
+            # attribute (13.1.11 d), so it is resolved where the object is
+            # laid out, not here.
+            target = self._translate_expression(ctx, stmt.getHid())
+            if target is None:
+                ctx.add_error(f"{_ast_where(stmt)}'{kind}' names no attribute")
+                return
+            if isinstance(stmt, pss_ast.ConstraintStmtDefault):
+                value = self._translate_expression(ctx, stmt.getExpr())
+                if value is None:
+                    ctx.add_error(f"{_ast_where(stmt)}'default' has no value")
+                    return
+                out = ir.StmtDefault(target=target, value=value)
             else:
-                self._untranslated(ctx, stmt, kind)
+                out = ir.StmtDefaultDisable(target=target)
+            out.loc = ast_loc(stmt, getattr(self, "_files", {}))
+            body.append(out)
 
         elif isinstance(stmt, (pss_ast.ConstraintStmtSoft,
                                pss_ast.ConstraintStmtDist)):
