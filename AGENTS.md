@@ -513,6 +513,16 @@ it. Streams, inference, resource attributes and claim arrays are refused
 with a location. Tests: `test_bc_flow_objects.py`, `test_bc_resources.py`
 (calibrated: fails with footprints off), `test_pool_binding.py`.
 
+**Scale** (B6). A node of a cone takes its values from the cone's last
+solution when that is a solution of its own solve and chose them freely
+(be-bc `docs/spec/activation.md`); that is most traversals of a pipelined
+compound (`test_bc_cone_reuse.py`). `scripts/bench_bc.py` runs any model's
+exports over a constant sweep and seeds: stage times, RSS, solves, cone
+shape, an external checker's verdict, and the distribution of every rand
+leaf (`--variety`, through `run_model(on_solve=...)`). `tests/perf/` holds a
+pssc-owned job pipeline; its checks run by default, its timing tests with
+`pytest -m perf tests/perf`.
+
 **Enums, not strings.** `JoinSpec.kind` is a `JoinKind` and
 `DataTypeStruct.flow_kind` is a `FlowKind`; `test_flow_kind.py` holds the
 second. The SV target keeps strings in its *own* binding records and converts

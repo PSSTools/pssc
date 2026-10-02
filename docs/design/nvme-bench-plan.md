@@ -6,7 +6,8 @@ B1 and B2 are done (committed 2026-10-02). B4's dv-solve
 work landed upstream; D-B11 option 2 is done and option 1 (lifted
 explanations, learning on in bc) is done. B3 (G2–G6) is done and its gate is
 met (committed 2026-10-02); G7 is open and off the model's path. B5 is done:
-the unmodified files pass every test (uncommitted). Next: B6.
+the unmodified files pass every test (committed 2026-10-02). B6 is in
+progress.
 
 **Why this plan.** `nvme_pss_bench/` (untracked, in the pssc root; never
 committed) is a cut-down IO model from a real NVMe verification library. Its
@@ -711,24 +712,73 @@ would remove most of them. That is for B6.
 Not done: the corpus use cases (no L4 corpus tests exist yet, §8.4 of the
 design), and timing-fuzz invariance.
 
-## 7. B6 — Scale, telemetry and the report
+## 7. B6 — Scale, telemetry and the report — IN PROGRESS
 
-- [ ] `scripts/bench_bc.py` (generic, not named after any model): runs a
-      model directory's export on bc for a list of N values and seeds, with
-      a constant override. It records per-stage time (parse/link, ast2ir,
-      scenario, bc lower, run), peak RSS, the number of solves and compiled
-      contexts, cone telemetry (design §4.7: size, variables, edges by kind)
-      and, given an external checker command, the checker's verdict.
-- [ ] A variety report from the log: the distribution of every `rand` leaf
-      and of selected tuples (here `(op, lba_bytes, nlb)`, slots per lane,
-      lanes). In the values-only run, `lba_bytes` was 512 in 89% of IOs.
-      That is legal, since 4096-byte IOs are limited to 64 blocks, but it is
-      worth checking against `fair_pick=True` (D-B7).
-- [ ] N = 10 000 (bc has no `repeat` count limit), to show the line keeps
-      going.
-- [ ] A `perf` pytest marker, not in the default run. It uses a pssc-owned
-      model (D-B1) at N = 200, with a generous time bound and a check that
-      time scales linearly.
+- [x] **B6a** `scripts/bench_bc.py` (generic, not named after any model):
+      runs a model's exports on bc for a list of constant values and seeds.
+      A constant is overridden by a file parsed first (`const int N = v;`),
+      which a model guarded with `compile if (!compile has(N))` takes in
+      place of its own; nothing is copied or edited. Each (export, value)
+      runs in its own process, so peak RSS is that configuration's. It
+      records per-stage time (parse/link, ast2ir, scenario, bc lower, run),
+      peak RSS, solves, compiled contexts and cache hits, cone telemetry
+      (design §4.7: nodes, variables, constraints by kind) and, given a
+      checker command, the checker's verdict per seed. **Done.** It drops
+      the run's event trace (`--trace` keeps it): the trace holds every
+      event, so it grows with the run and nothing in the report reads it.
+- [ ] **B6b** A variety report: the distribution of every `rand` leaf of
+      every action, as solved, and of selected tuples (here
+      `(op, lba_bytes, nlb)`). It is collected through one optional hook,
+      `run_model(on_solve=...)`, called after each solve writes back; a run
+      without it is unchanged. In the values-only run `lba_bytes` was 512 in
+      89% of IOs. That is legal (4096-byte IOs are limited to 64 blocks),
+      and D-B7 is decided by comparing it with `SolveCache(fair_pick=True)`.
+- [x] **B6c** N = 10 000 (bc has no `repeat` count limit), to show the line
+      keeps going. **Done.** The first run passed but was superlinear (35 s
+      and 412 MB for `bench_seq`, 72 s and 654 MB for `bench_rw`). Four
+      causes, each fixed where it was:
+      - The claim table kept every claim ever made, and each node's exit
+        and each `_busy` scanned all of it. A held claim is now indexed by
+        its node, and a released one keeps only its latest instance per
+        (node, site, instance, lock): it matters only to a concurrent claim
+        made since their parallel was entered (`activation.py`).
+      - A picked buffer input shuffled and sorted every object its pool
+        ever received, per pick. Objects are now bucketed by times picked,
+        and the order is drawn lazily from the least-picked bucket (same
+        distribution: least picked first, uniform among equals).
+      - A completed frame stayed in its parent's `children`, so a loop kept
+        every iteration's frames. Only live children are ever read; a done
+        one now leaves the list.
+      - dv-solve: `restore` popped the dynamic stack to the solve's level-0
+        seal, not to the checkpoint's mark, so every trail entry made by the
+        pins and the solve's first propagation stayed allocated. A reused
+        context grew about 13 KB per solve. Fixed in `dvs_checkpoint.c`,
+        with a calibrated test (`test_checkpoint_memory.py`: 10 -> 594
+        blocks over 3000 cycles without the fix, 10 with it).
+
+      Now (one seed, run time in s / peak RSS in MB; all pass):
+
+      | export | N = 100 | N = 1000 | N = 10 000 |
+      |---|---|---|---|
+      | `bench_seq` | 0.14 / 66 | 1.21 / 67 | 12.4 / 78 |
+      | `bench_par` | 0.23 / 70 | 1.16 / 71 | 10.5 / 81 |
+      | `bench_rw` | 0.51 / 67 | 4.50 / 68 | 47.9 / 79 |
+      | `bench_rw_pool` | 0.25 / 68 | 1.79 / 69 | 17.1 / 82 |
+      | `probe_par_unpinned` | 0.23 / 71 | 1.23 / 72 | 11.3 / 80 |
+- [x] **B6d** A `perf` pytest marker, not in the default run, on a
+      pssc-owned model (D-B1) in `tests/perf/` at N = 200: a generous time
+      bound and a check that time scales linearly. **Done:**
+      `tests/perf/model/jobs.pss` (exports `jobs_seq`, `jobs_par`, `jobs_rw`),
+      checked against its own rules at N = 40 by default; the timing tests
+      run with `pytest -m perf tests/perf`.
+- [x] **B6e** `bench_rw` back to its B3 time. Each of a pair's traversals
+      solves the pair's whole cone. Find where the time goes with B6a's
+      telemetry first; the candidate is reusing the cone's last solution
+      when it still satisfies the pins and constraints now in force.
+      **Done** (be-bc `docs/spec/activation.md`, "The cone's last
+      solution"): `bench_rw` at N = 1000 went from 11.96 s to 4.5 s, and
+      four of every five traversals now reuse (`test_bc_cone_reuse.py`,
+      calibrated on the state-input case).
 
 ## 8. Order and size
 

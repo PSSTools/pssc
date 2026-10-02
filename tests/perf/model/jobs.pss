@@ -1,0 +1,183 @@
+// A job pipeline over four ports, for bc's scaling test (tests/perf).
+//
+// Each job passes four stages, each its own action, chained by bound
+// buffers; it locks a slot of its port while accepted and a DMA engine while
+// moving. Accepting needs the link up, a state object one action brings up.
+// Data a write leaves in its port's pool is read back by a later read.
+//
+// JOBS_N is the scenario size; a file parsed first may set it.
+import std_pkg::*;
+
+compile if (!compile has(JOBS_N)) {
+    const int JOBS_N = 200;
+}
+
+package jobs_pkg {
+    enum kind_e { K_SMALL, K_LARGE, K_CTRL }
+
+    struct job_s {
+        rand bit[32] id;
+        rand bit[8]  port;
+        rand kind_e  kind;
+        rand bit[16] len;            // units
+        rand bit[16] unit;           // bytes per unit
+        rand bit[32] bytes;
+        rand bit[8]  slot;
+        rand bit[16] lane;           // derived from the slot
+
+        constraint unit in [64, 256];
+        constraint len in [1..128];
+        constraint bytes == len * unit;
+        constraint bytes <= 16384;
+        constraint kind == K_CTRL -> len == 1;
+        constraint kind == K_SMALL -> bytes <= 1024;
+        constraint kind == K_LARGE -> bytes > 1024;
+        constraint slot < 8;
+        constraint lane == slot / 2;
+        constraint id > 0;
+    }
+
+    state link_s {
+        rand bool up;
+        rand bit[8] speed;
+        constraint initial -> !up;
+        constraint up -> speed in [1, 2, 4];
+    }
+
+    buffer accepted_b { rand bit[32] id; }
+    buffer moved_b    { rand bit[32] id; }
+    buffer done_b     { rand bit[32] id; }
+    buffer data_b     { rand bit[32] id; rand bit[8] port; rand bit[16] len; }
+
+    resource slot_r {}
+    resource dma_r {}
+}
+
+component port_c {
+    import jobs_pkg::*;
+
+    bit[8] port_id;
+
+    pool [8] slot_r   slots;    bind slots *;
+    pool [2] dma_r    dmas;     bind dmas *;
+    pool accepted_b   acc_pool; bind acc_pool *;
+    pool moved_b      mv_pool;  bind mv_pool *;
+    pool done_b       done_pool; bind done_pool *;
+    pool data_b       data_pool; bind data_pool *;
+
+    action accept_a {
+        rand job_s job;
+        input  link_s     link;
+        output accepted_b out;
+        lock   slot_r     slot;
+        constraint link.up;
+        constraint out.id == job.id;
+        constraint job.slot == slot.instance_id;
+        constraint job.port == comp.port_id;
+        exec body {
+            message(NONE, "JOB stage=accept id=%u port=%u slot=%u kind=%u len=%u unit=%u bytes=%u lane=%u",
+                    job.id, job.port, job.slot, job.kind, job.len, job.unit, job.bytes, job.lane);
+        }
+    }
+
+    action move_a {
+        input  accepted_b inp;
+        output moved_b    out;
+        lock   dma_r      dma;
+        constraint out.id == inp.id;
+        exec body { message(NONE, "JOB stage=move id=%u dma=%u", inp.id, dma.instance_id); }
+    }
+
+    action finish_a {
+        input  moved_b inp;
+        output done_b  out;
+        constraint out.id == inp.id;
+        exec body { message(NONE, "JOB stage=finish id=%u", inp.id); }
+    }
+
+    action retire_a {
+        input done_b inp;
+        exec body { message(NONE, "JOB stage=retire id=%u", inp.id); }
+    }
+
+    action job_a {
+        rand job_s job;
+        accept_a acc;
+        move_a   mv;
+        finish_a fin;
+        retire_a ret;
+        constraint acc.job == job;
+        activity {
+            acc; mv; fin; ret;
+            bind acc.out mv.inp;
+            bind mv.out fin.inp;
+            bind fin.out ret.inp;
+        }
+    }
+
+    action write_a {
+        rand job_s job;
+        output data_b d;
+        constraint d.id == job.id;
+        constraint d.port == comp.port_id;
+        constraint d.len == job.len;
+        constraint job.kind != K_CTRL;
+        exec body { message(NONE, "DATA write id=%u port=%u len=%u", d.id, d.port, d.len); }
+    }
+
+    action read_a {
+        input data_b d;
+        rand bit[16] off;
+        constraint off < d.len;
+        exec body {
+            message(NONE, "DATA read id=%u port=%u len=%u off=%u comp=%u",
+                    d.id, d.port, d.len, off, comp.port_id);
+        }
+    }
+}
+
+component pss_top {
+    import jobs_pkg::*;
+
+    port_c ports[4];
+    pool link_s link_pool;
+    bind link_pool *;
+
+    exec init_down {
+        foreach (ports[k]) { ports[k].port_id = k; }
+    }
+
+    action link_up_a {
+        input  link_s pre;
+        output link_s post;
+        constraint !pre.up;
+        constraint post.up;
+        exec body { message(NONE, "LINK up speed=%u", post.speed); }
+    }
+
+    action jobs_seq {
+        activity {
+            do link_up_a;
+            repeat (i : JOBS_N) { do port_c::job_a with { job.id == i + 1; }; }
+        }
+    }
+
+    action jobs_par {
+        activity {
+            do link_up_a;
+            parallel {
+                repeat (i : JOBS_N / 4) { do port_c::job_a with { job.id == 0x10000 + i; }; }
+                repeat (i : JOBS_N / 4) { do port_c::job_a with { job.id == 0x20000 + i; }; }
+                repeat (i : JOBS_N / 4) { do port_c::job_a with { job.id == 0x30000 + i; }; }
+                repeat (i : JOBS_N / 4) { do port_c::job_a with { job.id == 0x40000 + i; }; }
+            }
+        }
+    }
+
+    action jobs_rw {
+        activity {
+            repeat (i : JOBS_N / 2) { do port_c::write_a with { job.id == i + 1; }; }
+            repeat (JOBS_N / 2) { do port_c::read_a; }
+        }
+    }
+}

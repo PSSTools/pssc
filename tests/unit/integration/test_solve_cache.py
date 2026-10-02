@@ -72,12 +72,13 @@ def test_a_problem_is_compiled_once_per_run():
 
 def test_a_cone_is_compiled_once_per_set_of_constraints_in_force():
     """Each P's cone is solved for a, then for b, with different constraints
-    in force; ten iterations reuse those two problems (and B's own)."""
+    in force; ten iterations reuse those two problems (and B's own). A solve
+    the cone's last solution answers (B6e) needs no problem at all."""
     model = _lower(_HDR + _LOOPED_CONE + "\n}\n")
     cache = SolveCache()
     _log(model, 1, cache)
     assert cache.compiles <= 3
-    assert cache.hits >= 27
+    assert cache.hits + cache.reused >= 27
 
 
 def test_a_shared_cache_spans_runs():
