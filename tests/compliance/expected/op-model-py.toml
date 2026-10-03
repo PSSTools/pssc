@@ -37,6 +37,18 @@ reason = "op-model-py sync form: blocking channel get()/put() need --py-await as
 verdict = "UNSUPPORTED"
 reason = "op-model-py gap: `match` pattern PatternAs is not lowered"
 
+[expected."types.cast.constraint.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the action has rand attributes (export_action.py)"
+
+[expected."types.enum.rand.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the action has rand attributes (export_action.py)"
+
+[expected."types.literal.type.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the action has rand attributes (export_action.py)"
+
 [expected."types.string.match.001"]
 verdict = "UNSUPPORTED"
 reason = "op-model-py gap: a user function named get_offset_of_instance on a non-register component is classified a register-offset FOLD by name alone (call_legality)"

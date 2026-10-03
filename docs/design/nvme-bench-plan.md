@@ -1,13 +1,15 @@
 # The NVMe IO benchmark on bc: implementation plan
 
-Status: **in progress** (2026-10-02). The §9 recommendations were taken as
+Status: **done** (2026-10-02); the gate is met (§7, "Final gate"). The §9 recommendations were taken as
 the decisions when implementation started; D-B8 turned out to be moot (§2).
 B1 and B2 are done (committed 2026-10-02). B4's dv-solve
 work landed upstream; D-B11 option 2 is done and option 1 (lifted
 explanations, learning on in bc) is done. B3 (G2–G6) is done and its gate is
 met (committed 2026-10-02); G7 is open and off the model's path. B5 is done:
-the unmodified files pass every test (committed 2026-10-02). B6 is in
-progress.
+the unmodified files pass every test (committed 2026-10-02). B6 is done.
+The items left open off the model's path are closed (2026-10-03, §10): G7,
+the `types.enum.rand.001` corpus test, and B4's analyzer rework (already
+done upstream; the soundness check of it found B71; dv-solve `7c3c335`).
 
 **Why this plan.** `nvme_pss_bench/` (untracked, in the pssc root; never
 committed) is a cut-down IO model from a real NVMe verification library. Its
@@ -154,7 +156,7 @@ does not check `op`'s range (§1.2).
       constraints with a wide value tied to it, an enum in a cone, an enum
       struct leaf in a cone; 200 seeds each). Calibrated: with the domain
       constraint disabled, all 7 fail.
-- [ ] Corpus test `types.enum.rand.001` (pss-corpus). Not yet written.
+- [x] Corpus test `types.enum.rand.001` (pss-corpus, 2026-10-03; §10).
 
 **Gate:** met for the tests and suites (unit, compliance, be-bc, ir-core,
 rt-eng unchanged). The values-only `bench_seq` gate is blocked, see below.
@@ -282,10 +284,9 @@ LRM has an example.
       `replicate`, nesting, shadowing, `parallel` branches, and a handle
       with a parent constraint.
 
-- [ ] **G7 — casts in constraints** (found in B2). be-bc's constraint
-      translator refuses `ExprCast` (`(bit[64])x * (bit[64])y == …`). The
-      model casts only in exec bodies, so this is not on its path; it is
-      listed so it is not lost.
+- [x] **G7 — casts in constraints** (found in B2). be-bc's constraint
+      translator refused `ExprCast` (`(bit[64])x * (bit[64])y == …`). Done
+      2026-10-03 (§10).
 
 **Gate:** the values-only variant runs with the original spellings of G2–G6
 restored (only G1 stays rewritten), and passes `check_bench.py` on 200
@@ -316,7 +317,7 @@ xfail for it became a positive check. Suites: pssc unit 2188 passed (the 4
 known doc failures), compliance 662 passed / 57 xfailed (unchanged), progseq
 952 passed (the 8 known failures), be-bc 310, rt-eng 115, ir-core 89.
 
-## 5. B4 — Solver robustness (dv-solve) — IN PROGRESS
+## 5. B4 — Solver robustness (dv-solve) — DONE
 
 These fixes belong in dv-solve itself (fix at the source). pssc adds no
 rewriting to avoid them.
@@ -393,7 +394,8 @@ checker would reject one. For the benchmark's owners (D-B10).
       shaved variable's own bound (`x != y` with y = v removes v from x only
       when v is x's endpoint). False UNSAT on 6-queens: 135/400 seeds -> 5/400;
       8-queens 14/400 -> 0/400.
-- [ ] **LCG is still unsound, by design**: the analyzer asks every explainer
+- [x] **LCG is still unsound, by design** (done upstream: explanations at
+      trail position, B56; see "Option 1" below and §10): the analyzer asks every explainer
       for the CURRENT bound (not the one the trail entry set), and explainers
       cite the other variables' current bounds, which may have been derived
       later from the very entry being explained. Traced on 4-queens: the
@@ -401,7 +403,8 @@ checker would reject one. For the benchmark's owners (D-B10).
       circular, invalid clause. Fixing it means explanations that describe the
       state at the entry's trail position -- a rework of the analyzer (dv-solve
       has its own plan for this, `docs/cdcl_explain_soundness_plan.md`).
-- [ ] **LCG cannot generalize a decision on a wide domain.** With the cycle
+- [x] **LCG cannot generalize a decision on a wide domain** (lifting,
+      `_explain_bvsum_lifted`; "Option 1" below). With the cycle
       detector in, LCG on the two-IO problem picks `a.slba` = a random 64-bit
       value, conflicts with `slba + nlb <= 2^20`, learns `a.slba != X`, and
       repeats: 30/30 seeds time out. The fix is LIFTING: explain the weakest
@@ -432,9 +435,9 @@ checker would reject one. For the benchmark's owners (D-B10).
       is believed. Off until LCG is sound.
 - [x] rt-eng `zbc_solver.c`: the struct fix, with a `_Static_assert` on its
       size and the offset of `time_limit_ms`.
-- [ ] Private `SolveOpts` copies in 31 dv-solve tests (same over-read).
-- [ ] Tests for `zsp_diffcycle.c` (builder-level: the cycle, a wrapping add
-      that must not count, the explanation's soundness under LCG).
+- [x] Private `SolveOpts` copies in 31 dv-solve tests (same over-read;
+      the canonical struct since the upstream merge).
+- [x] Tests for `zsp_diffcycle.c` (`tests/unit/test_diffcycle.py`, below).
 
 **Status (2026-10-02, later).** D-B11 decided: finish B4 as it stands
 (option 2), then rework dv-solve's conflict analysis (option 1) as its own
@@ -712,7 +715,7 @@ would remove most of them. That is for B6.
 Not done: the corpus use cases (no L4 corpus tests exist yet, §8.4 of the
 design), and timing-fuzz invariance.
 
-## 7. B6 — Scale, telemetry and the report — IN PROGRESS
+## 7. B6 — Scale, telemetry and the report — DONE
 
 - [x] **B6a** `scripts/bench_bc.py` (generic, not named after any model):
       runs a model's exports on bc for a list of constant values and seeds.
@@ -800,7 +803,7 @@ design), and timing-fuzz invariance.
       it again (phase saving in seeded solves, made safe against B18's
       infeasible saved values) removes the mechanism.
 
-      **Prototype (2026-10-02, dv-solve, uncommitted).** Two changes:
+      **Prototype (2026-10-02, dv-solve; committed as `38ebd34`).** Two changes:
       - *Kept draws.* A seeded solve keeps each variable's first drawn
         value. When the search decides the variable again it takes that
         value if the domain still allows it. A value whose own decision
@@ -831,7 +834,7 @@ design), and timing-fuzz invariance.
       - dv-solve's unit tests and ctest show no new failures.
 
       What was left, and how each was fixed:
-      - ~~**`% 8`.**~~ **Fixed (dv-solve, uncommitted).** With the rule in,
+      - ~~**`% 8`.**~~ **Fixed (dv-solve `0e0d10b`).** With the rule in,
         4096 stayed at about 5%. bc writes the rule as the clause
         `lba_bytes != 4096 || slba % 8 == 0`. Once `lba_bytes` is 4096 the
         remainder is fixed to 0, but the modulo propagator aligns only
@@ -936,6 +939,23 @@ design), and timing-fuzz invariance.
       four of every five traversals now reuse (`test_bc_cone_reuse.py`,
       calibrated on the state-input case).
 
+**Final gate (2026-10-02, everything committed).** From the unmodified
+files, one seed per row, `check_bench.py` gives PASS on every row (run
+time in s / peak RSS in MB):
+
+| Test | N = 100 | 200 | 500 | 1000 |
+|---|---|---|---|---|
+| `bench_seq` | 0.14 / 66 | 0.23 / 66 | 0.55 / 67 | 1.05 / 67 |
+| `bench_par` | 0.21 / 70 | 0.32 / 71 | 0.59 / 71 | 1.06 / 72 |
+| `bench_rw` | 0.36 / 67 | 0.65 / 68 | 1.49 / 67 | 2.90 / 67 |
+| `bench_rw_pool` | 0.21 / 68 | 0.35 / 68 | 0.79 / 68 | 1.49 / 69 |
+| `probe_par_unpinned` | 0.23 / 71 | 0.34 / 71 | 0.67 / 71 | 1.22 / 72 |
+
+`bench_seq` at N = 1000 takes 7.5x its N = 100 time (bound: 12x). The
+three probes pass 50 of 50 seeds. Over 3 seeds of `bench_seq` at N = 1000,
+`(op, lba_bytes)` of `io_a` takes all six combinations, each 15.9-17.4% of
+3000 IOs.
+
 ## 8. Order and size
 
 | Phase | Size | Depends on | Unblocks |
@@ -973,3 +993,65 @@ every bc user immediately.
 | D-B14 | (new, B5) A state pool's current object in slots of the activation object, with the initial object solved with the root? | Yes. One activation runs one export, so the activation object is the pool's lifetime. Moving pools into the component object is for when several activations share a component tree. |
 | D-B11 | (new, from B4; **decided 2026-10-02: option 2 now, then option 1**) dv-solve's clause learning is the lever for this model's hard solves (median 2.2 s -> 0.3 ms on the two-IO problem), but it is unsound and cannot lift explanations. Rework dv-solve's conflict analysis now (explanations at trail position + lifting), or ship B4 with the cycle detector and LCG off (bench_rw runs, slowly) and do the rework as its own plan? | Open. |
 
+## 10. After the gate (2026-10-03)
+
+Committed: dv-solve `7c3c335`, ir-core `c7416aa`, be-bc `2f2fe21`,
+pss-corpus `1c7a149`, and pssc (this change).
+
+**B4's soundness, checked the way bc solves.** The analyzer rework had
+landed upstream with dv-solve's soundness campaign. Its builder door,
+though, solved each problem once, with seed 1, and never used `%` or `/`.
+bc's protocol -- one context, checkpoint, pin, checkpoint, a five-restart
+learning solve, then restore and the plain search -- is now the campaign's
+fourth door, and builder-safe problems include `%` and `/` by nonzero
+constants. Its first run crashed dv-solve in 15 of 16 shards: **B71**, a
+solve under checkpoints took level 0 as its root, so learning backjumped onto
+the checkpoints' levels (and could rewind past the caller's pins). It was
+older than B4's changes. Fixed in dv-solve (`search_base`); the campaign
+(16 x 1,500 problems, every door) and the protocol harness (16 x 2,000
+problems x 12 solves, two shards under an address sanitizer) report nothing.
+`test_solve_under_checkpoints.py` fails on the unfixed build.
+
+**G7, casts in constraints.** dv-solve gains `expr_cast(x, bits, signed)`,
+SystemVerilog's `T'(x)`: the operand is an assignment-like context (a wider
+cast widens its evaluation), then truncated or extended and read at the
+cast's signedness; SV elaboration rewrites it, the model validator evaluates
+it. bc lowers `ExprCast` onto it; a `bool` cast is `x != 0`, an enum cast
+its underlying type. On the way: a multi-bit value used as a constraint of
+its own was refused as uncompiled in dv-solve, and is now `value != 0`.
+Tests: dv-solve `test_expr_cast.py` (enumerated), pssc
+`test_bc_constraint_casts.py` (4 of 6 fail with casts ignored).
+
+**Literal types (found while doing G7).** `rand int[8] x; constraint x <
+0x10;` drew negative values: ast2ir kept only a literal's value, so every
+consumer typed `0x10` as a signed `int`, where the LRM (Table 21) makes it an
+unsigned `bit[32]` and the comparison unsigned. ast2ir now reads the type
+from the literal's text into `ExprConstant.width`/`signed`, ir-core's
+`int_literal_type` is the one rule, and bc (constraints and procedural code)
+and pssc's `ExprTypes` read it. bc's interval folding of `||` and `in` now
+applies only where a comparison is by value (it also folded `x > -1` over an
+unsigned x as true). `reg_rmw` writes a constant mask as its canonical
+literal, so every spelling of a masked write is still one IR. Golden
+snapshots unchanged. Tests: `test_bc_literal_types.py` (5 of 11 fail without
+the ast2ir change), ir-core `test_int_literal_type.py`.
+
+**Corpus.** `types.enum.rand.001` (L1), `types.cast.constraint.001` and
+`types.literal.type.001` (L2), 64 seeds each, pass on bc; op-model-py and
+op-model-sv report them UNSUPPORTED (rand attributes), as listed.
+
+**Synthetic scale tests.** The bench model cannot be committed, so
+`tests/perf/model/jobs.pss` carries its hard shape: `jobs_xfer`, pairs of
+transfers with a 64-bit block address, `nbytes == nblk * bsize`, an
+alignment guarded by the block size and a page count by division, the
+second after the first (lookahead over wide values). It is checked like the
+others and is in the linear-growth timing test. `test_variety_*` checks the
+spread of the values a skewed search distorts first ((kind, unit) of a job,
+(wr, bsize) of a transfer); the job check fails with kept draws off.
+
+**Open (found here, not fixed).** Sampling is uniform over decisions, not
+over solutions: with a 4096-byte block, `pages` is `nbytes / 4096` plus one
+exactly when `off > 0`, the search decides the small `pages` first, and
+`off == 0` comes out in 13% of transfers (31% in dv-solve's descriptor
+problem) where uniform would give 0.1%. Every value is legal; whether PSS
+asks for more is a question for the corpus's distribution layer (its
+`reachable`/`uniformity` kinds are designed, not built).

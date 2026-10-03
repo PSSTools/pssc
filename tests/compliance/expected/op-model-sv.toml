@@ -42,6 +42,18 @@ reason = "not an operation-model entry: the action reads its own attributes; ent
 verdict = "UNSUPPORTED"
 reason = "not an operation-model entry: the action has rand attributes (export_action.py)"
 
+[expected."types.cast.constraint.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the action has rand attributes (export_action.py)"
+
+[expected."types.enum.rand.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the action has rand attributes (export_action.py)"
+
+[expected."types.literal.type.001"]
+verdict = "UNSUPPORTED"
+reason = "not an operation-model entry: the action has rand attributes (export_action.py)"
+
 [expected."types.string.match.001"]
 verdict = "UNSUPPORTED"
 reason = "op-model-sv gap: a user component function named get_offset_of_instance is taken for the reg_group_c method (matched by name in _fold_offset)"

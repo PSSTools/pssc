@@ -486,6 +486,13 @@ cones never see a symbol; a recursive call is a located error. `s;` with no
 argument list parses as a traversal that the linker resolved to the symbol
 (`test_activity_symbols.py`).
 
+**A literal has a type** (LRM 4.6.1, Table 21). ast2ir reads it from the
+literal's text into `ExprConstant.width`/`signed` (`0x10` is an unsigned
+`bit[32]`, `8'hFF` a `bit[8]`, `16` the default, a signed `int`), and
+ir-core's `int_literal_type` is the one rule every consumer types it by: bc's
+constraints and procedural code and pssc's `ExprTypes`. Never type a
+constant from its value alone (`test_bc_literal_types.py`).
+
 **Procedural code on bc** (`docs/design/bc-procedural-gaps-plan.md`). A
 string is its interned index, so `==`/`!=` compare indices and ordering is
 refused. A component-array element with a run-time index is a dispatch, one

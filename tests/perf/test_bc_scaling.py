@@ -2,14 +2,17 @@
 
 The model holds the constructs a real IO model uses -- a compound of four
 stages chained by bound buffers, a state prerequisite, per-component pools
-with locks, a write->read flow through a pool, and a ``parallel`` of
-streams -- so it is what tells a change that makes bc slower than linear,
+with locks, a write->read flow through a pool, a ``parallel`` of streams,
+and pairs of transfers whose wide, arithmetic-tied values are solved
+together -- so it is what tells a change that makes bc slower than linear,
 or wrong, at scale (nvme-bench plan B6d, D-B1).
 
 Every run is checked against the model's own rules (``_check_jobs``,
-``_check_rw``). The timing tests are marked ``perf`` and run only when asked
-(``pytest -m perf tests/perf``): a generous bound, and time growing linearly
-with the size.
+``_check_rw``, ``_check_xfer``), and the spread of the values that a skewed
+search distorts first is checked too (``test_variety``): every run can be
+legal while one combination of values all but disappears. The timing tests
+are marked ``perf`` and run only when asked (``pytest -m perf tests/perf``):
+a generous bound, and time growing linearly with the size.
 """
 import os
 import re
@@ -114,6 +117,25 @@ def _check_rw(lines, n):
     assert len({r["id"] for r in reads}) == len(reads)
 
 
+def _check_xfer(lines, n):
+    """Every transfer obeys xfer_s, and the second of a pair starts after
+    the first ends."""
+    xs = []
+    for kind, _, f in _events(lines):
+        assert kind == "XFER"
+        assert f["bsize"] in (512, 4096) and 1 <= f["nblk"] <= 256
+        assert f["nbytes"] == f["nblk"] * f["bsize"] <= 0x40000
+        assert f["addr"] + f["nblk"] <= 0x100000
+        assert f["bsize"] != 4096 or f["addr"] % 8 == 0
+        assert f["off"] % 4 == 0 and f["off"] < 4096
+        assert f["pages"] == (f["off"] + f["nbytes"] + 4095) // 4096
+        xs.append(f)
+    assert len(xs) == n
+    for a, b in zip(xs[0::2], xs[1::2]):
+        assert b["addr"] >= a["addr"] + a["nblk"], (a, b)
+    return xs
+
+
 @pytest.mark.parametrize("seed", range(1, 6))
 def test_jobs_seq(seed):
     lines, _ = _run(_model("jobs_seq", 40), seed)
@@ -133,6 +155,51 @@ def test_jobs_rw(seed):
     _check_rw(lines, 40)
 
 
+@pytest.mark.parametrize("seed", range(1, 6))
+def test_jobs_xfer(seed):
+    lines, _ = _run(_model("jobs_xfer", 40), seed)
+    _check_xfer(lines, 40)
+
+
+# -- variety ----------------------------------------------------------------------
+
+def _shares(export, key, n=200, seeds=(1, 2, 3)):
+    model = _model(export, n)
+    counts = defaultdict(int)
+    for seed in seeds:
+        lines, _ = _run(model, seed)
+        for kind, what, f in _events(lines):
+            k = key(kind, what, f)
+            if k is not None:
+                counts[k] += 1
+    total = sum(counts.values())
+    return {k: v / total for k, v in counts.items()}
+
+
+def test_variety_jobs():
+    """Each of the six feasible (kind, unit) pairs of a job is drawn about
+    one time in six. No constraint favors one; a pair that a search's
+    conflicts steer away from shows here first. Calibrated: with the
+    solver's kept draws off (DVS_KEEP_DRAWS=0), (K_SMALL, 256) falls to 4%."""
+    shares = _shares("jobs_seq", lambda k, w, f: (f["kind"], f["unit"])
+                     if w == "stage=accept" else None)
+    assert len(shares) == 6, shares
+    assert all(0.08 <= s <= 0.28 for s in shares.values()), shares
+
+
+def test_variety_xfer():
+    """Reads and writes, small and large blocks, each about a quarter of the
+    transfers, and large blocks about half. A large block is the one an
+    alignment constrains (`addr % 8 == 0`): before the solver kept a draw's
+    quotient and picked its remainder, the alignment's conflicts made it 60%
+    of the descriptor problem's solves (dv-solve test_mod_value_pick)."""
+    shares = _shares("jobs_xfer", lambda k, w, f: (f["wr"], f["bsize"]))
+    assert len(shares) == 4, shares
+    assert all(0.15 <= s <= 0.35 for s in shares.values()), shares
+    large = sum(s for (_, bsize), s in shares.items() if bsize == 4096)
+    assert 0.42 <= large <= 0.58, shares
+
+
 # -- timing -----------------------------------------------------------------------
 
 #: generous: about 30x what a run takes on a laptop core today
@@ -140,7 +207,7 @@ _BOUND_S = 10.0
 
 
 @pytest.mark.perf
-@pytest.mark.parametrize("export", ["jobs_seq", "jobs_par", "jobs_rw"])
+@pytest.mark.parametrize("export", ["jobs_seq", "jobs_par", "jobs_rw", "jobs_xfer"])
 def test_time_grows_linearly(export):
     """At 4x the size, a run takes at most 8x the time (linear is 4x; a
     quadratic step would show as 16x), and N = 200 is within the bound."""

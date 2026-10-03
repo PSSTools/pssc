@@ -13,9 +13,10 @@ this expression", never how a backend spells it.
 The rules are the ones the bc backend implements (`zuspec.be.bc.lower.types`),
 which the compliance corpus checks:
 
-* an unsized constant is `int` (32-bit signed), wider if its value needs it
-  (Table 21). The IR does not keep a literal's radix, so a hex literal, which
-  the LRM types `bit[N]`, is typed the same way;
+* an integer literal has the type its spelling gives it (Table 21, ir-core's
+  `int_literal_type`): an unsized decimal is `int` (32-bit signed), wider if
+  its value needs it, an unsized hex or binary literal `bit[N]`, and a sized
+  one (`8'hFF`) its size;
 * a binary arithmetic or bitwise result has the larger operand width and is
   signed only if both operands are (Table 22);
 * a shift or a power has its left operand's type; a comparison or logical operator is
@@ -79,19 +80,19 @@ _BUILTIN_RESULT = {
 }
 
 
-def literal_type(v) -> Optional[PssType]:
+def literal_type(v, width: int = 0, signed=None) -> Optional[PssType]:
+    """The type of a constant; *width* and *signed* are the ExprConstant's."""
     if isinstance(v, bool):
         return BOOL
     if isinstance(v, str):
         return STRING
     if not isinstance(v, int):
         return None
-    n = v.bit_length() + 1 if v >= 0 else (-v - 1).bit_length() + 1
-    if n <= 32:
-        return INT
-    if n <= 64:
-        return PssType("int", n, True)
-    return U64
+    from zuspec.ir.core.expr import ExprConstant, int_literal_type
+    w, s = int_literal_type(ExprConstant(value=v, width=width, signed=signed))
+    if w > 64:
+        return U64
+    return INT if (w, s) == (32, True) else PssType("int", w, s)
 
 
 def merge(a: PssType, b: PssType) -> PssType:
@@ -205,7 +206,7 @@ class ExprTypes:
         return hook(e) if hook is not None else None
 
     def _ExprConstant(self, e):
-        return literal_type(e.value)
+        return literal_type(e.value, getattr(e, "width", 0), getattr(e, "signed", None))
 
     def _ExprRefLocal(self, e):
         if e.name in self.loop_vars:

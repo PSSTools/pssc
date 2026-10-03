@@ -400,7 +400,13 @@ def _reduce_call(comp, call, ctx, via=None) -> Optional[ir.Expr]:
             _fail(ctx, call, "write_val_masked takes (mask, value); "
                   f"got {len(call.args)} argument(s)")
             return None
-        mask, val = call.args[0], call.args[1]
+        # A constant written out becomes the literal the other spellings
+        # build, so `write_val_masked(0xe, 4)` is the IR of
+        # `write_field("prio", 2)`. Both are bits of the register's
+        # `bit[SZ]` parameter: the literal's own type (0xe is a `bit[32]`)
+        # decides nothing once converted to it.
+        mask, val = (_lit(_const(a)) if _const(a) is not None else a
+                     for a in call.args)
     else:
         mv = _mask_and_val(reg, call, ctx)
         if mv is None:

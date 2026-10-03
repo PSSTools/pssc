@@ -4492,8 +4492,29 @@ class AstToIrTranslator:
         return ir.ExprCall(func=ir.ExprRefUnresolved(name=qualified), args=args)
 
     def _translate_expr_number(self, ctx: AstToIrContext, expr: Any) -> ir.ExprConstant:
-        """Translate a number literal"""
+        """Translate an integer literal, with the type its spelling gives it
+        (4.6.1, Table 21; ``ir.int_literal_type``).
+
+        The parser's node class records only a based literal's ``s``, and its
+        width is 32 for every unsized literal, so the type is read from the
+        literal's text: an unsized hex or binary literal is unsigned, a sized
+        one (``8'hFF``) has its size, and a based one is signed only with
+        ``s``. A sized literal's value is its bit pattern read at that type:
+        ``4'sb1010`` is -6. An unsized decimal or octal literal keeps the
+        default fields."""
         value = expr.getValue()
+        image = (expr.getImage() or "").replace("_", "")
+        if "'" in image:
+            size, based = image.split("'", 1)
+            signed = based[:1] in ("s", "S")
+            width = int(size) if size.isdigit() else 0
+            if width:
+                value = int(value) & ((1 << width) - 1)
+                if signed and value >> (width - 1):
+                    value -= 1 << width
+            return ir.ExprConstant(value=value, width=width, signed=signed)
+        if image[:2].lower() in ("0x", "0b"):
+            return ir.ExprConstant(value=value, signed=False)
         return ir.ExprConstant(value=value)
 
     def _translate_expr_string(self, ctx: AstToIrContext, expr: pss_ast.ExprString) -> ir.ExprConstant:

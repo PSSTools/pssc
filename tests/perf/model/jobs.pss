@@ -5,6 +5,12 @@
 // moving. Accepting needs the link up, a state object one action brings up.
 // Data a write leaves in its port's pool is read back by a later read.
 //
+// A transfer is the arithmetic-heavy part: a block address in a 64-bit
+// range, a length tied to it by a product, an alignment that only a large
+// block size requires, and a page count by division. Two transfers of a
+// pair may not overlap, so the first leaves room for the second
+// (lookahead), and their solve is one problem over wide values.
+//
 // JOBS_N is the scenario size; a file parsed first may set it.
 import std_pkg::*;
 
@@ -35,6 +41,25 @@ package jobs_pkg {
         constraint slot < 8;
         constraint lane == slot / 2;
         constraint id > 0;
+    }
+
+    struct xfer_s {
+        rand bit[64] addr;           // in blocks
+        rand bit[16] bsize;          // bytes per block
+        rand bit[32] nblk;
+        rand bit[32] nbytes;
+        rand bit[16] off;            // offset into the first page
+        rand bit[16] pages;
+
+        constraint bsize in [512, 4096];
+        constraint nblk in [1..256];
+        constraint nbytes == nblk * bsize;
+        constraint nbytes <= 0x40000;
+        constraint addr + nblk <= 0x100000;
+        constraint bsize == 4096 -> addr % 8 == 0;
+        constraint off % 4 == 0;
+        constraint off < 4096;
+        constraint pages == (off + nbytes + 4095) / 4096;
     }
 
     state link_s {
@@ -155,6 +180,21 @@ component pss_top {
         exec body { message(NONE, "LINK up speed=%u", post.speed); }
     }
 
+    action xfer_a {
+        rand xfer_s x;
+        rand bool   wr;
+        exec body {
+            message(NONE, "XFER wr=%u addr=%u bsize=%u nblk=%u nbytes=%u off=%u pages=%u",
+                    (bit[1])wr, x.addr, x.bsize, x.nblk, x.nbytes, x.off, x.pages);
+        }
+    }
+
+    action xfer_pair_a {
+        xfer_a a, b;
+        constraint b.x.addr >= a.x.addr + a.x.nblk;
+        activity { a; b; }
+    }
+
     action jobs_seq {
         activity {
             do link_up_a;
@@ -171,6 +211,12 @@ component pss_top {
                 repeat (i : JOBS_N / 4) { do port_c::job_a with { job.id == 0x30000 + i; }; }
                 repeat (i : JOBS_N / 4) { do port_c::job_a with { job.id == 0x40000 + i; }; }
             }
+        }
+    }
+
+    action jobs_xfer {
+        activity {
+            repeat (JOBS_N / 2) { do xfer_pair_a; }
         }
     }
 
