@@ -410,7 +410,7 @@ def _pad_count(m) -> int:
         else m.total_size
 
 
-def emit_reg_map(rm, style=None) -> str:
+def emit_reg_map(rm, style=None, tagged: bool = False) -> str:
     """One register group's layout, plus the assertions that pin it.
 
     THE ASSERTIONS ARE THE POINT, not decoration. This struct is a claim about
@@ -421,11 +421,20 @@ def emit_reg_map(rm, style=None) -> str:
     defect into a compile error naming the register, which is the only check
     available here that a golden snapshot cannot silently freeze in the wrong
     state.
+
+    ``tagged`` completes a struct TAG a caller already forward-declared
+    (``typedef struct <name> <name>;``, in the public header -- see
+    `COpModelBackend.emit_reg_map_decls`) instead of defining an anonymous
+    struct and its own typedef. Used for every non-``--header-only`` build,
+    where this definition lives in the private ``<prefix>_regs.h`` and the
+    public header only needs the pointer type, not the layout. ``False`` (the
+    original, self-contained form) is unchanged for `--header-only`, which has
+    nowhere else to put a forward declaration.
     """
     from ..reg_layout import GROUP, PAD, REG
 
     name = map_type_name(rm.dtype, style)
-    lines = [f"typedef struct {{"]
+    lines = [f"struct {name} {{"] if tagged else [f"typedef struct {{"]
     for m in rm.members:
         ct = _member_c_type(m, style)
         if m.kind == PAD:
@@ -441,7 +450,7 @@ def emit_reg_map(rm, style=None) -> str:
         decl = f"{qual}{ct} {m.name}{sub};"
         note = f"0x{m.offset:03x}" + (f" {access.lower()}" if m.kind == REG else "")
         lines.append(f"    {decl:<40} /* {note} */")
-    lines.append(f"}} {name};")
+    lines.append(f"}};" if tagged else f"}} {name};")
 
     lines.append(f"PSSC_STATIC_ASSERT(sizeof({name}) == 0x{rm.size:x}u,"
                  f" {name}_size);")
@@ -454,12 +463,14 @@ def emit_reg_map(rm, style=None) -> str:
     return "\n".join(lines)
 
 
-def lower_reg_maps(model, style=None) -> str:
+def lower_reg_maps(model, style=None, tagged: bool = False) -> str:
     """Every register group's layout, innermost first.
 
     Order is `reg_maps_for`'s, which derives it from the maps themselves: C has
     no forward reference for a struct used by value, so a bank's layout must
     precede the map that embeds an array of it.
+
+    ``tagged`` is passed straight through to `emit_reg_map` -- see there.
     """
     from ..reg_layout import reg_maps_for
 
@@ -468,5 +479,5 @@ def lower_reg_maps(model, style=None) -> str:
         return ""
     parts = ["/* ----- Register map. The layout IS the address arithmetic. ----- */"]
     for rm in maps:
-        parts.append(emit_reg_map(rm, style))
+        parts.append(emit_reg_map(rm, style, tagged=tagged))
     return "\n".join(parts)

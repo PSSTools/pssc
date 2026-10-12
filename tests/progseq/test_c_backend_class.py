@@ -285,10 +285,13 @@ def test_extra_files_land_beside_the_api(op_model, tmp_path):
 def test_extra_files_reported_in_order(op_model):
     """P6b.T4. The returned list is a COMPILATION order, so an extra comes
     after the artifacts it accompanies -- an extra header may include the
-    generated one, and nothing generated includes an extra."""
+    generated one, and nothing generated includes an extra. The private regs
+    header is NOT an extra for exactly that reason -- the generated `.c`
+    includes it -- so it sits between the public header and the `.c`."""
     written = _WithMap().generate(op_model, _settings(emit_stubs=True))
     names = [p.name for p in written]
-    assert names == ["wb_dma.h", "wb_dma.c", "wb_dma_stubs.c", "wb_dma_map.h"]
+    assert names == ["wb_dma.h", "wb_dma_regs.h", "wb_dma.c", "wb_dma_stubs.c",
+                     "wb_dma_map.h"]
 
 
 def test_an_extra_file_may_not_overwrite_the_api(op_model):

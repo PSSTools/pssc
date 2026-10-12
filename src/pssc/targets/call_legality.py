@@ -169,12 +169,46 @@ _FLOAT_REASON = (
     "pssc has no float64 in its type mapper; no target lowers them")
 
 _MATH = ("log", "log10", "exp", "sqrt", "pow", "round", "floor", "ceil",
-         "sin", "cos", "tan", "asin", "acos", "atan")
+         "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "hypot",
+         "sinh", "cosh", "tanh", "asinh", "acosh", "atanh")
 
 _TIER0_LIST = [
     _e(n, Disposition.UTILITY, BOTH, "21.5.2", _FLOAT_REASON) for n in _MATH
 ] + [
     _e("to_float", Disposition.UTILITY, BOTH, "21.5.1", _FLOAT_REASON),
+    _e("float_mantissa", Disposition.UTILITY, BOTH, "21.5.1", _FLOAT_REASON),
+    _e("float_exponent", Disposition.UTILITY, BOTH, "21.5.1", _FLOAT_REASON),
+    _e("float_sign",     Disposition.UTILITY, BOTH, "21.5.1", _FLOAT_REASON),
+
+    _e("file_open",        Disposition.UTILITY, SOLVE_ONLY, "21.1.4",
+       "it returns a file_handle_t and takes/returns PSS strings; the "
+       "lowering has no string representation and a generated device model "
+       "has no filesystem to open against"),
+    _e("file_close",       Disposition.UTILITY, SOLVE_ONLY, "21.1.4",
+       "see file_open: no string representation, no filesystem"),
+    _e("file_exists",      Disposition.UTILITY, SOLVE_ONLY, "21.1.4",
+       "see file_open: no string representation, no filesystem"),
+    _e("file_write",       Disposition.UTILITY, SOLVE_ONLY, "21.1.4",
+       "see file_open: no string representation, no filesystem"),
+    _e("file_read",        Disposition.UTILITY, SOLVE_ONLY, "21.1.4",
+       "see file_open: no string representation, no filesystem"),
+    _e("file_write_lines",  Disposition.UTILITY, SOLVE_ONLY, "21.1.4",
+       "it takes list<string>; the lowering has no list or string "
+       "representation, and a generated device model has no filesystem"),
+    _e("file_read_lines",   Disposition.UTILITY, SOLVE_ONLY, "21.1.4",
+       "it returns list<string>; the lowering has no list or string "
+       "representation, and a generated device model has no filesystem"),
+
+    _e("addr_value_solve", Disposition.ADDR, SOLVE_ONLY, "21.12",
+       "address spaces are built by the environment, not by the device "
+       "model; see add_region/add_addr_space"),
+    _e("addr_value_abs",   Disposition.ADDR, SOLVE_ONLY, "21.12",
+       "address spaces are built by the environment, not by the device "
+       "model; see add_region/add_addr_space"),
+    _e("get_tag", Disposition.UTILITY, BOTH, "21.12",
+       "it returns a PSS string naming a handle's symbolic tag, a "
+       "solve/debug-time facility like get_mnemonic_of_instance with no "
+       "runtime form in a generated model"),
 
     _e("make_handle_from_claim", Disposition.ADDR, SOLVE_ONLY, "21.12",
        "it takes an addr_claim_base_s -- a solve-time allocation result. A "

@@ -125,12 +125,18 @@ def test_a_symbol_policy_reaches_prototypes_and_call_sites(registered_style):
     # ...and nothing kept the old spelling. `dma_engine_` still appears inside
     # the new names, so this looks for it where a symbol would START. Comment
     # lines are skipped: they carry the PSS type name (`dma_engine_pkg::
-    # dma_engine_c`), which is the model's and not a C symbol at all.
+    # dma_engine_c`), which is the model's and not a C symbol at all. `#include`
+    # lines are skipped too: a FILENAME (`dma_engine_regs.h`) comes from
+    # `header_name`/`regs_header_name`/..., never from `symbol`/`reg_symbol`,
+    # and `_ShoutySymbols` overrides neither -- a style that renames only its
+    # symbols and not its filenames is exactly the "renames its operations and
+    # leaves its register accessors alone" kind of partial policy this test's
+    # own class comment says is a real thing to want, just for files instead.
     import re
     stale = [ln for ln in text.splitlines()
              if re.search(r"(?<![A-Za-z0-9_])dma_engine_[a-z]", ln)
              and "ACME_" not in ln
-             and not ln.lstrip().startswith(("/*", "*", "//"))]
+             and not ln.lstrip().startswith(("/*", "*", "//", "#include"))]
     assert not stale, "sites that kept the old symbol spelling:\n" + "\n".join(stale)
 
 

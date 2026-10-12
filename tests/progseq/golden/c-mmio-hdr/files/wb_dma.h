@@ -1125,13 +1125,13 @@ static inline wb_dma_status_e wb_dma_ch_check_completion(wb_dma_ch_c *_self) {
 static inline void wb_dma_ch_configure_channel(wb_dma_ch_c *_self, wb_dma_ch_cfg_s cfg) {
     wb_dma_sz_s sz = {0};
     wb_dma_csr_s csr = {0};
-    write32(&_self->regs->adr0, cfg.src);
-    write32(&_self->regs->am0, cfg.src_mask);
-    write32(&_self->regs->adr1, cfg.dst);
-    write32(&_self->regs->am1, cfg.dst_mask);
+    pssc_write32(&_self->regs->adr0, cfg.src);
+    pssc_write32(&_self->regs->am0, cfg.src_mask);
+    pssc_write32(&_self->regs->adr1, cfg.dst);
+    pssc_write32(&_self->regs->am1, cfg.dst_mask);
     sz.tot_sz = cfg.tot_sz;
     sz.chk_sz = cfg.chk_sz;
-    write32(&_self->regs->sz, (sz).raw);
+    pssc_write32(&_self->regs->sz, (sz).raw);
     /*
      * CH_EN is what arms the channel, so it must not ride along with the
      * configuration write.
@@ -1155,7 +1155,7 @@ static inline void wb_dma_ch_configure_channel(wb_dma_ch_c *_self, wb_dma_ch_cfg
     csr.ine_done = cfg.int_on_done;
     csr.ine_err = cfg.int_on_err;
     csr.ine_chk_done = cfg.int_on_chunk;
-    write32(&_self->regs->csr, (csr).raw);
+    pssc_write32(&_self->regs->csr, (csr).raw);
 }
 
 /*
@@ -1192,7 +1192,7 @@ static inline void wb_dma_ch_configure_channel(wb_dma_ch_c *_self, wb_dma_ch_cfg
  */
 static inline wb_dma_status_e wb_dma_ch_probe_status(wb_dma_ch_c *_self) {
     wb_dma_csr_s csr = {0};
-    csr = (wb_dma_csr_s){ .raw = read32(&_self->regs->csr) };
+    csr = (wb_dma_csr_s){ .raw = pssc_read32(&_self->regs->csr) };
     if (csr.err == 1) {
         return 1;
     }
@@ -1234,7 +1234,7 @@ static inline void wb_dma_ch_set_auto_restart(wb_dma_ch_c *_self, uint8_t enable
     if (!(_self->caps.ars)) {
         return;
     }
-    write32(&_self->regs->csr, (read32(&_self->regs->csr) & ~(64)) | ((((uint32_t)enable & 1) << 6) & (64)));
+    pssc_write_masked32(&_self->regs->csr, 64, ((uint32_t)enable & 1) << 6);
 }
 
 /*
@@ -1272,7 +1272,7 @@ static inline void wb_dma_ch_set_software_pointer(wb_dma_ch_c *_self, uint32_t p
      */
     sw.ptr = ptr;
     sw.en = enable;
-    write32(&_self->regs->swptr, (sw).raw);
+    pssc_write32(&_self->regs->swptr, (sw).raw);
 }
 
 /*
@@ -1318,7 +1318,7 @@ static inline void wb_dma_ch_set_software_pointer(wb_dma_ch_c *_self, uint32_t p
  *    be considered delivered on return, which matters post-silicon.
  */
 static inline void wb_dma_ch_stop_channel_start(wb_dma_ch_c *_self) {
-    write32(&_self->regs->csr, (read32(&_self->regs->csr) & ~(512)) | ((512) & (512)));
+    pssc_write_masked32(&_self->regs->csr, 512, 512);
 }
 
 /*
@@ -1366,7 +1366,7 @@ static inline void wb_dma_ch_transfer_list_start(wb_dma_ch_c *_self, pssc_addr_t
      * descriptors from interface 0 regardless of which interface the data
      * moves on, so `head` must be IF0-reachable.
      */
-    write32(&_self->regs->desc, (head & 0xffffffffu));
+    pssc_write32(&_self->regs->desc, (head & 0xffffffffu));
     /*
      * Steps 3 and 4, in that order and as TWO WRITES, deliberately: the
      * device requires them separate, and write_fields({"use_ed","ch_en"},
@@ -1374,8 +1374,8 @@ static inline void wb_dma_ch_transfer_list_start(wb_dma_ch_c *_self, pssc_addr_t
      * what the plural form is for. Each of these is still a
      * read-modify-write in its own right (§21.14.1).
      */
-    write32(&_self->regs->csr, (read32(&_self->regs->csr) & ~(128)) | ((128) & (128)));
-    write32(&_self->regs->csr, (read32(&_self->regs->csr) & ~(1)) | ((1) & (1)));
+    pssc_write_masked32(&_self->regs->csr, 128, 128);
+    pssc_write_masked32(&_self->regs->csr, 1, 1);
 }
 
 /*
@@ -1423,7 +1423,7 @@ static inline void wb_dma_ch_transfer_single_start(wb_dma_ch_c *_self, wb_dma_ch
      * configuration just written survives; the read clears the read-to-clear
      * status bits, harmless here because the channel has not started yet.
      */
-    write32(&_self->regs->csr, (read32(&_self->regs->csr) & ~(1)) | ((1) & (1)));
+    pssc_write_masked32(&_self->regs->csr, 1, 1);
 }
 
 /*
@@ -1524,10 +1524,10 @@ static inline void wb_dma_configure_interrupt_routing(wb_dma_c *_self, wb_dma_in
     vec.ch = channel_mask;
     switch (bank) {
     case 0:
-        write32(&_self->regs->int_msk_a, (vec).raw);
+        pssc_write32(&_self->regs->int_msk_a, (vec).raw);
         break;
     case 1:
-        write32(&_self->regs->int_msk_b, (vec).raw);
+        pssc_write32(&_self->regs->int_msk_b, (vec).raw);
         break;
     default:
         pssc_message("wb_dma: unmatched match subject in configure_interrupt_routing");
@@ -1558,9 +1558,9 @@ static inline void wb_dma_configure_interrupt_routing(wb_dma_c *_self, wb_dma_in
 static inline void wb_dma_pause_engine(wb_dma_c *_self, uint8_t pause) {
     wb_dma_gcsr_s gcsr = {0};
     gcsr.pause = pause;
-    write32(&_self->regs->csr, (gcsr).raw);
+    pssc_write32(&_self->regs->csr, (gcsr).raw);
     while (1) {
-        gcsr = (wb_dma_gcsr_s){ .raw = read32(&_self->regs->csr) };
+        gcsr = (wb_dma_gcsr_s){ .raw = pssc_read32(&_self->regs->csr) };
         if (gcsr.pause == pause) {
             break;
         }
@@ -1590,7 +1590,7 @@ static inline void wb_dma_pause_engine(wb_dma_c *_self, uint8_t pause) {
 static inline uint16_t wb_dma_read_descriptor_residual(wb_dma_c *_self, pssc_addr_t desc_ptr) {
     (void)_self;
     uint32_t desc_csr = 0;
-    desc_csr = read32((volatile void *)(uintptr_t)(desc_ptr));
+    desc_csr = pssc_read32((volatile void *)(uintptr_t)(desc_ptr));
     return (desc_csr & 0xfff);
 }
 
@@ -1638,17 +1638,17 @@ static inline pssc_addr_t wb_dma_write_descriptor(wb_dma_c *_self, pssc_addr_t a
     csr_word |= (uint32_t)d.csr.inc_dst << 18;
     csr_word |= (uint32_t)d.csr.inc_src << 19;
     csr_word |= (uint32_t)d.csr.eol << 20;
-    write32((volatile void *)(uintptr_t)(at), csr_word);
-    write32((volatile void *)(uintptr_t)((at + 4)), d.adr0);
-    write32((volatile void *)(uintptr_t)((at + 8)), d.adr1);
-    write32((volatile void *)(uintptr_t)((at + 12)), d.next);
+    pssc_write32((volatile void *)(uintptr_t)(at), csr_word);
+    pssc_write32((volatile void *)(uintptr_t)((at + 4)), d.adr0);
+    pssc_write32((volatile void *)(uintptr_t)((at + 8)), d.adr1);
+    pssc_write32((volatile void *)(uintptr_t)((at + 12)), d.next);
     /*
      * Extend the list. The check is on the resolved address rather than a
      * handle comparison, because an address handle is opaque and not
      * usefully comparable.
      */
     if (prev != 0ull) {
-        write32((volatile void *)(uintptr_t)((prev + 12)), (uint32_t)(at));
+        pssc_write32((volatile void *)(uintptr_t)((prev + 12)), (uint32_t)(at));
     }
     return (at + 16);
 }

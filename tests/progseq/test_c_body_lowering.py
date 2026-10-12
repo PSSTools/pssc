@@ -364,7 +364,9 @@ def test_a_declared_builtin_with_no_c_rendering_is_rejected(tmp_path):
     partly-written header behind. The emitter's own check remains as the
     backstop for a call the gate vouched for -- reaching it is a compiler bug.
     """
-    src = _BUILTINS.replace("v = read32(at);", "v = urandom();")
+    src = _BUILTINS.replace("import addr_reg_pkg::*;",
+                            "import addr_reg_pkg::*;\nimport std_pkg::*;")
+    src = src.replace("v = read32(at);", "v = urandom();")
     with pytest.raises(Exception) as exc:
         _generate(tmp_path, src)
     msg = diagnostic_text(exc)

@@ -92,8 +92,18 @@ class CStylePolicy(StylePolicy):
     def stubs_name(self, prefix: str) -> str:
         return f"{prefix}_stubs.c"
 
+    def regs_header_name(self, prefix: str) -> str:
+        """The private register-definitions header: value layouts and (under
+        `reg_map`) the register-map structs, included by the generated ``.c``
+        only. Absent under `--header-only`, which has no ``.c`` to include it
+        from and keeps everything in the one file."""
+        return f"{prefix}_regs.h"
+
     def include_guard(self, prefix: str) -> str:
         return f"{prefix.upper()}_H"
+
+    def regs_include_guard(self, prefix: str) -> str:
+        return f"{prefix.upper()}_REGS_H"
 
     # -- symbols -------------------------------------------------------------
 

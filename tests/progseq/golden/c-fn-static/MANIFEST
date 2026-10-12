@@ -1,4 +1,5 @@
 wb_dma.h
+wb_dma_regs.h
 wb_dma.c
 pssc_mem.h -> share/c/pssc_mem.h
 pssc_mem_ptr.h -> share/c/pssc_mem_ptr.h

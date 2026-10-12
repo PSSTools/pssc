@@ -118,24 +118,21 @@ def test_a_call_to_nothing_is_refused_by_the_front_end(tmp_path):
 
 
 def test_a_component_scope_import_is_refused_rather_than_mislowered(tmp_path):
-    """The one case the backend's own check still catches, and it is a real one.
+    """An `import target function` on an INSTANCE function of a component used
+    to parse, then silently drop the declaration before it reached the IR --
+    absent from `comp.functions` and from `ctx.import_functions`. The call
+    would then arrive at lowering resolved to nothing, and emitting it
+    verbatim would produce C naming a function that neither the model nor the
+    platform declared: it would compile under C89 rules as an implicit
+    declaration and fail only at link, or with -Werror fail somewhere
+    confusing.
 
-    A `import target function` declared inside a COMPONENT parses, and then does
-    not reach the IR at all -- it is absent from `comp.functions` and absent
-    from `ctx.import_functions`. So the call arrives at lowering resolved to
-    nothing, and emitting it verbatim would produce C naming a function that
-    neither the model nor the platform declared: it would compile under C89
-    rules as an implicit declaration and fail only at link, or with -Werror fail
-    somewhere confusing.
-
-    Refusing here is the correct outcome for as long as the front end drops the
-    declaration. If that is fixed, this test should be changed to assert the
-    component-scope import GENERATES -- not deleted.
-
-    The refusal moved from the body emitter to the `validate_calls` gate
-    (P1.T1), so it now arrives as a `CompileError` before any file is opened
-    and lists every offending call rather than the first. The message is what
-    matters and it is unchanged in substance -- see `diagnostic_text`.
+    The front end now catches this itself, at PARSE time (LRM 20.4: only a
+    `static` component function can be imported) -- pssc's own
+    `validate_calls` gate, which used to be where this was caught, is no
+    longer reached for this shape at all. This test moved with it: what
+    matters is that the model is refused somewhere, with a diagnostic naming
+    the offending function and the rule it breaks, before any file is opened.
     """
     model = """
 component imp_c {
@@ -147,14 +144,15 @@ component imp_c {
         _gen(tmp_path, model)
     msg = diagnostic_text(exc)
     assert "plat_delay_us" in msg
-    assert "no function named" in msg or "no lowering" in msg
+    assert "(20.4)" in msg
 
 
 def test_the_refusal_names_imports_as_an_option(tmp_path):
-    """The diagnostic has to say what the reader can do about it. Before C4.1
-    "declare it as an import" was not among the answers, so the message did not
-    mention imports; now it is, and it does -- which for the component-scope
-    case above is precisely the fix (move the declaration to package scope)."""
+    """The diagnostic has to say what the reader can do about it -- here, that
+    an instance function cannot be imported and must be declared `static` to
+    be. (Older pssparser versions dropped the declaration silently and pssc's
+    own gate supplied this advice instead; now the parser's own message
+    already says it, before pssc ever sees the model.)"""
     model = """
 component imp_c {
     import target function void plat_delay_us(int us);
@@ -163,7 +161,7 @@ component imp_c {
 """
     with pytest.raises(Exception) as exc:
         _gen(tmp_path, model)
-    assert "declare it as an `import` function" in diagnostic_text(exc)
+    assert "static" in diagnostic_text(exc)
 
 
 def test_no_imports_emits_no_import_section(tmp_path):

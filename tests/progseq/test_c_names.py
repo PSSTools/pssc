@@ -125,7 +125,11 @@ def test_every_gathered_name_is_one_the_backend_emits(ctx, tmp_path, kw):
     s = CSettings(prefix="wb_dma", **kw)
     be = COpModelBackend()
     be.prepare(model, s)
-    text = be.header_text(model, s) + "\n" + be.impl_text(model, s)
+    # The private regs header carries whatever value layout and (under
+    # `reg_map`) register-map struct the public header does not need to name
+    # -- `be._regs_text`, cached by `prepare()`, is "" when there is none.
+    text = (be.header_text(model, s) + "\n" + be.impl_text(model, s)
+           + "\n" + be._regs_text)
     names = c_names.declared_names(be, model, s)
     assert len(names) > 20
     missing = [(n, who) for n, who in names

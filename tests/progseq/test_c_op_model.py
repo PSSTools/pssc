@@ -65,6 +65,14 @@ def h(gen):
 
 
 @pytest.fixture(scope="module")
+def g(gen):
+    """The private regs header -- the value layouts the public header does
+    not need to name moved here (see docs/design/reg-mem-access-readability-plan.md)."""
+    out, _ = gen
+    return (out / "wb_dma_regs.h").read_text()
+
+
+@pytest.fixture(scope="module")
 def c(gen):
     out, _ = gen
     return (out / "wb_dma.c").read_text()
@@ -83,7 +91,7 @@ def test_outputs_written(gen):
     """
     out, res = gen
     names = {os.path.basename(str(p)) for p in res.outputs}
-    assert names == {"wb_dma.h", "wb_dma.c",
+    assert names == {"wb_dma.h", "wb_dma_regs.h", "wb_dma.c",
                      "pssc_mem.h", "pssc_mem_ptr.h", "pssc_mem_fn.h",
                      "pssc_mem_vtable.h", "pssc_mem_reg.h",
                      # C4.3 shims, still copied so a freshly generated
@@ -250,18 +258,18 @@ def test_the_same_register_is_also_reachable_from_the_root(c):
             "{ return _self->base_regs + 0x20u + (pssc_addr_t)i0 * 0x20u; }") in c
 
 
-def test_register_value_types_are_emitted_once(h, c):
+def test_register_value_types_are_emitted_once(h, c, g):
     """The per-channel bank is reachable twice -- as `wb_dma_ch_c.regs` and as
     `wb_dma_c.regs.bank[i]` -- so an emitter that walked per component without
     deduplicating produced every channel value union twice, which C rejects as a
     redefinition.
 
-    Counted ACROSS both files, because the layouts are now partitioned between
-    them: a struct that both halves claimed would be declared twice in one
-    translation unit (the .c includes the .h), and counting either file alone
-    could not see it."""
-    assert (h + c).count("} wb_dma_csr_s;") == 1
-    assert (h + c).count("} wb_dma_gcsr_s;") == 1
+    Counted ACROSS all three files, because the layouts are now partitioned
+    between them: a struct that two of them claimed would be declared twice in
+    one translation unit (the .c includes the .h and the private regs
+    header), and counting any one file alone could not see it."""
+    assert (h + c + g).count("} wb_dma_csr_s;") == 1
+    assert (h + c + g).count("} wb_dma_gcsr_s;") == 1
 
 
 def test_access_mode_is_honoured_per_register(c):

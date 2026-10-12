@@ -229,20 +229,16 @@ def test_manifest_matches_the_front_end_stdlib():
         f"verbatim emission: {sorted(missing)}")
 
 
-def test_error_and_fatal_are_still_missing_from_the_stdlib():
-    """PSS 3.1 §21.3 puts error() and fatal() in std_pkg; the front end's
-    stdlib does not declare them, so a model calling error() does not resolve.
-
-    Registered in COMMON regardless -- the registry states the LANGUAGE, and
-    this test is the reminder that the front end has not caught up. Flip it to
-    an equality assertion when std_pkg.pss gains them (docs §9, Phase 1a).
-    """
+def test_error_and_fatal_are_now_in_the_stdlib():
+    """PSS 3.1 §21.3 puts error() and fatal() in std_pkg; Phase 1a (docs §9)
+    is done and the front end now declares them, matching what COMMON always
+    stated about the language. (Previously this asserted the inverse -- that
+    they were still missing -- as a reminder that the front end had not
+    caught up.)"""
     declared = _declared_in_stdlib()
     if not declared:
         pytest.skip("stdlib source not readable")
-    assert {"error", "fatal"} - declared == {"error", "fatal"}, (
-        "std_pkg.pss now declares error/fatal -- Phase 1a is done; "
-        "update this test to assert they ARE declared")
+    assert {"error", "fatal"} <= declared
 
 
 def test_tier0_entries_all_carry_a_reason():
@@ -325,12 +321,14 @@ def test_a_lowerable_model_still_generates(tmp_path):
 # backend that has no PRNG in the image.
 
 _URANDOM_MODEL = """
+import std_pkg::*;
 component gate_c {
     target function int roll() {
         int v;
         v = urandom();
         return v;
     }
+    export target function roll;
 }
 """
 

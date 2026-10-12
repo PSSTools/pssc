@@ -93,9 +93,39 @@
         "since": "0.1",
         "stability": "stable"
       },
+      "emit_reg_map_decls": {
+        "since": "0.1",
+        "stability": "provisional"
+      },
       "emit_reg_maps": {
         "since": "0.1",
         "stability": "stable"
+      },
+      "emit_regs_banner": {
+        "since": "0.1",
+        "stability": "provisional"
+      },
+      "emit_regs_guard_close": {
+        "since": "0.1",
+        "stability": "stable",
+        "pairs_with": [
+          "emit_regs_guard_open"
+        ]
+      },
+      "emit_regs_guard_open": {
+        "since": "0.1",
+        "stability": "stable",
+        "pairs_with": [
+          "emit_regs_guard_close"
+        ]
+      },
+      "emit_regs_includes": {
+        "since": "0.1",
+        "stability": "provisional"
+      },
+      "emit_regs_reg_maps": {
+        "since": "0.1",
+        "stability": "provisional"
       },
       "emit_value_unions": {
         "since": "0.1",
@@ -123,6 +153,14 @@
       "prepare": {
         "since": "0.1",
         "stability": "provisional"
+      },
+      "regs_sections": {
+        "since": "0.1",
+        "stability": "provisional"
+      },
+      "regs_text": {
+        "since": "0.1",
+        "stability": "stable"
       },
       "stubs_text": {
         "since": "0.1",

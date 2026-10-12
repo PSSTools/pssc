@@ -153,6 +153,12 @@ class COpModelBackend:
                   ", ".join(f"{getattr(c, 'name', '?')}->{self.prefixes[c]}"
                             for c in self.comps))
         self.impl = self.emit_impl(model, s)
+        # Computed here, once, rather than on every call to `emit_impl_includes`:
+        # whether the private regs header exists decides both ITS OWN content
+        # and whether the `.c` includes it, and the two must agree on one
+        # answer, not two calls to `regs_text` that could in principle disagree
+        # under an override.
+        self._regs_text = self.regs_text(model, s)
 
     # -- sections -----------------------------------------------------------
     #
@@ -326,11 +332,54 @@ class COpModelBackend:
         touches thirty got a thousand accessor sets. A layout is DATA
         proportional to the register map and leaves the CODE proportional to
         the registers actually used.
+
+        The SELF-CONTAINED form (its own typedef, not completing a forward
+        declaration): used for `--header-only`, where there is no private
+        regs header to forward-declare from and no `.c` to put the full
+        definition in instead. Otherwise the public header gets
+        `emit_reg_map_decls` and the full definition moves to the private
+        `<prefix>_regs.h` (`emit_regs_reg_maps`).
         """
         from .lower_reg_model import lower_reg_maps
         if not s.reg_map:
             return []
         return self._block(lower_reg_maps(model, self.style))
+
+    @overridable(since='0.1', stability='provisional')
+    def emit_reg_map_decls(self, model, s: CSettings) -> List[str]:
+        """Forward declarations for the register-map types, for the PUBLIC
+        header under `reg_map` (except `--header-only`, which has nowhere
+        else to put the full definition and keeps `emit_reg_maps` instead).
+
+        The component handle holds a POINTER to each (`emit_handle`), and a
+        pointer member needs only the incomplete type -- the full layout is
+        implementation, in the private `<prefix>_regs.h`
+        (`emit_regs_reg_maps`), and a caller of the generated API never
+        dereferences it directly.
+        """
+        if not s.reg_map or s.header_only:
+            return []
+        from .lower_reg_model import map_type_name
+        from ..reg_layout import reg_maps_for
+        maps = reg_maps_for(model.reg_groups)
+        if not maps:
+            return []
+        lines = ["/* ----- Register-map types (full layout: "
+                 f"{self.style.regs_header_name(s.prefix)}). ----- */"]
+        for rm in maps:
+            name = map_type_name(rm.dtype, self.style)
+            lines.append(f"typedef struct {name} {name};")
+        return self._block("\n".join(lines))
+
+    @overridable(since='0.1', stability='provisional')
+    def emit_regs_reg_maps(self, model, s: CSettings) -> List[str]:
+        """The register-group layout structs' full definitions, completing
+        the forward declarations `emit_reg_map_decls` put in the public
+        header. Lives in the private `<prefix>_regs.h`."""
+        from .lower_reg_model import lower_reg_maps
+        if not s.reg_map:
+            return []
+        return self._block(lower_reg_maps(model, self.style, tagged=True))
 
     @overridable(since='0.1', stability='provisional')
     def emit_accessors(self, model, s: CSettings) -> List[str]:
@@ -469,9 +518,13 @@ class COpModelBackend:
         component handles (complete types, so a caller can place one in static
         storage), the platform imports and the prototypes. The register value
         layouts and the baked accessors are how the device is poked, not what a
-        caller may call, so they go to the .c (`impl_sections`). `--header-only`
-        has no .c to move them to and keeps everything, which is the ONLY
-        reason `accessors` is conditional here rather than simply absent.
+        caller may call, so they go to the private `<prefix>_regs.h`
+        (`regs_sections`), included by the .c only -- under `reg_map` the
+        header gets a forward declaration instead (`emit_reg_map_decls`), the
+        component handle needing only the pointer type. `--header-only` has
+        no other file to move any of it to and keeps everything, which is the
+        ONLY reason `accessors` and the full `reg_map` definition are
+        conditional here rather than simply absent.
         """
         secs = [
             Section("banner",      self.emit_banner),
@@ -479,7 +532,8 @@ class COpModelBackend:
             Section("includes",    self.emit_includes),
             Section("api_types",   self.emit_api_types),
             Section("reg_values",  self.emit_value_unions),
-            Section("reg_map",     self.emit_reg_maps),
+            Section("reg_map",     self.emit_reg_maps if s.header_only
+                                   else self.emit_reg_map_decls),
             Section("handles",     self.emit_handles),
         ]
         if s.header_only:
@@ -498,15 +552,17 @@ class COpModelBackend:
         extension wants to add goes at the top of a generated source file at
         least as often as it goes in the header.
 
-        `reg_values` and `accessors` are the same emitters the header used to
-        run, placed here instead -- see `header_sections`. They precede `impl`
-        because the bodies call the accessors and the accessors name the
-        layouts.
+        `accessors` is the same emitter the header used to run under
+        `--header-only`, placed here instead -- see `header_sections`. It
+        precedes `impl` because the bodies call the accessors. The register
+        value layouts moved to the private `<prefix>_regs.h`
+        (`regs_sections`), `#include`d by `emit_impl_includes` -- they used to
+        be a section here too, but a `.c` with hundreds of register structs
+        inline was exactly the readability problem this split exists to fix.
         """
         return [
             Section("banner",     self.emit_impl_banner),
             Section("includes",   self.emit_impl_includes),
-            Section("reg_values", self.emit_impl_value_unions),
             Section("accessors",  self.emit_accessors),
             Section("impl",       self.emit_impl_body),
         ]
@@ -521,9 +577,16 @@ class COpModelBackend:
         """The generated ``.c``'s `#include` block. Returns LINES.
 
         Separate from the header's: something the bodies need and no caller
-        should see belongs here (`--include-impl`).
+        should see belongs here (`--include-impl`). Includes the private
+        `<prefix>_regs.h` when `prepare()` found something to put in it
+        (`self._regs_text`) -- after the public header, which is where any
+        forward-declared register-map type the bodies need to COMPLETE comes
+        from.
         """
-        return list(self.style.impl_includes(model, s)) + [""]
+        out = list(self.style.impl_includes(model, s))
+        if self._regs_text:
+            out.append(f'#include "{self.style.regs_header_name(s.prefix)}"')
+        return out + [""]
 
     @overridable(since='0.1', stability='provisional')
     def emit_impl_body(self, model, s: CSettings) -> List[str]:
@@ -544,6 +607,88 @@ class COpModelBackend:
         lowered.
         """
         return self.assemble(self.impl_sections(model, s), model, s)
+
+    # -- the private regs header --------------------------------------------
+    #
+    # `<prefix>_regs.h`: the register value layouts the public header does not
+    # need to name (`emit_impl_value_unions`) and, under `reg_map`, the full
+    # register-map struct definitions the header only forward-declares
+    # (`emit_reg_map_decls`). Included by the generated `.c` alone
+    # (`emit_impl_includes`) -- never by the public header, which is the
+    # entire point: a caller of the API cannot see how a register is laid out,
+    # only that the operations exist.
+
+    @overridable(since='0.1', stability='provisional')
+    def emit_regs_banner(self, model, s: CSettings) -> List[str]:
+        """The private regs header's opening comment. Returns LINES."""
+        return [
+            "/* Generated by pssc (c-progseq) -- do not edit. */",
+            "/* Private register definitions: layout only, not part of the "
+            "public API. */",
+            f"/* Included by {self.style.impl_name(s.prefix)} only. */",
+        ]
+
+    @overridable(since='0.1', stability='stable',
+                pairs_with=['emit_regs_guard_close'])
+    def emit_regs_guard_open(self, model, s: CSettings) -> List[str]:
+        """`#ifndef`/`#define` opening the regs header's include guard.
+        Returns LINES. Paired with `emit_regs_guard_close` -- see
+        `emit_guard_open`, whose reasoning is the same."""
+        guard = self.style.regs_include_guard(s.prefix)
+        return [f"#ifndef {guard}", f"#define {guard}", ""]
+
+    @overridable(since='0.1', stability='stable',
+                pairs_with=['emit_regs_guard_open'])
+    def emit_regs_guard_close(self, model, s: CSettings) -> List[str]:
+        """`#endif` closing the regs header's include guard. Returns LINES."""
+        return [f"#endif /* {self.style.regs_include_guard(s.prefix)} */", ""]
+
+    @overridable(since='0.1', stability='provisional')
+    def emit_regs_includes(self, model, s: CSettings) -> List[str]:
+        """The private regs header's `#include` block. Returns LINES.
+
+        Only what this file's OWN content needs (`<stdint.h>` for the value
+        layouts, `<stddef.h>` for `offsetof` in the register-map asserts under
+        `reg_map`): the public header -- and, through it, `PSSC_STATIC_ASSERT`
+        -- is already included by the `.c` before this file is
+        (`emit_impl_includes`), which this file relies on rather than
+        re-including.
+        """
+        out = []
+        if not s.omit_stdint:
+            out.append("#include <stdint.h>")
+        if s.reg_map:
+            out.append("#include <stddef.h>")
+        return out + [""]
+
+    @overridable(since='0.1', stability='provisional')
+    def regs_sections(self, model, s: CSettings):
+        """The private `<prefix>_regs.h`'s named, ordered sections. See
+        `header_sections` for why ORDER is the backend's business."""
+        return [
+            Section("banner",      self.emit_regs_banner),
+            Section("guard_open",  self.emit_regs_guard_open),
+            Section("includes",    self.emit_regs_includes),
+            Section("reg_values",  self.emit_impl_value_unions),
+            Section("reg_map",     self.emit_regs_reg_maps),
+            Section("guard_close", self.emit_regs_guard_close),
+        ]
+
+    @overridable(since='0.1', stability='stable')
+    def regs_text(self, model, s: CSettings) -> str:
+        """The private `<prefix>_regs.h`, as text -- or ``""`` when there is
+        nothing private to say.
+
+        That is `--header-only` (nowhere else for it to go, so it stays in the
+        public header) or a model with no impl-only value layout and no
+        register map: a file nothing would put anything in is a file nothing
+        should include, which is what `emit_impl_includes` checks this against.
+        """
+        if s.header_only:
+            return ""
+        if not self.impl_value_structs and not s.reg_map:
+            return ""
+        return self.assemble(self.regs_sections(model, s), model, s)
 
     @overridable(since='0.1', stability='stable')
     def stubs_text(self, model, s: CSettings) -> str:
@@ -574,10 +719,12 @@ class COpModelBackend:
         """Write the API, and return the paths IN COMPILATION ORDER.
 
         The order is a contract, not an artifact of dict insertion. It is:
-        the header, the ``.c``, the stubs, then the extras -- each artifact
-        after the one it depends on, and the extras last because an extra file
-        may include the generated header while nothing generated includes an
-        extra. The seam headers the target copies come after all of it
+        the header, the private regs header (if any), the ``.c``, the stubs,
+        then the extras -- each artifact after the one it depends on, and the
+        extras last because an extra file may include the generated header
+        while nothing generated includes an extra. (The regs header is NOT an
+        extra for exactly that reason: the generated ``.c`` includes it.) The
+        seam headers the target copies come after all of it
         (`c_progseq_tgt.emit`): a C header is found by name, so the copy has no
         compilation order to honour and stays out of the way of the list a
         build system reads first.
@@ -585,11 +732,13 @@ class COpModelBackend:
         self.prepare(model, s)
         files = {self.style.header_name(s.prefix): self.header_text(model, s)}
         if not s.header_only:
+            if self._regs_text:
+                files[self.style.regs_header_name(s.prefix)] = self._regs_text
             # Unconditionally, not `and self.impl`: the .c now also carries the
-            # register layouts and the accessors, so "no operation bodies" is
-            # no longer the same question as "nothing to compile". It is also a
-            # contract -- a build system that has to ask whether this run
-            # produced a source file cannot state its compile step once.
+            # accessors, so "no operation bodies" is no longer the same
+            # question as "nothing to compile". It is also a contract -- a
+            # build system that has to ask whether this run produced a source
+            # file cannot state its compile step once.
             files[self.style.impl_name(s.prefix)] = self.impl_text(model, s)
         if s.emit_stubs:
             files[self.style.stubs_name(s.prefix)] = self.stubs_text(model, s)

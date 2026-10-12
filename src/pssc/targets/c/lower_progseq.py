@@ -743,18 +743,6 @@ def emit_handle(node, prefixes, link_style: str = "vtable",
     return "\n".join(lines)
 
 
-def _stem(chain, prefix: str, style=None) -> str:
-    """The accessor stem a chain would have had.
-
-    Under `reg_map` no accessor is emitted, but the `_Acc` record keyed by this
-    stem still carries what the access needs and the layout does not: the
-    TRANSACTION WIDTH. A 16-bit register in a 32-bit map is `read16` of a
-    `uint16_t` member, and the member type alone would let `read32` compile.
-    """
-    return accessor_base(prefix, [c[0] for c in chain[:-1]], chain[-1][0],
-                         style)
-
-
 def _bus_macro(link_style: str, mem: MemAccess = None,
                style=None, reg_map: bool = False) -> List[str]:
     """``pssc_bus(s)``: the seam's first argument.
@@ -1349,17 +1337,22 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         # (`regs.set_handle(...)`), which is not a register access and must not
         # be judged as one.
         handle, prefix = self.h, self.prefix
+        # Under `reg_map`, `_reg_path` needs the hop a sub-component chain
+        # starts from and whether it is a POINTER (the root's own handle) or
+        # an embedded-by-value path (`_through_subs` prepends `&` to turn one
+        # into a handle for the baked-accessor call, which `_reg_map_access`
+        # does not want: an embedded sub-component is reached with `.`, not
+        # `->`, until the register group's own pointer member is crossed).
+        base_expr, base_is_ptr = None, True
         if chain and chain[0][0] in self.subs:
             # `s.a.STS.write_val(1)`: a register of a sub-component, reached
             # through ITS accessor and ITS handle -- the accessor already adds
             # that component's group base, so nothing is folded here.
             handle, prefix, comp, chain = self._through_subs(chain)
-            if self.reg_map:
-                raise ValueError(
-                    f"a register of a sub-component, reached from "
-                    f"'{getattr(self.comp, 'name', '?')}', is not lowered "
-                    f"under the register-map link styles yet; call an "
-                    f"operation of the sub-component instead")
+            if handle.startswith("&"):
+                base_expr, base_is_ptr = handle[1:], False
+            else:
+                base_expr, base_is_ptr = handle, True
             if not chain or len(chain) < 2 or \
                     chain[0][0] not in _reg_group_fields(comp):
                 return None
@@ -1384,7 +1377,8 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
                     f"register method '{func.attr}' takes {want} argument(s), "
                     f"got {len(args)}")
             if self.reg_map:
-                return self._reg_map_access(chain, func.attr, args)
+                return self._reg_map_access(chain, func.attr, args, acc,
+                                            base_expr, base_is_ptr)
             return self._reg_access(base, func.attr, idx_args, args, handle)
 
         raise ValueError(
@@ -1394,7 +1388,8 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             f"compiles and writes the wrong thing. Known: "
             f"{', '.join(sorted(_REG_ACCESSORS))}.")
 
-    def _reg_path(self, chain) -> str:
+    def _reg_path(self, chain, base_expr: Optional[str] = None,
+                 base_is_ptr: bool = True) -> str:
         """`s->regs->bank[3].csr` for the PSS path `regs.bank[3].csr`.
 
         The PSS access path and the C member path are THE SAME PATH -- which is
@@ -1403,13 +1398,17 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         and the compiler does the arithmetic, so this walk only has to spell
         the hops.
 
-        Only the first hop is through a pointer (the handle's layout member);
-        everything after it is a member of a struct reached by value, hence
-        `->` once and `.` thereafter. An index makes the element a value, so a
-        subscripted first hop drops straight to `.`.
+        ``base_expr``/``base_is_ptr`` are the hop ``chain`` starts from -- the
+        root's own handle (a pointer, the default) or a sub-component reached
+        by value through `_through_subs` (`s->sub[i].inner`, not a pointer:
+        the sub-component is embedded, not allocated). Only the FIRST hop
+        depends on this; everything after it is a member of a struct reached
+        by value, hence `->` once and `.` thereafter. An index makes the
+        element a value, so a subscripted first hop drops straight to `.`.
         """
+        base = self.h if base_expr is None else base_expr
         name, idx = chain[0]
-        out = f"{self.h}->{mangle(name)}"
+        out = f"{base}{'->' if base_is_ptr else '.'}{mangle(name)}"
         deref = True                      # the next hop crosses the pointer
         if idx is not None:
             out += f"[{self.expr(idx)}]"
@@ -1421,41 +1420,43 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
                 out += f"[{self.expr(ix)}]"
         return out
 
-    def _reg_map_access(self, chain, method: str, args) -> str:
+    def _reg_map_access(self, chain, method: str, args, acc,
+                        base_expr: Optional[str] = None,
+                        base_is_ptr: bool = True) -> str:
         """One register access, addressed through the layout struct.
 
         The primitives take a pointer and nothing else -- there is no bus
         handle on this seam and no address to pass, so the whole access is the
-        member expression and a width.
+        member expression and a width. ``acc`` is looked up by the caller
+        (which already has the right component's prefix in hand for a
+        sub-component access) rather than re-derived here.
 
-        The masked write is rendered INLINE rather than as a call, because
-        there is no per-register function left to put it in. It is still
-        §21.14.1's read-modify-write and the read is still part of the
-        definition, not an optimisation: on a register whose read clears its
-        status bits, dropping it changes what the device does.
+        The masked write calls `pssc_write_masked<N>` -- still §21.14.1's
+        read-modify-write, now a named primitive instead of being spelled out
+        at every call site. The read is still part of the definition, not an
+        optimisation: on a register whose read clears its status bits,
+        dropping it changes what the device does.
         """
-        acc = self.accs.get(_stem(chain, self.prefix, self.style))
         prim = acc.prim if acc is not None else 32
         # A register whose value is a struct is carried as its value union;
         # the primitives move a plain word, so the union is opened here. The
         # `_val` spellings are already raw and must NOT be opened again.
         typed = acc is not None and acc.is_struct
-        path = self._reg_path(chain)
+        path = self._reg_path(chain, base_expr, base_is_ptr)
         raw = f"&{path}"
         if method == "read":
-            rd = f"read{prim}({raw})"
+            rd = f"pssc_read{prim}({raw})"
             # A compound literal, because this is an EXPRESSION: the accessor
             # that used to do `v.raw = ...; return v;` had a function body to
             # do it in, and there is no function here any more.
             return f"({acc.c_type}){{ .raw = {rd} }}" if typed else rd
         if method == "read_val":
-            return f"read{prim}({raw})"
+            return f"pssc_read{prim}({raw})"
         if method in ("write", "write_val"):
             v = f"({args[0]}).raw" if (typed and method == "write") else args[0]
-            return f"write{prim}({raw}, {v})"
+            return f"pssc_write{prim}({raw}, {v})"
         mask, val = args[0], args[1]
-        return (f"write{prim}({raw}, (read{prim}({raw}) & ~({mask}))"
-                f" | (({val}) & ({mask})))")
+        return f"pssc_write_masked{prim}({raw}, {mask}, {val})"
 
     def _through_subs(self, chain):
         """Follow the sub-component hops at the front of *chain*:
@@ -1737,8 +1738,8 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         if self.reg_map:
             ptr = f"(volatile void *)(uintptr_t)({rendered[0]})"
             if direction == "read":
-                return f"read{width}({ptr})"
-            return f"write{width}({ptr}, {rendered[1]})"
+                return f"pssc_read{width}({ptr})"
+            return f"pssc_write{width}({ptr}, {rendered[1]})"
         if direction == "read":
             return self.mem.read(width, self.h, rendered[0])
         return self.mem.write(width, self.h, rendered[0], rendered[1])

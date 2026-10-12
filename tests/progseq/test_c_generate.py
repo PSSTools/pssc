@@ -34,15 +34,26 @@ def _h(d):
     return (d / "wb_dma.h").read_text()
 
 
+def _regs(d):
+    """The private regs header, or "" when nothing put this config's model in
+    one (a model with no impl-only value layout and no register map)."""
+    p = d / "wb_dma_regs.h"
+    return p.read_text() if p.exists() else ""
+
+
 def _c(d):
-    return (d / "wb_dma.c").read_text()
+    """The generated `.c`, plus the private regs header it `#include`s --
+    the register value layouts live there now, not inline in the `.c`
+    (`docs/design/reg-mem-access-readability-plan.md`)."""
+    return (d / "wb_dma.c").read_text() + "\n" + _regs(d)
 
 
 def _hc(d):
-    """Both generated files. For an assertion about what the generator EMITS
-    rather than about which file it lands in -- the register layouts are split
-    between the two (API-mentioned ones in the header, the rest in the .c), so
-    a search of either alone answers a question nobody asked."""
+    """Every generated file that is not a copied seam header. For an assertion
+    about what the generator EMITS rather than about which file it lands in --
+    the register layouts are split between the public header (API-mentioned
+    ones), the private regs header, and the .c (baked accessors), so a search
+    of any one alone answers a question nobody asked."""
     return _h(d) + "\n" + _c(d)
 
 
