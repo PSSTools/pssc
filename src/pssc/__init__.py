@@ -364,7 +364,10 @@ def _generate_sv_from_ctx(ir_ctx: AstToIrContext, output_dir: str, **options) ->
 
     if include_runtime and rt_src.exists():
         rt_dst = out / 'zsp_rt_pkg.sv'
-        shutil.copy2(str(rt_src), str(rt_dst))
+        # Not copy2: it preserves the source's mode, and package data is
+        # commonly read-only -- a second compile into the same output dir
+        # would then fail to overwrite its own prior output.
+        shutil.copyfile(str(rt_src), str(rt_dst))
         written.append(rt_dst)
 
     return written

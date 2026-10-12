@@ -871,7 +871,10 @@ class OpModelTarget(Target):
         model.out_dir.mkdir(parents=True, exist_ok=True)
         for src in _resolve(names, self.core_package, lang):
             dst = model.out_dir / src.name
-            shutil.copy2(str(src), str(dst))
+            # Not copy2: it preserves the source's mode, and package data is
+            # commonly read-only -- a second compile into the same output dir
+            # would then fail to overwrite its own prior output.
+            shutil.copyfile(str(src), str(dst))
             written.append(dst)
         return written
 

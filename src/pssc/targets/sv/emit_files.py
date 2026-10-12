@@ -114,14 +114,17 @@ def emit_files(
     filelist_entries: List[str] = []
     if emit_dpi and _dpi_path and _dpi_path.exists():
         dpi_dst = out / _FILE_DPI_PKG
-        shutil.copy2(str(_dpi_path), str(dpi_dst))
+        # Not copy2: it preserves the source's mode, and package data is
+        # commonly read-only -- a second compile into the same output dir
+        # would then fail to overwrite its own prior output.
+        shutil.copyfile(str(_dpi_path), str(dpi_dst))
         written.append(dpi_dst)
         filelist_entries.append(_FILE_DPI_PKG)
 
     # Copy runtime library (zsp_rt_pkg.sv)
     if runtime_lib_path and runtime_lib_path.exists():
         rt_dst = out / _FILE_RT
-        shutil.copy2(str(runtime_lib_path), str(rt_dst))
+        shutil.copyfile(str(runtime_lib_path), str(rt_dst))
         written.append(rt_dst)
         filelist_entries.append(_FILE_RT)
 

@@ -133,6 +133,17 @@ def sv_member_type(dtype) -> str:
     raise ValueError(f"unsupported SV struct member type {cn}")
 
 
+def _array_dims(dtype):
+    """Flatten nested ``DataTypeArray``s to ``(element_type, [size, ...])`` --
+    SV spells every dimension after the member name (`k[4]`, `k[4][2]`), unlike
+    C's declarator syntax that ``sv_member_type`` otherwise mirrors."""
+    sizes = []
+    while _dt_name(dtype) == "DataTypeArray":
+        sizes.append(int(getattr(dtype, "size", 0) or 0))
+        dtype = getattr(dtype, "element_type", None)
+    return dtype, sizes
+
+
 def emit_struct(struct_dtype) -> str:
     name = _strip_pkg(struct_dtype.name)
     packed = _is_packed(struct_dtype)
@@ -160,7 +171,12 @@ def emit_struct(struct_dtype) -> str:
         elif not packed and init is None and enum_first_item(f.datatype):
             # An enum starts at its first item (7.5); SV's starts at 0.
             dflt = f" = {enum_first_item(f.datatype)}"
-        lines.append(f"    {sv_member_type(f.datatype)} {f.name}{dflt};")
+        if _dt_name(f.datatype) == "DataTypeArray":
+            elem, dims = _array_dims(f.datatype)
+            dim_str = "".join(f"[{n}]" for n in dims)
+            lines.append(f"    {sv_member_type(elem)} {f.name}{dim_str}{dflt};")
+        else:
+            lines.append(f"    {sv_member_type(f.datatype)} {f.name}{dflt};")
     lines.append(f"  }} {name};")
     return "\n".join(lines)
 
