@@ -326,8 +326,16 @@ them (`sv/constants.py`): an item of an enum the package declares by its
 name, a `static const` as a `localparam` under its PSS name, qualified with
 its scope only on a clash. Which constants are declared is found by
 rendering the package once with a recording table
-(`SvOpModelBackend.constants`), so only what the code references is. C, C++
-and Python still spell the value.
+(`SvOpModelBackend.constants`), so only what the code references is. C and
+C++ still spell the value.
+
+**An enum item is spelled by name** (review and plan:
+`docs/design/enum-handling-review.md`). `targets/enum_names.py` (`item_of`)
+is the one reader of an item's `ref`, and `ExprTypes` types an item as its
+enum, never `int`; never recover a name from a value (two items may share
+one). PSS scopes an item by its enum, so Python emits each enum as a
+namespace class (`wb_dma_status_e.WB_DMA_DONE`); C/SV are to prefix by
+style policy and C++ to use `enum class`.
 
 Python binds each register GROUP's base separately (`naming.group_base`,
 `self._pss_base_<group>`), as C and C++ do: one `_base` per component put two

@@ -18,7 +18,8 @@ from typing import List
 from ..executors import has_executors, mem_access_desc
 from ..progseq_model import (_dt_name, resolve_ref, struct_base,
                              struct_fields, sub_components)
-from .naming import mangle
+from ..enum_names import item_of
+from .naming import enum_class_name, mangle
 
 __all__ = ["collect_module_types", "emit_enum", "emit_struct",
            "emit_struct_base", "lower_api_types", "py_annotation"]
@@ -59,8 +60,8 @@ def py_annotation(dtype) -> str:
     if cn == _DT_STRING:
         return "str"
     if cn == _DT_ENUM:
-        # An enum reaches Python as module-level `int` constants
-        # (`emit_enum`), so `int` is what a caller can actually pass.
+        # An item is an `int` class attribute (`emit_enum`), so `int` is
+        # what a caller can actually pass.
         return "int"
     if cn == _DT_CHANDLE:
         return "int"
@@ -166,21 +167,23 @@ def emit_struct_base() -> str:
 
 
 def emit_enum(enum_dtype) -> List[str]:
-    """A PSS enum as module-level integer constants, with EXPLICIT values.
+    """A PSS enum as a namespace class of integer constants, with EXPLICIT
+    values: `class mode_e:` holding `FAST = 6`, read as `mode_e.FAST`.
 
     The model's numbers are register field encodings and cross-language
     contract, so they are written out rather than left to any numbering scheme.
-    Names are emitted verbatim, as the C and SV projections emit them: an
-    enumerator is how the model, the datasheet and the other generated
-    languages all refer to the value.
+    An item is scoped by its enum, as in PSS (7.5): two enums may each have an
+    `A`, which as module-level constants were one name, the second silently
+    replacing the first.
 
-    Plain `int` constants rather than `enum.IntEnum`: a generated module that
+    A plain class of `int`s rather than `enum.IntEnum`: a generated module that
     imports nothing can be dropped anywhere, and an IntEnum would buy repr at
     the cost of that. A field read back off the bus is an int either way.
     """
-    name = (getattr(enum_dtype, "name", "") or "").split("::")[-1]
-    out = [f"# {name}"]
-    out += [f"{mangle(k)} = {v}" for k, v in enum_dtype.items.items()]
+    out = [f"class {enum_class_name(enum_dtype)}(object):"]
+    out += [f"    {mangle(k)} = {v}" for k, v in enum_dtype.items.items()]
+    if not enum_dtype.items:
+        out.append("    pass")
     return out
 
 
@@ -257,6 +260,7 @@ def collect_module_types(model):
             visit(struct_base(dt, tm))
             for f in dt.fields:
                 visit(f.datatype)
+                visit_items(getattr(f, "initial_value", None))
             if id(dt) not in skip:
                 structs.append(dt)
         elif cn == "DataTypeArray":
@@ -269,6 +273,16 @@ def collect_module_types(model):
         for n in _nodes(getattr(fn, "body", None) or []):
             if _dt_name(n) == "StmtAnnAssign":
                 visit(n.annotation)
+        visit_items(getattr(fn, "body", None) or [])
+
+    def visit_items(node):
+        # An item is spelled by its enum's class wherever it is written,
+        # whatever the type of the expression it is written in.
+        for n in _nodes(node):
+            if _dt_name(n) == "ExprConstant":
+                found = item_of(n, tm)
+                if found is not None:
+                    visit(found[0])
 
     for comp in (list(model.comp_dtypes_root_first)
                  + list(getattr(model, "base_classes", ()) or ())):
@@ -276,6 +290,7 @@ def collect_module_types(model):
         for f in comp.fields:
             if f.name not in subs:
                 visit(f.datatype)
+                visit_items(getattr(f, "initial_value", None))
         for fn in comp.functions:
             visit_fn(fn)
     for e in getattr(model, "entries", ()) or ():
@@ -287,12 +302,12 @@ def collect_module_types(model):
         visit(mem_access_desc(tm))
     for fn in getattr(model, "functions", ()) or ():
         visit_fn(fn)
-    _check_unique_names(structs)
+    _check_unique_names(enums + structs)
     return enums, structs
 
 
-def _check_unique_names(structs) -> None:
-    """Two distinct struct types may not share a class name.
+def _check_unique_names(types) -> None:
+    """Two distinct struct or enum types may not share a class name.
 
     The name is the PSS type's, without its package (`value_class_name`), so
     two packages' `cfg_s`, or two specializations of one template, would be
@@ -302,11 +317,12 @@ def _check_unique_names(structs) -> None:
     from .lower_reg_model import value_class_name
 
     by_name = {}
-    for s in structs:
-        n = value_class_name(s)
+    for s in types:
+        n = (enum_class_name(s) if _dt_name(s) == _DT_ENUM
+             else value_class_name(s))
         if n in by_name and by_name[n] is not s:
             raise ValueError(
-                f"two different struct types would both be the Python class "
+                f"two different types would both be the Python class "
                 f"'{n}': '{getattr(by_name[n], 'name', '?')}' and "
                 f"'{getattr(s, 'name', '?')}'. This target names a class "
                 f"after its PSS type without the package or template "

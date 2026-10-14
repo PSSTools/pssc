@@ -35,6 +35,7 @@ from __future__ import annotations
 import dataclasses as dc
 from typing import Any, Dict, Optional, Tuple
 
+from .enum_names import item_of
 from .progseq_model import _dt_name, struct_fields
 
 
@@ -218,18 +219,8 @@ class ExprTypes:
         An item is of its enum's type (LRM 7.5), not `int`: `%n` prints its
         name, and an emitter spells it by that name.
         """
-        ref = getattr(e, "ref", None)
-        head, _, item = (ref or "").rpartition("::")
-        if not head:
-            return None
-        for name in (head, head.rpartition("::")[2]):
-            dt = self._tm.get(name)
-            if _dt_name(dt) == "DataTypeEnum":
-                items = getattr(dt, "items", {}) or {}
-                if items.get(item) == e.value:
-                    return self.of_datatype(dt)
-                return None
-        return None
+        found = item_of(e, self._tm)
+        return self.of_datatype(found[0]) if found is not None else None
 
     def _ExprRefLocal(self, e):
         if e.name in self.loop_vars:

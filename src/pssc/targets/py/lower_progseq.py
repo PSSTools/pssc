@@ -53,6 +53,7 @@ from ..validate_calls import callee_name, is_super_call
 from ..comments import HASH
 from .. import executors as xtr
 from ..array_literal import is_literal
+from ..enum_names import item_of
 from ..progseq_model import (FuncKind, INIT_EXEC_KINDS, _dt_name,
                              array_base_stride, channel_fields, exec_kind,
                              func_kind, resolve_ref, struct_base,
@@ -63,8 +64,8 @@ from . import pss_int
 from .lower_reg_model import accessor_map, value_class_name
 from .pss_format import check_args
 from .naming import (CTOR_METHOD, DEFAULT_EXECUTOR, EXECUTOR_ATTR,
-                     IMPORTS_ATTR, class_name, group_base, init_kind_method,
-                     mangle, reg_symbol)
+                     IMPORTS_ATTR, class_name, enum_item, group_base,
+                     init_kind_method, mangle, reg_symbol)
 
 _DT_STRUCT = "DataTypeStruct"
 _DT_INT = "DataTypeInt"
@@ -197,8 +198,8 @@ def default_value(dtype, type_map=None) -> str:
             return "0"
         return f"{value_class_name(dt)}()"
     if cn == _DT_ENUM:
-        items = list((getattr(dt, "items", None) or {}).values())
-        return str(int(items[0])) if items else "0"
+        items = list(getattr(dt, "items", None) or {})
+        return enum_item(dt, items[0]) if items else "0"
     if cn == "DataTypeString":
         return '""'
     if cn == _DT_ARRAY:
@@ -497,6 +498,9 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
 
     def expr_constant(self, e) -> str:
         v = e.value
+        found = item_of(e, self.types._tm)
+        if found is not None:
+            return enum_item(*found)
         if isinstance(v, bool):
             return "True" if v else "False"
         if isinstance(v, int):

@@ -18,7 +18,7 @@ from __future__ import annotations
 import keyword
 from typing import Sequence
 
-__all__ = ["mangle", "class_name", "module_name", "reg_symbol", "strip_suffix",
+__all__ = ["mangle", "class_name", "enum_class_name", "enum_item", "module_name", "reg_symbol", "strip_suffix",
            "IMPORTS_ATTR", "IMPORTS_PARAM", "INIT_METHOD", "EXECUTOR_ATTR",
            "CONSTRUCT_METHOD", "CTOR_METHOD", "init_kind_method",
            "field_storage", "group_base",
@@ -111,6 +111,22 @@ def class_name(comp_name: str) -> str:
     as foreign Python is one people wrap rather than use.
     """
     return "".join(p.title() for p in strip_suffix(comp_name).split("_") if p)
+
+
+def enum_class_name(enum_dtype) -> str:
+    """An enum's namespace class: its PSS name, verbatim (`wb_dma_status_e`),
+    without the package, as a value struct's class is named."""
+    return mangle((getattr(enum_dtype, "name", "") or "").split("::")[-1])
+
+
+def enum_item(enum_dtype, item: str) -> str:
+    """An enum item as Python: `wb_dma_status_e.WB_DMA_DONE`.
+
+    An item is scoped by its enum in PSS (7.5); module-level constants put
+    every enum's items in one namespace, where `A` of a second enum silently
+    replaced the first's.
+    """
+    return f"{enum_class_name(enum_dtype)}.{mangle(item)}"
 
 
 def module_name(root_name: str) -> str:

@@ -97,6 +97,10 @@ def _on(targets, why):
 #: `initialize` call (`_sub_storage`), and it is `None` until then.
 _PY_LAZY_SUB = "py: a sub-component with a constructor is None until called"
 
+#: C, C++ and SV put an enum's items in the enclosing scope, so two enums with
+#: an item of one name do not compile (enum-handling-review.md D3).
+_ENUM_SCOPE = "enum items are not scoped by their enum (D3)"
+
 
 CASES = {
     # --- D1: each register group at its own handle ---------------------------
@@ -943,6 +947,24 @@ component pss_top {""" + _ONE + """
     if (x == SV && f == C) { a.STS.write_val(1); }
   }
 }""", ["write 32 0x1004 0x50", "write 32 0x1004 0x1"]),
+
+    # An item is scoped by its enum (7.5): two enums may each have an `A`.
+    # Python's module-level constants made them one name, the second
+    # silently replacing the first; C, C++ and SV promote items to the
+    # enclosing scope, where two `A`s do not compile.
+    "two enums with an item of one name": Case("""
+enum dir_e { A, B = 3 }
+enum op_e { B, A = 7 }
+component pss_top {""" + _ONE + """
+  target function void run() {
+    dir_e d = A;
+    op_e o = A;
+    a.STS.write_val((bit[32])d * 16 + (bit[32])o);
+    if (d == dir_e::A && o == op_e::A) { a.STS.write_val(1); }
+    message(LOW, "%n %n", d, o);
+  }
+}""", ["write 32 0x1004 0x7", "write 32 0x1004 0x1", "A A"],
+        xfail=_on(["c", "cpp", "sv"], _ENUM_SCOPE)),
 
     # An initializer has the array's element count (8.1), at every level.
     "an array initializer of the wrong size": Case("""

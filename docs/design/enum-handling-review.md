@@ -204,6 +204,19 @@ output change, reviewed in the same commit.
    `test_enum_item_types.py`. No output change was expected, and the golden
    snapshots are byte-identical.
 3. **Shared spelling module + Python namespace classes** (D1, D4-py).
+   **DONE.** Ruled: namespace class only, no module-level aliases (a
+   breaking change to the generated API, accepted). `targets/enum_names.py`
+   (`item_of`) reads an item from `ref`, and `ExprTypes` uses it. Python
+   emits `class wb_dma_status_e(object): WB_DMA_DONE = 0` and spells every
+   item, including an enum local's default (its first item), as
+   `wb_dma_status_e.WB_DMA_DONE`. An enum whose item a body or initializer
+   writes is emitted even when no declaration names its type (so
+   `message_verbosity_e` now appears). An enum and a struct with one class
+   name are refused. The goldens `py-default` and `py-async` were
+   regenerated: items replace numbers (`status != 2`, `match` arms, returns),
+   and `wb_dma_ch_cfg_s` gains `_pss_defaults` for its enum fields. A
+   construct-matrix case, "two enums with an item of one name", passes on
+   py and is a strict xfail on c, cpp and sv (D3).
 4. **C: prefix by policy, names from `ref`** (D3-C, D4-C), plus the enumerator
    check in `c_names`.
 5. **C++: `enum class`** (or prefix, per your choice), then delete the

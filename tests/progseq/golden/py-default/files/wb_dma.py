@@ -50,22 +50,29 @@ class WbDmaImportApi(Protocol):
 
 
 # ----- Data types used by the export API. -----
-# wb_dma_int_bank_e
-WB_DMA_INT_A = 0
-WB_DMA_INT_B = 1
+class wb_dma_int_bank_e(object):
+    WB_DMA_INT_A = 0
+    WB_DMA_INT_B = 1
 
-# wb_dma_status_e
-WB_DMA_DONE = 0
-WB_DMA_ERROR = 1
-WB_DMA_PENDING = 2
+class wb_dma_status_e(object):
+    WB_DMA_DONE = 0
+    WB_DMA_ERROR = 1
+    WB_DMA_PENDING = 2
 
-# wb_dma_if_e
-WB_DMA_IF0 = 0
-WB_DMA_IF1 = 1
+class wb_dma_if_e(object):
+    WB_DMA_IF0 = 0
+    WB_DMA_IF1 = 1
 
-# wb_dma_mode_e
-WB_DMA_SOFTWARE = 0
-WB_DMA_HW_HANDSHAKE = 1
+class wb_dma_mode_e(object):
+    WB_DMA_SOFTWARE = 0
+    WB_DMA_HW_HANDSHAKE = 1
+
+class message_verbosity_e(object):
+    NONE = 0
+    LOW = 1
+    MEDIUM = 2
+    HIGH = 3
+    FULL = 4
 
 class _Struct(object):
     """Base of every plain (non-register) struct: a PSS value.
@@ -249,6 +256,12 @@ class wb_dma_ch_cfg_s(_Struct):
         "dst_if", "inc_src", "inc_dst", "mode", "prio", "auto_restart",
         "hw_restart_en", "sz_wb", "int_on_done", "int_on_err", "int_on_chunk",
     )
+
+    def _pss_defaults(self):
+        super()._pss_defaults()
+        self.src_if = wb_dma_if_e.WB_DMA_IF0
+        self.dst_if = wb_dma_if_e.WB_DMA_IF0
+        self.mode = wb_dma_mode_e.WB_DMA_SOFTWARE
 
 
 class _RegValue(object):
@@ -678,11 +691,11 @@ class WbDmaCh(object):
            spins -- the routing requirement belongs to the wait primitive, not to
            this operation.
         """
-        status = 0
+        status = wb_dma_status_e.WB_DMA_DONE
         tok = [0]   # PSS local, held in a cell: channel try_get output
         while True:
             status = self.probe_status()
-            if status != 2:
+            if status != wb_dma_status_e.WB_DMA_PENDING:
                 break
             self.wait_hint()
         # The operation is over: drop the claim its *_start() took. The result is
@@ -771,12 +784,12 @@ class WbDmaCh(object):
         See ``stop_channel_start()`` for what that sharing costs -- which read
         consumes the ERR is not determined by this model -- and for open item §6.5.
         """
-        status = 0
+        status = wb_dma_status_e.WB_DMA_DONE
         self.stop_channel_start()
         # wait_completion()'s loop, minus the guard release. See above.
         while True:
             status = self.probe_status()
-            if status != 2:
+            if status != wb_dma_status_e.WB_DMA_PENDING:
                 break
             self.wait_hint()
         return status
@@ -830,13 +843,13 @@ class WbDmaCh(object):
            PENDING instead, because the state needed for an honest answer was
            consumed by whoever broke the rule.
         """
-        status = 0
+        status = wb_dma_status_e.WB_DMA_DONE
         tok = [0]   # PSS local, held in a cell: channel try_get output
         if not (self.inflight.try_get(tok)):
             self._imports.message('wb_dma: check_completion() with no operation in progress on this channel -- either no *_start() was called, or a previous completion was already consumed')
-            return 2
+            return wb_dma_status_e.WB_DMA_PENDING
         status = self.probe_status()
-        if status == 2:
+        if status == wb_dma_status_e.WB_DMA_PENDING:
             # Still running: hand the token back. try_put cannot fail -- this
             # is the only holder, and it was just emptied.
             self.inflight.try_put(tok[0])
@@ -926,10 +939,10 @@ class WbDmaCh(object):
         csr = wb_dma_csr_s()
         csr = self.regs_csr_read()
         if csr.err == 1:
-            return 1
+            return wb_dma_status_e.WB_DMA_ERROR
         if csr.done == 1:
-            return 0
-        return 2
+            return wb_dma_status_e.WB_DMA_DONE
+        return wb_dma_status_e.WB_DMA_PENDING
 
     def set_auto_restart(self, enable):
         """Set or clear the channel's auto-restart bit.
@@ -1425,9 +1438,9 @@ class WbDma(object):
         vec = wb_dma_intmsk_s()
         vec.ch = channel_mask
         _subject = bank
-        if _subject == 0:
+        if _subject == wb_dma_int_bank_e.WB_DMA_INT_A:
             self.regs_int_msk_a_write(vec)
-        elif _subject == 1:
+        elif _subject == wb_dma_int_bank_e.WB_DMA_INT_B:
             self.regs_int_msk_b_write(vec)
         else:
             raise ValueError('configure_interrupt_routing: unmatched match subject' + " (%r)" % (_subject,))

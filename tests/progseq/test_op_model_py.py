@@ -715,7 +715,7 @@ async def test_a_blocking_channel_receive_really_suspends(wb_dma_async):
     ch.inflight.try_put(1)
     status, _ = await asyncio.wait_for(
         asyncio.gather(ch.wait_completion(), complete()), timeout=2.0)
-    assert status == mod.WB_DMA_DONE
+    assert status == mod.wb_dma_status_e.WB_DMA_DONE
 
     csr = ch.regs_csr_addr()
     reads = [e for e in bus.log if e[0] == "read" and e[2] == csr]
