@@ -284,6 +284,11 @@ class CProgSeqTarget(OpModelTarget):
             addr_bits=getattr(opts, "c_addr_bits", 64),
         )
 
+    def enum_item_symbol(self, enum_dtype, item, opts):
+        """The enumerator, as the style names it."""
+        from .c.lower_progseq import CEnums
+        return CEnums(self.style_for(opts)).item(enum_dtype, item)
+
     def abi_settings(self, opts: argparse.Namespace) -> dict:
         """The C options that move a symbol, an offset or a signature.
 

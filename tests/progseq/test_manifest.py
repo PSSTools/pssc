@@ -256,3 +256,43 @@ def test_every_offset_matches_a_live_python_accessor(tmp_path):
                 expected = base + reg["offset"] + sum(
                     i * s for i, s in zip(idx, reg["strides"]))
                 assert accessor(*idx) == expected, reg["path"]
+
+
+# --- enums -------------------------------------------------------------------
+#
+# C and SV prefix an item (`DIR_A`), C++ and Python scope it by its enum
+# (`dir_e::A`, `dir_e.A`). The manifest says which, so a consumer -- a
+# testbench generator, say -- need not know each target's rule.
+
+_ENUMS = """
+enum dir_e { A, B = 3 }
+enum op_e { A = 7 }
+component pss_top {
+  target function bit[32] run() {
+    dir_e d = B;
+    op_e o = A;
+    return (bit[32])d + (bit[32])o;
+  }
+}"""
+
+_SYMBOL = {"c": ("DIR_A", "OP_A"), "cpp": ("dir_e::A", "op_e::A"),
+           "py": ("dir_e.A", "op_e.A"), "sv": ("DIR_A", "OP_A")}
+
+
+@pytest.mark.parametrize("target", sorted(_SYMBOL))
+def test_enum_items_carry_their_generated_spelling(tmp_path, target):
+    from . import trace_harness as th
+    man = tmp_path / "manifest.json"
+    out = th.compile_model(tmp_path, _ENUMS, target,
+                           progseq_manifest=str(man))
+    doc = json.loads(man.read_text())
+    enums = {e["name"]: e for e in doc["enums"]}
+    assert enums["dir_e"]["items"][0] == {
+        "name": "A", "value": 0, "symbol": _SYMBOL[target][0]}
+    assert enums["op_e"]["items"] == [
+        {"name": "A", "value": 7, "symbol": _SYMBOL[target][1]}]
+    # ...and it is the generated code's: the two items the body writes.
+    text = "\n".join(p.read_text() for p in out.rglob("*") if p.is_file())
+    for sym in (enums["dir_e"]["items"][1]["symbol"],
+                enums["op_e"]["items"][0]["symbol"]):
+        assert re.search(r"(?<![\w.:])" + re.escape(sym) + r"\b", text), sym

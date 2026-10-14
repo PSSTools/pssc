@@ -59,6 +59,11 @@ class CppProgSeqTarget(OpModelTarget):
 
     core_lang = "cpp"
 
+    def enum_item_symbol(self, enum_dtype, item, opts):
+        """`E::ITEM`: an `enum class`, scoped as PSS scopes it."""
+        from .cpp.lower_api_types import cpp_enum_item
+        return cpp_enum_item(enum_dtype, item)
+
     def core_file_names(self, model, opts) -> List[str]:
         from .cpp.cpp_progseq_gen import core_header_names
         return core_header_names(

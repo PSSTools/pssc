@@ -91,6 +91,13 @@ class ProgSeqTarget(OpModelTarget):
                  "('verbatim'; two enums' items of one name are refused)",
         )
 
+    def enum_item_symbol(self, enum_dtype, item, opts):
+        """The enumerator: prefixed, unless `--sv-enum-items verbatim`."""
+        from .sv.constants import SvConstants
+        return SvConstants(enum_items=getattr(
+            opts, "progseq_enum_items", "prefixed")).item_name(
+                enum_dtype.name, item)
+
     def abi_settings(self, opts: argparse.Namespace) -> Dict[str, str]:
         """`--sv-enum-items`: an enumerator's name is what a testbench
         writes. `--sv-reg-fields` is spelling inside the package only."""

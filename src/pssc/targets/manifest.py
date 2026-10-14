@@ -127,6 +127,32 @@ def _value_structs(model) -> List[Dict[str, Any]]:
     return out
 
 
+def _enums(model, symbol) -> List[Dict[str, Any]]:
+    """The enums the API uses, with each item's value and, where the target
+    names one, its generated spelling: C and SV prefix an item
+    (`WB_DMA_STATUS_WB_DMA_DONE`), C++ and Python scope it by its enum, and a
+    consumer must not have to know which."""
+    from .sv.lower_api_types import collect_api_types
+
+    enums, _ = collect_api_types(
+        model.comp_dtypes, model.value_structs, model.ctor_names,
+        [fn for e in model.entries for fn in e.functions]
+        + list(getattr(model, "functions", ()) or ()),
+        getattr(getattr(model, "ctx", None), "type_map", None) or {})
+    out = []
+    for e in enums:
+        items = []
+        for k, v in e.items.items():
+            item = {"name": k, "value": int(v)}
+            sym = symbol(e, k) if symbol is not None else None
+            if sym is not None:
+                item["symbol"] = sym
+            items.append(item)
+        out.append({"name": (getattr(e, "name", "") or "").split("::")[-1],
+                    "items": items})
+    return out
+
+
 def _component(node, model) -> Dict[str, Any]:
     comp = node.dtype
     ctor = model.ctor(comp)
@@ -154,14 +180,16 @@ def _component(node, model) -> Dict[str, Any]:
 
 def build(model, *, target: str, settings: Optional[Dict[str, Any]] = None,
           files: Sequence = (), runtime_files: Sequence[str] = (),
-          include_files: Sequence[str] = ()) -> Dict[str, Any]:
+          include_files: Sequence[str] = (),
+          enum_symbol=None) -> Dict[str, Any]:
     """The manifest document for one generation.
 
     ``files`` is the path list the target returned, IN ORDER -- that order is a
     compilation order for some targets, so it is recorded rather than sorted.
     Each is labelled `generated` or `runtime`; one another file includes,
     and which is therefore no compilation unit, also carries `"include": true`
-    (``include_files``, the target's answer).
+    (``include_files``, the target's answer). ``enum_symbol(enum, item)`` is
+    how the target spells an enum item (`OpModelTarget.enum_item_symbol`).
 
     The labels come from ``runtime_files``, which is the target's own
     `core_file_names()` -- the list it copied FROM. Deciding by extension would
@@ -190,6 +218,7 @@ def build(model, *, target: str, settings: Optional[Dict[str, Any]] = None,
         # target that takes its API from exports puts on it.
         "exports": [_function(fn) for fn in getattr(model, "exports", ())],
         "value_structs": _value_structs(model),
+        "enums": _enums(model, enum_symbol),
         "components": [_component(n, model) for n in model.components],
         "files": [dict({"name": Path(p).name,
                         "role": ("runtime" if Path(p).name in set(runtime_files)

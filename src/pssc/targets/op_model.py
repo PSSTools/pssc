@@ -665,8 +665,15 @@ class OpModelTarget(Target):
         doc = _manifest.build(
             model, target=self.name, settings=self.abi_settings(opts),
             files=outputs, runtime_files=self.core_file_names(model, opts),
-            include_files=self.include_only_files(outputs))
+            include_files=self.include_only_files(outputs),
+            enum_symbol=lambda e, item: self.enum_item_symbol(e, item, opts))
         return [_manifest.write(path, doc)]
+
+    def enum_item_symbol(self, enum_dtype, item: str,
+                         opts: argparse.Namespace) -> Optional[str]:
+        """How the generated code spells *item* of *enum_dtype*, for the
+        manifest; None if this target does not say."""
+        return None
 
     def include_only_files(self, outputs: Sequence[Path]) -> List[str]:
         """The names of the ``outputs`` another file includes, which are

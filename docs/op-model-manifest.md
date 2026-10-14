@@ -66,6 +66,7 @@ most of the reason to have one.
 | `imports` | [function] | declared `import target/solve function`s, sorted by name |
 | `exports` | [function] | the root component's exported functions (`export target function f;` in its body, an extension of LRM 20.4.2), in declaration order |
 | `value_structs` | [struct] | packed register value structs, de-duplicated |
+| `enums` | [enum] | the enums the API uses, each item with its value and generated spelling |
 | `components` | [component] | the walked tree, **children before parents** |
 | `files` | [file] | what was produced, **in emission order** |
 
@@ -225,6 +226,24 @@ a word needs to know the bits exist.
 `value_structs` is de-duplicated across the whole model, in first-use order; a
 register names its struct by name.
 
+### `enums`
+
+Every enum a signature, a field or a declaration names, and every enum whose
+item an operation writes:
+
+```json
+{"name": "wb_dma_status_e",
+ "items": [{"name": "WB_DMA_DONE", "value": 0,
+            "symbol": "WB_DMA_STATUS_WB_DMA_DONE"}, ...]}
+```
+
+`name` is the PSS item and `value` its value. `symbol` is how the target
+writes the item, because that differs by target. PSS scopes an item by its
+enum. C and SV have one namespace for every enum's items, so they prefix it
+(`WB_DMA_STATUS_WB_DMA_DONE`, unless a C style or `--sv-enum-items verbatim`
+says otherwise). C++ writes `wb_dma_status_e::WB_DMA_DONE` and Python
+`wb_dma_status_e.WB_DMA_DONE`. A target that does not say has no `symbol`.
+
 ---
 
 ## What the manifest does not contain
@@ -232,7 +251,9 @@ register names its struct by name.
 * **Bodies.** It describes the API, not what the operations do.
 * **Actions and constraints.** The operation model is the target-facing
   projection of a PSS model, and by design excludes them on every target.
-* **Anything language-specific.** No C types, no generated symbol names. If you
-  need the spelling of a generated accessor, the target that generated it is the
-  only correct source — and if you find yourself wanting it here, that is a
-  request worth making rather than a regex worth writing.
+* **Anything language-specific.** No C types, and no generated symbol names
+  except an enum item's `symbol`, which is there because each target spells
+  items differently. If you need the spelling of a generated accessor, the
+  target that generated it is the only correct source — and if you find
+  yourself wanting it here, that is a request worth making rather than a regex
+  worth writing.

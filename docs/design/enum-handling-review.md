@@ -257,7 +257,13 @@ output change, reviewed in the same commit.
    prefixed enumerator. It now calls `pss_<enum>_name(v)`, a function the
    package declares only for enums whose `%n` is used. Goldens `sv-*` were
    regenerated. Both new construct cases pass on all four targets.
-7. **Manifest enums** (D7). Update `docs/op-model-manifest.md`.
+7. **Manifest enums** (D7). Update `docs/op-model-manifest.md`. **DONE.**
+   `"enums"` lists each enum the API uses. Each item has its PSS `name`, its
+   `value` and its `symbol`: the target's spelling, from
+   `OpModelTarget.enum_item_symbol` (C: the style's, C++ `E::I`, Python
+   `E.I`, SV per `--sv-enum-items`). Adding a field is not a version bump.
+   Tests: `test_manifest.py`, which checks on each target that the symbol is
+   in the generated code.
 8. **Enum base type** in declarations and `ExprTypes` (D6). This can wait.
 9. `ExprIn` (D8) is a separate item.
 10. **D9** (negative enumerator values). **DONE**, before step 2. An item's

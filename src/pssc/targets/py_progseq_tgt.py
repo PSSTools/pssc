@@ -243,3 +243,8 @@ class PyProgSeqTarget(OpModelTarget):
         # opens.
         be = self.backend_for(opts)
         return be.generate(model) + self.install_core(model, opts)
+
+    def enum_item_symbol(self, enum_dtype, item, opts):
+        """`E.ITEM`: an attribute of the enum's namespace class."""
+        from .py.naming import enum_item
+        return enum_item(enum_dtype, item)
