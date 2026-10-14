@@ -22,6 +22,7 @@ import pytest
 from pssc import driver
 from pssc import targets as _targets
 from pssc.targets import target_cfg as _tc
+from .sv_text import sv_package_text
 
 
 # --- the renderer -----------------------------------------------------------
@@ -213,7 +214,7 @@ def _generate_sv(tmp_path, target_cfg=None):
         progseq_package="widget_pkg", progseq_core_copy=False,
         target_cfg=target_cfg)
     driver.compile([str(src)], target="op-model-sv", opts=opts)
-    return (out / "widget_pkg.sv").read_text()
+    return sv_package_text(out / "widget_pkg.sv")
 
 
 def test_injected_prelude_reaches_a_compile_if_in_the_model(tmp_path):

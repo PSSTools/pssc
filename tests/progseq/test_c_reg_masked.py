@@ -59,7 +59,7 @@ def _generate(tmp_path, target, reg_rmw="native"):
     out = tmp_path / f"out_{target}_{reg_rmw}"
     driver.compile([str(src)], target=target, output_dir=str(out),
                    progseq_root="pss_top", progseq_ctor_name="initialize",
-                   reg_rmw=reg_rmw)
+                   reg_rmw=reg_rmw, c_link_style="vtable")
     return out
 
 

@@ -27,6 +27,7 @@ from pssc import driver
 
 from .conftest import available_cpp_compilers, diagnostic_text
 from zuspec.ir.core import DataTypeChannel
+from .sv_text import sv_package_text
 
 
 _MODEL = """
@@ -73,7 +74,7 @@ def gen(tmp_path_factory):
 @pytest.fixture(scope="module")
 def sv(gen):
     out, _, _ = gen
-    return (out / "chan_pkg.sv").read_text()
+    return sv_package_text(out / "chan_pkg.sv")
 
 
 # --- IR --------------------------------------------------------------------
@@ -355,7 +356,7 @@ def test_c_refuses_a_deeper_channel_by_depth(tmp_path):
 def test_generated_package_lints_clean(gen):
     out, _, _ = gen
     r = subprocess.run(
-        ["verilator", "--lint-only", "-sv", "--timing",
+        ["verilator", "--lint-only", "-sv", "--timing", f"-I{out}",
          str(out / "pssc_reg_pkg.sv"), str(out / "chan_pkg.sv")],
         capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
@@ -387,7 +388,7 @@ def _gen_sv_disc(tmp_path):
     src.write_text(_DISCARD_MODEL)
     ns = argparse.Namespace(progseq_root="disc_c", output_dir=str(tmp_path))
     driver.compile([str(src)], target="op-model-sv", opts=ns)
-    return (tmp_path / "disc_c_pkg.sv").read_text()
+    return sv_package_text(tmp_path / "disc_c_pkg.sv")
 
 
 def test_sv_supplies_a_temp_for_a_discarded_blocking_get(tmp_path):
@@ -465,6 +466,6 @@ def test_a_discarded_predicate_on_a_child_channel_is_voided_too(tmp_path):
     src.write_text(_NESTED_DISCARD)
     ns = argparse.Namespace(progseq_root="nest_c", output_dir=str(tmp_path))
     driver.compile([str(src)], target="op-model-sv", opts=ns)
-    sv = (tmp_path / "nest_c_pkg.sv").read_text()
+    sv = sv_package_text(tmp_path / "nest_c_pkg.sv")
 
     assert "void'(ch[i].wake.try_put(1));" in sv, sv

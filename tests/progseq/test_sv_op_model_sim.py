@@ -148,9 +148,11 @@ def _build_and_run(tmp_path, model: str, tb: str) -> str:
     res = driver.compile([str(src)], target="op-model-sv", opts=ns)
     (out / "tb.sv").write_text(tb)
 
-    files = [str(p) for p in res.outputs] + [str(out / "tb.sv")]
+    # The compilation units; the package includes the rest from `out`.
+    files = [str(p) for p in res.outputs if str(p).endswith(".sv")] \
+        + [str(out / "tb.sv")]
     build = subprocess.run(
-        [_VERILATOR, "--binary", "-Wno-fatal", "--top-module", "top",
+        [_VERILATOR, "--binary", "-Wno-fatal", "--top-module", "top", f"-I{out}",
          "-Mdir", str(tmp_path / "obj"), "-o", "sim"] + files,
         capture_output=True, text=True, cwd=tmp_path)
     assert build.returncode == 0, build.stdout + build.stderr

@@ -167,7 +167,9 @@ def _run(sources, root, lines, out_dir, diags):
     obj = os.path.join(out_dir, "obj")
     build = subprocess.run(
         [vlt, "--binary", "-Wno-fatal", "-Wno-lint", "-Wno-style",
-         "-j", "0", "--top-module", "top", "-Mdir", obj, "-o", "sim"] + srcs,
+         "-j", "0", "--top-module", "top", "-Mdir", obj, "-o", "sim",
+         # The package includes one `.svh` per class from its directory.
+         "-I" + gen_dir] + srcs,
         capture_output=True, text=True, cwd=out_dir)
     if build.returncode != 0:
         return "compile_error", ("verilator could not build the generated SV:\n"

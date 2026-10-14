@@ -133,18 +133,19 @@ def sv_member_type(dtype) -> str:
     raise ValueError(f"unsupported SV struct member type {cn}")
 
 
-def _array_dims(dtype):
+def _array_dims(dtype, consts=None):
     """Flatten nested ``DataTypeArray``s to ``(element_type, [size, ...])`` --
     SV spells every dimension after the member name (`k[4]`, `k[4][2]`), unlike
     C's declarator syntax that ``sv_member_type`` otherwise mirrors."""
     sizes = []
     while _dt_name(dtype) == "DataTypeArray":
-        sizes.append(int(getattr(dtype, "size", 0) or 0))
+        bound = consts.size_name(dtype) if consts is not None else None
+        sizes.append(bound or int(getattr(dtype, "size", 0) or 0))
         dtype = getattr(dtype, "element_type", None)
     return dtype, sizes
 
 
-def emit_struct(struct_dtype) -> str:
+def emit_struct(struct_dtype, consts=None) -> str:
     name = _strip_pkg(struct_dtype.name)
     packed = _is_packed(struct_dtype)
     fields = list(struct_dtype.fields)
@@ -161,10 +162,11 @@ def emit_struct(struct_dtype) -> str:
         dflt = ""
         if (not packed and init is not None and _dt_name(init) == "ExprConstant"
                 and isinstance(init.value, (bool, int))):
-            dflt = f" = {int(init.value)}"
+            named = consts.name_of(init) if consts is not None else None
+            dflt = f" = {named or int(init.value)}"
             # An enum item reaches here folded to its value, and SV converts
             # no integer to an enum implicitly (6.19.3): name the item.
-            if _dt_name(f.datatype) == "DataTypeEnum":
+            if _dt_name(f.datatype) == "DataTypeEnum" and named is None:
                 for k, v in f.datatype.items.items():
                     if int(v) == int(init.value):
                         dflt = f" = {k}"
@@ -172,7 +174,7 @@ def emit_struct(struct_dtype) -> str:
             # An enum starts at its first item (7.5); SV's starts at 0.
             dflt = f" = {enum_first_item(f.datatype)}"
         if _dt_name(f.datatype) == "DataTypeArray":
-            elem, dims = _array_dims(f.datatype)
+            elem, dims = _array_dims(f.datatype, consts)
             dim_str = "".join(f"[{n}]" for n in dims)
             lines.append(f"    {sv_member_type(elem)} {f.name}{dim_str}{dflt};")
         else:
@@ -182,7 +184,7 @@ def emit_struct(struct_dtype) -> str:
 
 
 def lower_api_types(components, reg_value_structs=(), ctor_names=None,
-                    bodies=()) -> str:
+                    bodies=(), consts=None) -> str:
     """Package-body text for the enums and structs the API mentions."""
     enums, structs = collect_api_types(components, reg_value_structs,
                                        ctor_names, bodies)
@@ -193,6 +195,6 @@ def lower_api_types(components, reg_value_structs=(), ctor_names=None,
     if enums:
         parts.append("")
     for s in structs:
-        parts.append(emit_struct(s))
+        parts.append(emit_struct(s, consts))
         parts.append("")
     return "\n".join(parts)

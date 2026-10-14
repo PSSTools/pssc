@@ -115,21 +115,23 @@ CONFIGS: Tuple[Config, ...] = (
     Config("sv-folded", "op-model-sv", ("--sv-reg-fields", "folded"),
            "the collapsed (mask, value) SV spelling the C target consumes",
            model="op-model-exports"),
-    Config("c-vtable", "op-model-c", (),
-           "C defaults: vtable seam, bitfields, malloc lifecycle, .h + .c"),
+    Config("c-vtable", "op-model-c", ("--link-style", "vtable"),
+           "the vtable seam, otherwise C defaults: bitfields, malloc "
+           "lifecycle, .h + .c"),
     Config("c-mmio-hdr", "op-model-c", ("--link-style", "mmio",
                                         "--header-only"),
            "header-only C against a directly-mapped device -- every body, "
            "layout and accessor `static inline` in one file, and no .c"),
-    Config("c-mmio", "op-model-c", ("--link-style", "mmio"),
-           "the same device SPLIT: mmio no longer implies header-only, and "
-           "this is what the firmware build now gets -- interface in the .h, "
-           "layouts + accessors + bodies in the .c"),
+    Config("c-mmio", "op-model-c", (),
+           "C defaults, so this snapshot also pins the default link style "
+           "(mmio): interface in the .h, layouts and bodies in the .c, "
+           "registers reached through the layout struct"),
     Config("c-fn-static", "op-model-c",
            ("--mem-access", "functions", "--lifecycle", "static",
             "--link-style", "direct"),
            "no heap, no pointer dereference: the bare-metal shape"),
-    Config("c-accessors", "op-model-c", ("--reg-style", "accessors",
+    Config("c-accessors", "op-model-c", ("--link-style", "vtable",
+                                         "--reg-style", "accessors",
                                          "--emit-stubs"),
            "shift/mask register access instead of bitfields, plus the stub file"),
     Config("cpp-virtual", "op-model-cpp", (),

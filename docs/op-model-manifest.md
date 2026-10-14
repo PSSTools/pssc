@@ -108,6 +108,16 @@ beside a generated `dma_engine.h`), and comparing bytes against the shipped copy
 would answer a different question: whether the file happens to match today,
 rather than where it came from.
 
+A file another generated file includes carries `"include": true`, and is not a
+compilation unit: op-model-sv writes one `.svh` per class, which its package
+file `` `include ``s, so a build compiles the package and passes its directory
+as an include directory. The key is absent on every other file.
+
+```json
+{"name": "wb_dma_c_pkg.sv", "role": "generated"},
+{"name": "wb_dma_ch_c.svh", "role": "generated", "include": true}
+```
+
 ---
 
 ## Components

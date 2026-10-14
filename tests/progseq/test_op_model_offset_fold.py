@@ -41,6 +41,7 @@ import pytest
 from pssc import driver
 from pssc.targets.progseq_model import (OffsetFoldError, array_base_stride,
                                         scalar_offset)
+from .sv_text import sv_package_text
 
 _MODEL = os.path.join(os.path.dirname(__file__), "data", "offset_fold.pss")
 
@@ -49,8 +50,7 @@ def _gen(out_dir, sources=None, root="fold_top_c"):
     ns = argparse.Namespace(progseq_root=root, progseq_package="fold_top_pkg",
                             output_dir=str(out_dir))
     driver.compile(sources or [_MODEL], target="sv-progseq", opts=ns)
-    with open(os.path.join(str(out_dir), "fold_top_pkg.sv")) as fp:
-        return fp.read()
+    return sv_package_text(os.path.join(str(out_dir), "fold_top_pkg.sv"))
 
 
 @pytest.fixture(scope="module")
@@ -121,6 +121,7 @@ endmodule
 """)
     r = subprocess.run(
         ["verilator", "--lint-only", "-sv", "--timing", "-Wno-WIDTHEXPAND",
+         f"-I{out}",
          str(out / "pssc_reg_pkg.sv"), str(out / "fold_top_pkg.sv"), str(top),
          "--top-module", "elab_top"],
         capture_output=True, text=True)

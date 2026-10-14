@@ -10,6 +10,7 @@ import pytest
 from pssc import driver
 
 from .op_model import small_model_dir, small_model_sources
+from .sv_text import sv_package_text
 
 _DATA = small_model_dir()
 _SRCS = small_model_sources()
@@ -28,7 +29,7 @@ def gen(tmp_path_factory):
 
 def _read(gen, name):
     out, _ = gen
-    return (out / name).read_text()
+    return sv_package_text(out / name)
 
 
 def test_outputs_written(gen):
@@ -146,6 +147,6 @@ def test_a_declaration_initializer_is_not_discarded(tmp_path):
     out = tmp_path / "out"
     driver.compile([str(src)], target="sv-progseq", output_dir=str(out),
                    progseq_root="pss_top")
-    text = (out / "pss_top_pkg.sv").read_text()
+    text = sv_package_text(out / "pss_top_pkg.sv")
     assert "int x = 5;" in text, text
     assert "int y = x + 1;" in text, text

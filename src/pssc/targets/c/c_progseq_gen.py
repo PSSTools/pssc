@@ -31,6 +31,13 @@ _CORE_HEADERS = ["pssc_mem.h", "pssc_mem_ptr.h", "pssc_mem_fn.h",
 
 _SEAM_HEADERS = {k: list(_CORE_HEADERS) for k in ("vtable", "direct", "mmio")}
 
+#: The `--link-style` a build gets when it names none. `mmio` is the only
+#: style whose registers are addressed through the layout struct with the
+#: generic `pssc_read<N>`/`pssc_write<N>`/`pssc_write_masked<N>` primitives;
+#: the other two bake a family of `static inline` accessors per register.
+#: Every place that defaults the option reads this.
+DEFAULT_LINK_STYLE = "mmio"
+
 
 def seam_headers(link_style: str):
     """The core headers a ``--link-style`` build needs, in copy order.
@@ -83,7 +90,8 @@ def seam_include(link_style: str, mem_access) -> str:
 
 
 def settings_for(model, prefix: str, *,
-                 link_style: str = "vtable", reg_style: str = "bitfields",
+                 link_style: str = DEFAULT_LINK_STYLE,
+                 reg_style: str = "bitfields",
                  header_only: bool = False,
                  yield_mode: str = "none", match_default: str = "message",
                  message_style: str = "import",

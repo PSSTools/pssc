@@ -26,7 +26,10 @@ from .op_model import op_model_sources as wb_dma_sources
 def c_manifest(tmp_path_factory):
     """The bundled model through `op-model-c`, with a manifest beside it."""
     out = tmp_path_factory.mktemp("c")
+    # vtable: the offset check below reads the baked `_addr` accessors, which
+    # the default (mmio) replaces with a layout struct.
     with compile_op_model("op-model-c", output_dir=str(out),
+                          c_link_style="vtable",
                           progseq_manifest=str(out / "manifest.json")) as o:
         yield json.loads((out / "manifest.json").read_text()), o
 

@@ -42,6 +42,7 @@ from pssc.reg_field_resolve import FieldSlice
 
 from .codetext import code_only
 from .op_model import OP_MODEL as _MODEL, op_model_sv_sources
+from .sv_text import sv_package_text
 
 
 #: Transcribed BY HAND from src/pss/wb_dma_ch_c/wb_dma_ch_regs_c.pss -- field
@@ -84,7 +85,7 @@ def folded(tmp_path_factory):
 @pytest.fixture(scope="module")
 def sv(named):
     out, _ = named
-    return (out / "wb_dma_c_pkg.sv").read_text()
+    return sv_package_text(out / "wb_dma_c_pkg.sv")
 
 
 # --- 1. the constants ------------------------------------------------------
@@ -196,7 +197,7 @@ def test_transfer_list_still_writes_twice(sv):
 def test_folded_reproduces_the_pre_naming_output(folded):
     """`--sv-reg-fields=folded` is the escape hatch, and it has to actually
     escape: the literal pairs, and no field constant in any call."""
-    text = (folded[0] / "wb_dma_c_pkg.sv").read_text()
+    text = sv_package_text(folded[0] / "wb_dma_c_pkg.sv")
     for frag in ("regs.csr.write_val_masked(64, (32'(enable) & 1) << 6);",
                  "regs.csr.write_val_masked(512, 512);",
                  "regs.csr.write_val_masked(128, 128);",
@@ -208,7 +209,7 @@ def test_folded_reproduces_the_pre_naming_output(folded):
 def test_folded_still_emits_the_constants(folded):
     """The constants are for testbench code too, not only for the call sites,
     so switching the spelling must not withdraw them."""
-    text = (folded[0] / "wb_dma_c_pkg.sv").read_text()
+    text = sv_package_text(folded[0] / "wb_dma_c_pkg.sv")
     assert "localparam reg_field_t WB_DMA_CSR_ars" in text
 
 
@@ -425,7 +426,7 @@ def test_generated_package_lints_clean(named):
     """
     out, _ = named
     r = subprocess.run(
-        ["verilator", "--lint-only", "-sv", "--timing",
+        ["verilator", "--lint-only", "-sv", "--timing", f"-I{out}",
          str(out / "pssc_reg_pkg.sv"), str(out / "wb_dma_c_pkg.sv")],
         capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
@@ -445,6 +446,7 @@ def test_field_writes_produce_the_right_register_value(named, tmp_path):
     build = tmp_path / "obj"
     r = subprocess.run(
         ["verilator", "--binary", "-sv", "--timing", "--Mdir", str(build),
+         f"-I{out}",
          "-o", "sim", str(out / "pssc_reg_pkg.sv"), str(out / "wb_dma_c_pkg.sv"),
          str(tb)],
         capture_output=True, text=True)

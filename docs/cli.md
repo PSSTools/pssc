@@ -162,7 +162,7 @@ Per-target options (contributed by each target's `add_args`):
 | *(all op-model)* | `--no-core-copy` | do not copy the core seam header(s)/package |
 | *(all op-model)* | `--emit-manifest FILE` | also write the elaborated model as JSON — operations and signatures, register offsets, produced files and their roles. So a consumer never has to parse generated code |
 | `op-model-c` | `--prefix NAME` | symbol/file prefix (default root sans `_c`); types keep their PSS names |
-| `op-model-c` | `--link-style {vtable,direct,mmio}` | memory-access seam (default `vtable`) |
+| `op-model-c` | `--link-style {vtable,direct,mmio}` | memory-access seam (default `mmio`) |
 | `op-model-c` | `--reg-style {bitfields,accessors}` | register value layout (default `bitfields`) |
 | `op-model-c` | `--header-only` | emit a single `.h` (forced for `mmio`) |
 | `op-model-cpp` | `--namespace NAME` | namespace and `<ns>_import_if` (default root sans `_c`); classes keep their PSS names |

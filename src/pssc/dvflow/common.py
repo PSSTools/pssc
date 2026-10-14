@@ -40,7 +40,9 @@ PSSC_ARGS_TYPE = "pssc.PsscArgs"
 #: is green, and it simply never reaches a compiler.
 _EXT_FILETYPE: Dict[str, Tuple[str, bool]] = {
     ".sv": ("systemVerilogSource", True),
-    ".svh": ("systemVerilogSource", True),
+    # Included by a package, never compiled on its own (op-model-sv writes
+    # one per class): an include, whose directory the compile searches.
+    ".svh": ("systemVerilogInclude", True),
     ".so": ("systemVerilogDPI", False),
     ".c": ("cSource", False),
     ".h": ("cSource", True),

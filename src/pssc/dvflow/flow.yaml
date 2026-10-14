@@ -376,9 +376,9 @@ package:
         type: str
         value: ""
       link_style:
-        doc: "Link style: vtable | mmio"
+        doc: "Link style: mmio | direct | vtable"
         type: str
-        value: "vtable"
+        value: "mmio"
       reg_style:
         doc: "Register access style: bitfields | ..."
         type: str
@@ -514,7 +514,7 @@ package:
       args:          { type: list }
       root:          { type: str, value: "" }
       prefix:        { type: str, value: "" }
-      link_style:    { type: str, value: "vtable" }
+      link_style:    { type: str, value: "mmio" }
       reg_style:     { type: str, value: "bitfields" }
       header_only:   { type: bool, value: false }
       core_copy:     { type: bool, value: true }

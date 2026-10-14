@@ -55,6 +55,8 @@ def test_wb_dma_progseq_sim(tmp_path, wb_dma_build, sim):
         "std.FileSet", name="src", type="systemVerilogSource",
         base=wb_dma_build,
         include=["pssc_reg_pkg.sv", "wb_dma_pkg.sv", "wb_dma_tb.sv"],
+        # The package includes one `.svh` per class, from its own directory.
+        incdirs=["."],
         needs=[])
     img = builder.mkTaskNode(
         f"hdlsim.{sim}.SimImage", name="img", top=["top"], needs=[src])

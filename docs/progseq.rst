@@ -226,8 +226,9 @@ C backend (``op-model-c``)
 --------------------------
 
 The ``op-model-c`` target emits the same programming API in C: register value
-**unions** (anonymous-union bitfields, so ``csr.FIELD`` works), zero-overhead
-**baked inline accessors**, and free functions over a handle struct named as
+**unions** (anonymous-union bitfields, so ``csr.FIELD`` works), register
+access through a **layout struct** (or, under ``vtable``/``direct``, baked
+inline accessors), and free functions over a handle struct named as
 the PSS component type is (``dma_engine_c``); structs and enums keep their PSS
 names too.
 Bodies keep native value-returning reads, native ``return``, and native
@@ -241,19 +242,23 @@ Bodies keep native value-returning reads, native ``return``, and native
 
    $ pssc c-core-path --file pssc_mem_vtable.h   # locate a core seam header
 
-The **memory-access seam** is the only thing the link style changes; every
-register accessor and operation body is byte-identical across all of them.
+The link style chooses the **memory-access seam**, and with it how a
+register is reached. Under ``mmio`` a register is a member of a generated
+layout struct, touched with the generic ``pssc_read<N>``/``pssc_write<N>``/
+``pssc_write_masked<N>`` primitives; ``vtable`` and ``direct`` take an address
+by value, so they generate a family of ``static inline`` accessors per
+register instead.
 
 ================  ==========================================================
 ``--link-style``  Seam / when to use
 ================  ==========================================================
+``mmio``          inlined ``*(volatile T*)addr`` load/store (default;
+                  firmware against real registers; no import to implement)
 ``vtable``        a ``pssc_mem_if`` struct of function pointers + ``ctx``
-                  (default; multi-instance, host-friendly — the C analogue of
-                  SV's ``pss_mem_if``)
+                  (multi-instance, host-friendly — the C analogue of SV's
+                  ``pss_mem_if``)
 ``direct``        user-supplied ``extern`` functions linked by name
                   (bare-metal, single DUT — zero per-instance storage)
-``mmio``          inlined ``*(volatile T*)addr`` load/store (firmware against
-                  real registers; no import to implement; header-only)
 ================  ==========================================================
 
 ``--mem-access``: naming the mechanism

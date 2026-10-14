@@ -22,6 +22,7 @@ from pssc.targets.c import lower_reg_model as c_reg
 from pssc.targets.sv import lower_reg_model as sv_reg
 from pssc.targets.comments import (BLOCK, HASH, LINE, append_trailing,
                                    comment_lines, doc_block)
+from .sv_text import sv_package_text
 
 SRC = '''
 /** A channel of the device. */
@@ -110,7 +111,7 @@ def _gen(tmp_path, target, no_comments=False, **extra):
 def sv(tmp_path_factory):
     out = _gen(tmp_path_factory.mktemp("sv"), "op-model-sv",
                progseq_package="m_pkg")
-    return (out / "m_pkg.sv").read_text()
+    return sv_package_text(out / "m_pkg.sv")
 
 
 @pytest.fixture(scope="module")

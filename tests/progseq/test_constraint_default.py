@@ -190,7 +190,7 @@ def test_no_constraint_reaches_the_sv_output():
                        opts=ns)
         text = "".join(
             open(os.path.join(out, f)).read()
-            for f in sorted(os.listdir(out)) if f.endswith(".sv"))
+            for f in sorted(os.listdir(out)) if f.endswith((".sv", ".svh")))
 
     code = code_only(text)
     assert "tot_sz" in code, "positive control: the field itself must be emitted"

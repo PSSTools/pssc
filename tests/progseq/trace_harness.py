@@ -50,6 +50,10 @@ def compile_model(tmp_path, pss, target, **opts):
                               **opts)
     if target == "c":
         opts.c_prefix = "pss_top"
+        # The harness traces every access through the bus it hands in, which
+        # only the vtable seam takes.
+        if not hasattr(opts, "c_link_style"):
+            opts.c_link_style = "vtable"
     driver.compile([str(p)], target=f"op-model-{target}", opts=opts)
     return out
 
@@ -276,7 +280,7 @@ def _run_sv(tmp_path, pss, args=(), mem=None):
     files = [str(out / "pssc_reg_pkg.sv"), str(out / "pss_top_pkg.sv"),
              str(out / "tb.sv")]
     build = subprocess.run(
-        [VERILATOR, "--binary", "-Wno-fatal", "--top-module", "top",
+        [VERILATOR, "--binary", "-Wno-fatal", "--top-module", "top", f"-I{out}",
          "-Mdir", str(tmp_path / "obj"), "-o", "sim"] + files,
         capture_output=True, text=True, cwd=tmp_path)
     assert build.returncode == 0, build.stdout + build.stderr

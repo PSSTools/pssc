@@ -40,7 +40,7 @@ def _generate(out_dir, **kw):
     import argparse
     from pssc import driver
     ns = argparse.Namespace(progseq_root="wb_dma_c", c_prefix="wb_dma",
-                            output_dir=str(out_dir),
+                            output_dir=str(out_dir), c_link_style="vtable",
                             # The stub supplies pssc_message, which four
                             # operations call. Using --emit-stubs here rather
                             # than hand-writing one in the TB keeps C4.2 on the

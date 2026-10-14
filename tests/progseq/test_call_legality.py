@@ -27,6 +27,7 @@ from pssc.targets.call_legality import (COMMON, Ctx, Disposition, Entry,
                                         classify, entries_for, extensions_for,
                                         register_extension, registered_targets,
                                         renderable)
+from .sv_text import sv_package_text
 
 _STDLIB = os.path.normpath(os.path.join(
     os.path.dirname(__file__), "..", "..", "..", "pssparser", "src", "stdlib"))
@@ -389,7 +390,7 @@ def test_the_same_model_generates_for_sv(tmp_path):
                             output_dir=str(out))
     res = driver.compile([str(src)], target="op-model-sv", opts=ns)
     assert res.outputs
-    assert "urandom" in (out / "gate_pkg.sv").read_text()
+    assert "urandom" in sv_package_text(out / "gate_pkg.sv")
 
 
 # --- Tier 2 registration (P3.T4) --------------------------------------------

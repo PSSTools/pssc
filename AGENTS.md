@@ -305,6 +305,30 @@ device tree exports nothing: SV tests present it with
 `tests/progseq/data/wb_dma_exports.pss` (`op_model.op_model_sv_sources`).
 Design: `docs/design/sv-op-model-inheritance.md`.
 
+op-model-sv writes ONE compilation unit, `<pkg>.sv`, which `` `include ``s a
+`.svh` per class: `<root>_consts.svh`, `<root>_regs.svh` (every register
+group, together), `<root>_types.svh`, each interface class, the component
+base, each component class, and the factory (`sv/backend.py`: each of
+`package_sections()` is one file; `wrapper_sections()` is the package file).
+A compile needs `-I<outdir>`, a `.svh` is never compiled on its own (dv-flow
+classifies it `systemVerilogInclude`, the manifest marks it
+`"include": true`), and a test that greps the package reads it through
+`tests/progseq/sv_text.py`, which expands the includes. Design and decisions:
+`docs/design/sv-op-model-files-and-constants.md`.
+
+**A constant keeps its name.** ast2ir still folds a `static const` or enum
+item to its value, but the `ExprConstant` carries the qualified name the
+linker resolved (`ref`) and, for a `static const`, its DECLARED type
+(`width`/`signed`: `bit[64] OFF = 12` is not an `int`); an array size keeps
+its constant's name too (`DataTypeArray.size_ref`). Both are `compare=False`
+provenance -- a consumer that wants a value ignores them. op-model-sv spells
+them (`sv/constants.py`): an item of an enum the package declares by its
+name, a `static const` as a `localparam` under its PSS name, qualified with
+its scope only on a clash. Which constants are declared is found by
+rendering the package once with a recording table
+(`SvOpModelBackend.constants`), so only what the code references is. C, C++
+and Python still spell the value.
+
 Python binds each register GROUP's base separately (`naming.group_base`,
 `self._pss_base_<group>`), as C and C++ do: one `_base` per component put two
 groups bound to different handles at the second's address.

@@ -119,9 +119,10 @@ def test_two_compiles_do_not_interfere(tmp_path):
 
     # The constructor's arguments become the factory's arguments, so whether
     # `init` was recognised is visible in `create`'s signature -- which is also
-    # the thing that breaks when it is misclassified.
-    a = (tmp_path / "a" / "a_pkg.sv").read_text()
-    b = (tmp_path / "b" / "b_pkg.sv").read_text()
+    # the thing that breaks when it is misclassified. The factory is the
+    # package's `<root>_root.svh`.
+    a = (tmp_path / "a" / "c_c_root.svh").read_text()
+    b = (tmp_path / "b" / "c_c_root.svh").read_text()
     assert "create(Timp pss_imp);" in a, (
         "with --ctor-name ctor, `init` is an ordinary solve function and the "
         "factory takes no base address")

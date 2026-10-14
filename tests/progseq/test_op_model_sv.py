@@ -26,6 +26,7 @@ import pytest
 from pssc import driver
 
 from .op_model import OP_MODEL as _MODEL, op_model_sv_sources as _sources
+from .sv_text import sv_package_text
 
 
 def assert_generated(text, *, has=(), has_not=()):
@@ -49,7 +50,7 @@ def gen(tmp_path_factory):
 @pytest.fixture(scope="module")
 def sv(gen):
     out, _ = gen
-    return (out / "wb_dma_c_pkg.sv").read_text()
+    return sv_package_text(out / "wb_dma_c_pkg.sv")
 
 
 # --- outputs ---------------------------------------------------------------
@@ -57,7 +58,11 @@ def sv(gen):
 def test_outputs_written(gen):
     out, res = gen
     names = {os.path.basename(str(p)) for p in res.outputs}
-    assert names == {"wb_dma_c_pkg.sv", "pssc_reg_pkg.sv"}
+    assert {n for n in names if n.endswith(".sv")} == {"wb_dma_c_pkg.sv",
+                                                      "pssc_reg_pkg.sv"}
+    # One include file per class, registers together (user decisions D1, D4).
+    assert {"wb_dma_c_regs.svh", "wb_dma_ch_c.svh", "wb_dma_c.svh",
+            "wb_dma_c_root.svh"} <= names
 
 
 def test_outputs_are_in_compilation_order(gen):
@@ -70,7 +75,8 @@ def test_outputs_are_in_compilation_order(gen):
     before declaration".
     """
     out, res = gen
-    order = [os.path.basename(str(p)) for p in res.outputs]
+    order = [os.path.basename(str(p)) for p in res.outputs
+             if str(p).endswith(".sv")]
     assert order == ["pssc_reg_pkg.sv", "wb_dma_c_pkg.sv"]
 
 
@@ -108,7 +114,7 @@ def test_members_keep_their_pss_names(sv):
     name, public. No accessors -- an accessor `ch()` beside a member `ch`
     would be two members of one name."""
     assert_generated(sv, has=[
-        "    wb_dma_regs_c regs;\n    wb_dma_ch_c ch[4];",
+        "    wb_dma_regs_c regs;\n    wb_dma_ch_c ch[WB_DMA_MAX_CH];",
         "    wb_dma_ch_regs_c regs;",
         "    channel_c #(bit, 1) wake;",
     ], has_not=[" m_ch", " m_regs", "protected wb_dma_regs_c",
@@ -221,7 +227,7 @@ def test_field_defaults_emitted(sv):
     """A capability struct that defaults to all-false silently disables every
     operation gated on it, so the defaults have to survive."""
     assert_generated(sv, has=["caps.ars = 1;", "caps.cbuf = 1;",
-                              "num_ch = 4;"])
+                              "num_ch = WB_DMA_MAX_CH;"])
 
 
 # --- body constructs -------------------------------------------------------
@@ -289,13 +295,50 @@ def test_address_builtins_are_arithmetic(sv):
     assert_generated(sv, has_not=["make_handle_from_handle(", "addr_value("])
 
 
+# --- PSS constants by name -------------------------------------------------
+
+def test_constants_are_spelled_by_name(sv):
+    """A `static const` reference reads as written, not as its value: the
+    front end keeps the name it folded (`ExprConstant.ref`)."""
+    assert_generated(sv, has=[
+        "wb_dma_ch_c ch[WB_DMA_MAX_CH];",
+        "num_ch = WB_DMA_MAX_CH;",
+        "pss_imp.write32((at + WB_DMA_DESC_NEXT_OFF), d.next);",
+        "status = (at + WB_DMA_DESC_BYTES);",
+    ], has_not=["ch[4];", "num_ch = 4;", "(at + 12)", "(at + 16)"])
+
+
+def test_constants_are_declared_with_their_pss_type(gen):
+    """Each referenced constant is a `localparam` of its declared type: a
+    `bit[64]` is not the `int` its literal would be."""
+    out, _ = gen
+    text = (out / "wb_dma_c_consts.svh").read_text()
+    decls = [l.split("//")[0].split() for l in text.splitlines()
+             if "localparam" in l]
+    assert decls == [
+        ["localparam", "bit", "[63:0]", "WB_DMA_DESC_BYTES", "=", "64'd16;"],
+        ["localparam", "bit", "[63:0]", "WB_DMA_DESC_NEXT_OFF", "=", "64'd12;"],
+        ["localparam", "int", "WB_DMA_MAX_CH", "=", "4;"],
+    ]
+    # Only what the code references: REG_SPAN and the profile switches are
+    # constants of the model, and nothing generated reads them.
+    assert "WB_DMA_REG_SPAN" not in text and "HAS_EVENT_WAIT" not in text
+
+
+def test_enum_items_are_spelled_by_name_in_comparisons(sv):
+    """An enum item kept its value only; a comparison then read `!= 2`."""
+    assert_generated(sv, has=["if (status != WB_DMA_PENDING) begin",
+                              "if (status == WB_DMA_PENDING) begin"],
+                     has_not=["status != 2", "status == 2"])
+
+
 # --- the compile gate ------------------------------------------------------
 
 @pytest.mark.skipif(not shutil.which("verilator"), reason="verilator not on PATH")
 def test_generated_package_lints_clean(gen):
     out, _ = gen
     r = subprocess.run(
-        ["verilator", "--lint-only", "-sv", "--timing",
+        ["verilator", "--lint-only", "-sv", "--timing", f"-I{out}",
          str(out / "pssc_reg_pkg.sv"), str(out / "wb_dma_c_pkg.sv")],
         capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr

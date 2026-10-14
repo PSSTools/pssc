@@ -114,7 +114,7 @@ def test_a_symbol_policy_reaches_prototypes_and_call_sites(registered_style):
     as the linker and then does not.
     """
     registered_style(_ShoutySymbols())
-    text = _c_output(c_style="shouty")
+    text = _c_output(c_style="shouty", c_link_style="vtable")
 
     assert "ACME_dma_engine__mem_to_mem_copy(" in text
     assert "ACME_dma_engine_c_handle" in text
@@ -442,7 +442,7 @@ def test_policy_cannot_alter_address(registered_style):
     def addrs(text):
         return re.findall(r"_self->base_\w+ \+ 0x[0-9a-f]+u(?: \+ [^;)]+)?", text)
 
-    default = addrs(_c_output())
+    default = addrs(_c_output(c_link_style="vtable"))
     acme = addrs(_c_output(c_style="acme", c_link_style="direct"))
     assert default and default == acme
 

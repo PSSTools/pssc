@@ -16,6 +16,7 @@ import argparse
 from pathlib import Path
 from typing import Dict, List
 
+from .c.c_progseq_gen import DEFAULT_LINK_STYLE
 from .op_model import OpModelTarget
 
 
@@ -60,8 +61,9 @@ class CProgSeqTarget(OpModelTarget):
         )
         parser.add_argument(
             "--link-style", dest="c_link_style",
-            choices=("vtable", "direct", "mmio"), default="vtable",
-            help="c-progseq: memory-access seam (default: vtable)",
+            choices=("vtable", "direct", "mmio"), default=DEFAULT_LINK_STYLE,
+            help="c-progseq: memory-access seam (default: %s)"
+                 % DEFAULT_LINK_STYLE,
         )
         parser.add_argument(
             "--mem-access", dest="c_mem_access",
@@ -233,7 +235,7 @@ class CProgSeqTarget(OpModelTarget):
         contradict its generated code.
         """
         from .c.c_progseq_gen import seam_headers
-        link_style = getattr(opts, "c_link_style", "vtable")
+        link_style = getattr(opts, "c_link_style", DEFAULT_LINK_STYLE)
         override = self.style_for(opts).seam_headers(link_style)
         return seam_headers(link_style) if override is None else list(override)
 
@@ -258,7 +260,7 @@ class CProgSeqTarget(OpModelTarget):
         copy would let the differential test describe a build the generator
         does not actually produce.
         """
-        link_style = getattr(opts, "c_link_style", "vtable")
+        link_style = getattr(opts, "c_link_style", DEFAULT_LINK_STYLE)
         return dict(
             link_style=link_style,
             reg_style=getattr(opts, "c_reg_style", "bitfields"),
@@ -314,7 +316,7 @@ class CProgSeqTarget(OpModelTarget):
         """The backend instance this run generates through."""
         style = self.style_for(opts)
         self._check_style_link_style(
-            style, getattr(opts, "c_link_style", "vtable"))
+            style, getattr(opts, "c_link_style", DEFAULT_LINK_STYLE))
         return self.backend_class()(style)
 
     def sections(self, model, opts: argparse.Namespace) -> Dict[str, str]:

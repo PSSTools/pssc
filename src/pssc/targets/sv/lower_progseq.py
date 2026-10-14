@@ -217,9 +217,13 @@ class _BodyEmitter(BodyWalker):
     indent = "  "
 
     def __init__(self, fn, comp, member_of, namer=None, ctor_names=None,
-                 ctx=None):
+                 ctx=None, consts=None):
         self.fn = fn
         self.comp = comp
+        #: How a folded PSS constant is spelled (`constants.SvConstants`):
+        #: by name where the package declares it. None spells every one as
+        #: its value.
+        self.consts = consts
         #: The translation context, for typing `message()` arguments. None
         #: types every argument as `int`.
         self.ctx = ctx
@@ -695,6 +699,9 @@ class _BodyEmitter(BodyWalker):
     # An unhandled expression class must be a diagnostic, not output.
 
     def expr_constant(self, e) -> str:
+        name = self.consts.name_of(e) if self.consts is not None else None
+        if name is not None:
+            return name
         v = e.value
         if isinstance(v, bool):
             return str(int(v))
@@ -1024,7 +1031,7 @@ class _BodyEmitter(BodyWalker):
         if _dt_name(s.target) == "ExprRefLocal":
             self.local_types[s.target.name] = s.annotation
         decl = pad + sv_declarator(s.annotation, self.expr(s.target),
-                                   "local array")
+                                   "local array", self.consts)
         v = getattr(s, "value", None)
         if v is None and _dt_name(s.annotation) == "DataTypeArray":
             # Each element its type's default (8.1); an enum's is its first
@@ -1086,7 +1093,8 @@ class _BodyEmitter(BodyWalker):
             # Through a temporary: Verilator writes `w = '{w[1], w[0]}`
             # element by element, so `w[0]` is overwritten before it is read,
             # where PSS (8.1) and SV both read every element first.
-            tmp = sv_declarator(self.types.resolve(tt), "pssc_lit")
+            tmp = sv_declarator(self.types.resolve(tt), "pssc_lit",
+                                consts=self.consts)
             return [f"{pad}begin",
                     f"{pad}  {tmp};",
                     f"{pad}  pssc_lit = {self.value_of(tt, v)};",
@@ -1280,6 +1288,11 @@ class _BodyEmitter(BodyWalker):
                                     for x in e.elts) + "}"
         if (dtype is not None and _dt_name(dtype) == _DT_ENUM
                 and _dt_name(e) == "ExprConstant" and isinstance(e.value, int)):
+            # The item it was written as, when the front end kept it: two
+            # items may share a value.
+            item = (getattr(e, "ref", None) or "").rpartition("::")[2]
+            if item in dtype.items and dtype.items[item] == e.value:
+                return item
             for nm, val in dtype.items.items():
                 if val == e.value:
                     return nm
@@ -1608,8 +1621,8 @@ class _ExprOnly(_BodyEmitter):
     call -- which is the defect this path had.
     """
 
-    def __init__(self, member_of, ctor=None, comp=None):
-        super().__init__(ctor, comp, member_of)
+    def __init__(self, member_of, ctor=None, comp=None, consts=None):
+        super().__init__(ctor, comp, member_of, consts=consts)
 
 
 # --- emission --------------------------------------------------------------
@@ -1662,9 +1675,10 @@ def _data_fields(comp) -> List[object]:
     return out
 
 
-def sv_declarator(dtype, name: str, what: str = "array") -> str:
+def sv_declarator(dtype, name: str, what: str = "array", consts=None) -> str:
     """``T name`` for a value of ``dtype``; an array's bounds (`[2][3]`) go
-    after its name, an unpacked array being a value SV assigns whole."""
+    after its name, an unpacked array being a value SV assigns whole. A bound
+    written as a constant is spelled by its name (``consts``)."""
     dims = ""
     dt = dtype
     while _dt_name(dt) == "DataTypeArray":
@@ -1676,7 +1690,8 @@ def sv_declarator(dtype, name: str, what: str = "array") -> str:
             raise ValueError(
                 f"{what} '{name}' has no folded size; SV needs a bound and "
                 "there is nothing to derive one from.")
-        dims += f"[{n}]"
+        bound = consts.size_name(dt) if consts is not None else None
+        dims += f"[{bound or n}]"
         dt = dt.element_type
     return f"{sv_type(dt)} {name}{dims}"
 
@@ -1697,9 +1712,9 @@ def _array_leaf(dtype):
     return dtype
 
 
-def _data_decl(f, name: str) -> str:
+def _data_decl(f, name: str, consts=None) -> str:
     """One data member's declaration."""
-    return sv_declarator(f.datatype, name, "array member") + ";"
+    return sv_declarator(f.datatype, name, "array member", consts) + ";"
 
 
 def _ctor(comp, ctor_names=None):
@@ -1859,7 +1874,7 @@ def declared_view(ctx, comp):
     return dec.base, _View(comp, dec.fields, dec.functions)
 
 
-def _member_decls(view, subs: Dict[str, SubComp]) -> List[str]:
+def _member_decls(view, subs: Dict[str, SubComp], consts=None) -> List[str]:
     """The declared members, in declaration order: register groups, data,
     channels and sub-components, each under its PSS name and public."""
     data = {id(f) for f in _data_fields(view)}
@@ -1871,17 +1886,19 @@ def _member_decls(view, subs: Dict[str, SubComp]) -> List[str]:
             lines.append(f"    {_strip_pkg(f.datatype.name)} {name};")
         elif f.name in subs:
             sub = subs[f.name]
-            dim = f"[{sub.size}]" if sub.is_array else ""
+            bound = (consts.size_name(f.datatype)
+                     if consts is not None and sub.is_array else None)
+            dim = f"[{bound or sub.size}]" if sub.is_array else ""
             lines.append(f"    {_strip_pkg(sub.dtype.name)} {name}{dim};")
         elif id(f) in data:
             lines += comment_lines(getattr(f, "doc", None), "    ")
-            lines.append(f"    {_data_decl(f, name)}")
+            lines.append(f"    {_data_decl(f, name, consts)}")
         elif id(f) in chans:
             lines.append(f"    {sv_type(f.datatype)} {name};")
     return lines
 
 
-def _field_defaults(view, members: Dict[str, str]) -> List[str]:
+def _field_defaults(view, members: Dict[str, str], consts=None) -> List[str]:
     """Assign PSS field initializers, before the address binding runs.
 
     A default is part of a field's meaning: `wb_dma_ch_caps_s` declares every
@@ -1893,7 +1910,7 @@ def _field_defaults(view, members: Dict[str, str]) -> List[str]:
     # dereference in SV is a run-time error at the first `get`/`try_put`.
     for f in channel_fields(view):
         lines.append(f"      {members[f.name]} = new();")
-    be = _ExprOnly(members, comp=view)
+    be = _ExprOnly(members, comp=view, consts=consts)
     for f in _data_fields(view):
         if f.initial_value is not None:
             lines.append(f"      {members[f.name]} = "
@@ -1924,7 +1941,7 @@ def _field_defaults(view, members: Dict[str, str]) -> List[str]:
     return lines
 
 
-def _construct_body(view, members, subs) -> List[str]:
+def _construct_body(view, members, subs, consts=None) -> List[str]:
     """The body of `new()`, after `super.new(imp)` (design D2).
 
     Fields at their defaults, channels built, register groups at address 0,
@@ -1933,7 +1950,7 @@ def _construct_body(view, members, subs) -> List[str]:
     `initialize`'s business, which runs after this. Only what this class
     declares: its base's `new` did the rest.
     """
-    lines = _field_defaults(view, members)
+    lines = _field_defaults(view, members, consts)
     for f in view.fields:
         if field_is_reg_group(f):
             lines.append(f"      {members[f.name]} = new({IMP_MEMBER}, 0);")
@@ -1947,7 +1964,7 @@ def _construct_body(view, members, subs) -> List[str]:
 
 
 def _initialize_def(comp, ctor, members, *, super_base=None, namer=None,
-                    ctor_names=None, ctx=None) -> List[str]:
+                    ctor_names=None, ctx=None, consts=None) -> List[str]:
     """The op-model constructor, as a method (design D3). Not virtual: every
     caller uses its member's declared type, so a derived class may declare
     one with another signature and still reach its base's through `super`.
@@ -1962,7 +1979,8 @@ def _initialize_def(comp, ctor, members, *, super_base=None, namer=None,
     reg_groups = [f.name for f in comp.fields if field_is_reg_group(f)]
     if ctor.body:
         be = _CtorEmitter(ctor, comp, members, reg_groups=reg_groups,
-                          namer=namer, ctor_names=ctor_names, ctx=ctx)
+                          namer=namer, ctor_names=ctor_names, ctx=ctx,
+                          consts=consts)
         be.super_base = super_base
         body = be.stmts(ctor.body, 3)
     elif ctor.args.args:
@@ -2000,15 +2018,15 @@ def _inherited_ctor_def(comp, view, ctor, members) -> List[str]:
         + ["    endfunction", ""])
 
 
-def _emitter(fn, comp, members, base, namer, ctor_names, ctx):
+def _emitter(fn, comp, members, base, namer, ctor_names, ctx, consts=None):
     be = _BodyEmitter(fn, comp, members, namer=namer, ctor_names=ctor_names,
-                      ctx=ctx)
+                      ctx=ctx, consts=consts)
     be.super_base = base
     return be
 
 
 def _init_hook_defs(comp, view, base, members, subs, namer=None,
-                    ctor_names=None, ctx=None) -> List[str]:
+                    ctor_names=None, ctx=None, consts=None) -> List[str]:
     """The construction hooks this class has something to put in.
 
     `pss_init_down`/`pss_init_up` hold its `exec` blocks of that kind, in
@@ -2026,7 +2044,8 @@ def _init_hook_defs(comp, view, base, members, subs, namer=None,
             continue
         lines.append(f"    virtual function void pss_{kind}();")
         for fn in blocks:
-            be = _emitter(fn, comp, members, base, namer, ctor_names, ctx)
+            be = _emitter(fn, comp, members, base, namer, ctor_names, ctx,
+                          consts)
             lines += be.stmts(fn.body, 3)
         lines.append("    endfunction")
         lines.append("")
@@ -2081,7 +2100,7 @@ def _routine(fn, be, name: str, prefix: str, pad: str) -> List[str]:
 
 
 def _method_defs(comp, view, base, members, namer=None, ctor_names=None,
-                 ctx=None) -> List[str]:
+                 ctx=None, consts=None) -> List[str]:
     """The functions this class declares -- `solve` ones as SV functions,
     `target` and unqualified ones as tasks -- all `virtual`: component
     functions are virtual (a base's code calling `f` runs the override)."""
@@ -2090,7 +2109,8 @@ def _method_defs(comp, view, base, members, namer=None, ctor_names=None,
         if func_kind(fn, ctor_names) not in (FuncKind.EXPORT_OP,
                                              FuncKind.EXPORT_SOLVE):
             continue
-        be = _emitter(fn, comp, members, base, namer, ctor_names, ctx)
+        be = _emitter(fn, comp, members, base, namer, ctor_names, ctx,
+                      consts)
         blank_line(lines)
         lines += _routine(fn, be, mangle(fn.name), "virtual ", "    ")
         lines.append("")
@@ -2125,7 +2145,7 @@ def _overrides_ok(comp, view, base, ctor_names=None) -> None:
 
 
 def _entry_defs(comp, entries, members, base, namer=None, ctor_names=None,
-                ctx=None) -> List[str]:
+                ctx=None, consts=None) -> List[str]:
     """Exported actions (`--export-action`) that run in this component, each
     a task: no arguments, no result (`export_action.py`). The factory's
     method of the entry's name calls it (design D12). The base actions'
@@ -2134,7 +2154,8 @@ def _entry_defs(comp, entries, members, base, namer=None, ctor_names=None,
     lines: List[str] = []
     for entry in entries:
         for k, fn in enumerate(entry.functions):
-            be = _emitter(fn, comp, members, base, namer, ctor_names, ctx)
+            be = _emitter(fn, comp, members, base, namer, ctor_names, ctx,
+                          consts)
             blank_line(lines)
             if k == 0:
                 lines.append(f"    // Exported action `{entry.action}`.")
@@ -2149,7 +2170,7 @@ def _entry_defs(comp, entries, members, base, namer=None, ctor_names=None,
     return lines
 
 
-def emit_component_class(model, comp, namer=None) -> str:
+def emit_component_class(model, comp, namer=None, consts=None) -> str:
     """One PSS component type as one SV class (design D1).
 
     It extends its PSS base's class, or the generated component base, and
@@ -2170,25 +2191,27 @@ def emit_component_class(model, comp, namer=None) -> str:
 
     lines = doc_block(getattr(comp, "doc", None), "  ") + [
         f"  class {_strip_pkg(comp.name)} extends {parent};"]
-    decls = _member_decls(view, subs)
+    decls = _member_decls(view, subs, consts)
     lines += decls + ([""] if decls else [])
     lines += [f"    function new({imp_if_name(root)} imp);",
               "      super.new(imp);"]
-    lines += _construct_body(view, members, subs)
+    lines += _construct_body(view, members, subs, consts)
     lines += ["    endfunction", ""]
 
     own_ctor = _ctor(view, ctor_names)
     if own_ctor is not None:
         lines += _initialize_def(comp, own_ctor, members, super_base=base,
-                                 namer=namer, ctor_names=ctor_names, ctx=ctx)
+                                 namer=namer, ctor_names=ctor_names, ctx=ctx,
+                                 consts=consts)
     elif base is not None:
         lines += _inherited_ctor_def(comp, view, _ctor(comp, ctor_names),
                                      members)
     lines += _init_hook_defs(comp, view, base, members, subs, namer,
-                             ctor_names, ctx)
-    lines += _method_defs(comp, view, base, members, namer, ctor_names, ctx)
+                             ctor_names, ctx, consts)
+    lines += _method_defs(comp, view, base, members, namer, ctor_names, ctx,
+                          consts)
     lines += _entry_defs(comp, model.entries_of(comp), members, base, namer,
-                         ctor_names, ctx)
+                         ctor_names, ctx, consts)
     while lines and lines[-1] == "":
         lines.pop()
     lines.append("  endclass")
@@ -2332,7 +2355,8 @@ def emit_factory(model) -> str:
 
 # --- package functions --------------------------------------------------------
 
-def emit_package_functions(functions, ctx=None, ctor_names=None) -> str:
+def emit_package_functions(functions, ctx=None, ctor_names=None,
+                           consts=None) -> str:
     """Package-scope functions the model calls (`pkg_functions.py`), as
     `automatic` package tasks and functions -- automatic, because a PSS
     function may recurse. A package function has no component, so one that
@@ -2340,7 +2364,8 @@ def emit_package_functions(functions, ctx=None, ctor_names=None) -> str:
     here gives it the import API yet."""
     lines: List[str] = []
     for fn in functions:
-        be = _BodyEmitter(fn, None, {}, ctor_names=ctor_names, ctx=ctx)
+        be = _BodyEmitter(fn, None, {}, ctor_names=ctor_names, ctx=ctx,
+                          consts=consts)
         text = _routine(fn, be, pkg_function_name(fn), "automatic ", "  ")
         if any(f"{IMP_MEMBER}." in l for l in text[1:]):
             raise ValueError(

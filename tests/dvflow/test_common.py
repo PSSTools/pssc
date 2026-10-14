@@ -142,6 +142,20 @@ def test_ext_filetype_excludes_filelist():
     assert common.filetype_for("c")[1] is False   # leading dot optional
 
 
+def test_svh_is_an_include_not_a_source(tmp_path):
+    """op-model-sv's package includes one `.svh` per class. A `.svh` in a
+    source fileset is compiled on its own, outside the package: an include
+    fileset gives the compile its directory and nothing else."""
+    names = ["pssc_reg_pkg.sv", "p_pkg.sv", "a_c.svh", "p_regs.svh"]
+    for n in names:
+        (tmp_path / n).write_text("")
+    by_ft = {fs.filetype: fs for fs in common.classify_outputs(
+        [str(tmp_path / n) for n in names], "src", str(tmp_path))}
+    assert by_ft["systemVerilogSource"].files == ["pssc_reg_pkg.sv", "p_pkg.sv"]
+    assert by_ft["systemVerilogInclude"].files == ["a_c.svh", "p_regs.svh"]
+    assert by_ft["systemVerilogInclude"].incdirs == [str(tmp_path)]
+
+
 # --- Phase 4: plugin provenance and filetype registration -------------------
 
 def test_memento_changes_with_target_version(tmp_path, monkeypatch):

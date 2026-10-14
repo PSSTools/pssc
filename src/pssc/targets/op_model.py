@@ -664,8 +664,14 @@ class OpModelTarget(Target):
         from . import manifest as _manifest
         doc = _manifest.build(
             model, target=self.name, settings=self.abi_settings(opts),
-            files=outputs, runtime_files=self.core_file_names(model, opts))
+            files=outputs, runtime_files=self.core_file_names(model, opts),
+            include_files=self.include_only_files(outputs))
         return [_manifest.write(path, doc)]
+
+    def include_only_files(self, outputs: Sequence[Path]) -> List[str]:
+        """The names of the ``outputs`` another file includes, which are
+        never compiled on their own. None here; op-model-sv's `.svh`."""
+        return []
 
     def abi_settings(self, opts: argparse.Namespace) -> Dict[str, Any]:
         """The options that change the generated API's SHAPE, for the manifest.

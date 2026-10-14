@@ -153,13 +153,15 @@ def _component(node, model) -> Dict[str, Any]:
 
 
 def build(model, *, target: str, settings: Optional[Dict[str, Any]] = None,
-          files: Sequence = (), runtime_files: Sequence[str] = ()
-          ) -> Dict[str, Any]:
+          files: Sequence = (), runtime_files: Sequence[str] = (),
+          include_files: Sequence[str] = ()) -> Dict[str, Any]:
     """The manifest document for one generation.
 
     ``files`` is the path list the target returned, IN ORDER -- that order is a
     compilation order for some targets, so it is recorded rather than sorted.
-    Each is labelled `generated` or `runtime`.
+    Each is labelled `generated` or `runtime`; one another file includes,
+    and which is therefore no compilation unit, also carries `"include": true`
+    (``include_files``, the target's answer).
 
     The labels come from ``runtime_files``, which is the target's own
     `core_file_names()` -- the list it copied FROM. Deciding by extension would
@@ -189,9 +191,11 @@ def build(model, *, target: str, settings: Optional[Dict[str, Any]] = None,
         "exports": [_function(fn) for fn in getattr(model, "exports", ())],
         "value_structs": _value_structs(model),
         "components": [_component(n, model) for n in model.components],
-        "files": [{"name": Path(p).name,
-                   "role": ("runtime" if Path(p).name in set(runtime_files)
-                            else "generated")}
+        "files": [dict({"name": Path(p).name,
+                        "role": ("runtime" if Path(p).name in set(runtime_files)
+                                 else "generated")},
+                       **({"include": True}
+                          if Path(p).name in set(include_files) else {}))
                   for p in files],
     }
 

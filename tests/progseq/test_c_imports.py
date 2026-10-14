@@ -49,7 +49,8 @@ def _gen(tmp_path, model=_MODEL, root="imp_c"):
     src = tmp_path / "imp.pss"
     src.write_text(model)
     ns = argparse.Namespace(progseq_root=root, c_prefix="imp",
-                            output_dir=str(tmp_path))
+                            output_dir=str(tmp_path),
+                            c_link_style="vtable")
     driver.compile([str(src)], target="op-model-c", opts=ns)
     return ((tmp_path / "imp.h").read_text(), (tmp_path / "imp.c").read_text())
 
@@ -175,7 +176,8 @@ component bare_c {
     src = tmp_path / "bare.pss"
     src.write_text(model)
     ns = argparse.Namespace(progseq_root="bare_c", c_prefix="bare",
-                            output_dir=str(tmp_path))
+                            output_dir=str(tmp_path),
+                            c_link_style="vtable")
     driver.compile([str(src)], target="op-model-c", opts=ns)
     h = (tmp_path / "bare.h").read_text()
     assert "supplied by the PLATFORM" not in h
@@ -210,7 +212,8 @@ def _gen_stubs(tmp_path):
     src = tmp_path / "imp.pss"
     src.write_text(_MODEL)
     ns = argparse.Namespace(progseq_root="imp_c", c_prefix="imp",
-                            output_dir=str(tmp_path), c_emit_stubs=True)
+                            output_dir=str(tmp_path), c_emit_stubs=True,
+                            c_link_style="vtable")
     driver.compile([str(src)], target="op-model-c", opts=ns)
     return (tmp_path / "imp_stubs.c").read_text()
 

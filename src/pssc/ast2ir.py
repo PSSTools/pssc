@@ -39,11 +39,40 @@ def ast_comments(node: Any) -> Tuple[Optional[str], Optional[str]]:
     for c in getter():
         placement = c.getPlacement()
         if placement == pss_ast.CommentPlacement.CommentPlacement_Leading:
-            leading.append(c.getText())
+            leading.append(_comment_prose(c))
         elif placement == pss_ast.CommentPlacement.CommentPlacement_Trailing:
-            trailing.append(c.getText())
+            trailing.append(_comment_prose(c))
 
     return ("\n".join(leading) or None, "\n".join(trailing) or None)
+
+
+def _comment_prose(c: Any) -> str:
+    """A comment's text with its Doxygen marker removed.
+
+    pssparser's ``text`` drops only the delimiters (and `/**`'s `*`), so a
+    `/// Step` comment arrives as ``/ Step``, `//!` as ``! ...``, `/*!` as
+    ``! ...`` and the trailing forms with a `<` -- which every target then
+    printed: ``/* / Step */``. The marker is syntax, not prose; which form
+    it was is read from ``raw``, so a `// / x` comment keeps its slash and a
+    `////` banner, which Doxygen does not treat as documentation, is as
+    written.
+    """
+    text = c.getText()
+    raw = c.getRaw() or ""
+    if raw.startswith("//!") or (raw.startswith("///")
+                                 and not raw.startswith("////")):
+        text = text[1:]
+    elif raw.startswith("/*!"):
+        text = text[1:] if text.startswith("!") else text
+    elif not (raw.startswith("/**") and not raw.startswith("/**/")):
+        return text
+
+    if text.startswith("<"):
+        text = text[1:]
+    if text.startswith(" "):
+        text = text[1:]
+    # `/*!` alone on its first line leaves that line empty.
+    return text.lstrip("\n")
 
 
 def _ast_where(node: Any) -> str:
@@ -745,6 +774,75 @@ class AstToIrTranslator:
         if not attr & int(pss_ast.FieldAttr.Static):
             return None
         return self._static_const_value(ctx, decl)
+
+    def _linked_constant(self, ctx: AstToIrContext, expr) -> Optional[ir.ExprConstant]:
+        """*expr* folded, if its linker target is a `static const` or an enum
+        item; None otherwise.
+
+        The constant keeps its qualified name (`ExprConstant.ref`), so a
+        backend can spell the reference as written rather than as a number,
+        and a `static const` keeps its DECLARED type: `bit[64] OFF = 12` is
+        a `bit[64]`, not the `int` a bare `12` would be.
+        """
+        ref = expr.getTarget() if hasattr(expr, 'getTarget') else None
+        if ref is None:
+            return None
+        decl = self._symbol_scope_at(ctx, ref, depth=0)
+        if isinstance(decl, pss_ast.EnumItem):
+            value = self._linked_enum_value(ctx, expr)
+            if value is None:
+                return None
+            return ir.ExprConstant(value=value,
+                                   ref=self._ref_qname(ctx, ref, decl))
+        value = self._linked_static_const(ctx, expr)
+        if value is None:
+            return None
+        return self._const_of_decl(ctx, decl, value,
+                                   self._ref_qname(ctx, ref, decl))
+
+    def _const_of_decl(self, ctx: AstToIrContext, decl, value,
+                       qname: Optional[str]) -> ir.ExprConstant:
+        """`ExprConstant` of the `static const` *decl*'s *value*, typed as
+        declared: an integer type gives the width and signedness, and the
+        value is converted to it as its initializer was (8.7.2)."""
+        dtype = None
+        try:
+            dtype = self._translate_data_type(ctx, decl.getType())
+        except Exception:
+            dtype = None
+        if (isinstance(dtype, ir.DataTypeInt) and isinstance(value, int)
+                and not isinstance(value, bool) and dtype.bits):
+            bits, signed = int(dtype.bits), bool(dtype.signed)
+            value &= (1 << bits) - 1
+            if signed and value >> (bits - 1):
+                value -= 1 << bits
+            return ir.ExprConstant(value=value, width=bits, signed=signed,
+                                   ref=qname)
+        return ir.ExprConstant(value=value, ref=qname)
+
+    def _ref_qname(self, ctx: AstToIrContext, ref, decl) -> Optional[str]:
+        """The qualified name of the declaration *ref* resolves to: its
+        container's qualified name, then its own."""
+        name_node = decl.getName() if hasattr(decl, 'getName') else None
+        name = (name_node.getId() if hasattr(name_node, 'getId')
+                else (name_node if isinstance(name_node, str) else None))
+        if not name:
+            return None
+        upper = self._symbol_scope_at(ctx, ref, depth=0, drop=1)
+        prefix = self._scope_qname(ctx, upper) if upper is not None else None
+        return f"{prefix}::{name}" if prefix else name
+
+    def _linked_const_name(self, ctx: AstToIrContext, node) -> Optional[str]:
+        """The qualified name of the `static const` a constant expression
+        (an array size, say) names through the linker, or None. A size is
+        parsed as a TYPE argument (`array<T, N>`), so look through it."""
+        for n in (node, getattr(node, 'getType_id', lambda: None)()):
+            ref = n.getTarget() if hasattr(n, 'getTarget') else None
+            decl = self._symbol_scope_at(ctx, ref, 0) if ref is not None else None
+            if isinstance(decl, pss_ast.Field) \
+                    and int(decl.getAttr()) & int(pss_ast.FieldAttr.Static):
+                return self._ref_qname(ctx, ref, decl)
+        return None
 
     def _record_scope_generic_constraint(self, ctx: AstToIrContext, decl,
                                          namespace_prefix: str = "") -> None:
@@ -4409,15 +4507,13 @@ class AstToIrTranslator:
             return None
 
         qualified = "::".join(parts)
-        linked = self._linked_static_const(ctx, expr)
+        linked = self._linked_constant(ctx, expr)
         if linked is not None:
-            return ir.ExprConstant(value=linked)
+            return linked
         for key in (qualified, parts[-1]):
             if key in ctx.const_map:
                 return ir.ExprConstant(value=ctx.const_map[key])
-        enum_val = self._linked_enum_value(ctx, expr)
-        if enum_val is None:
-            enum_val = self._resolve_enum_constant(ctx, parts[-1])
+        enum_val = self._resolve_enum_constant(ctx, parts[-1])
         if enum_val is not None:
             return ir.ExprConstant(value=enum_val)
 
@@ -4771,20 +4867,19 @@ class AstToIrTranslator:
         if len(elems) == 1 and hasattr(elems[0], 'getId') and ctx is not None:
             id_obj = elems[0].getId()
             name = id_obj.getId() if isinstance(id_obj, pss_ast.ExprId) else str(id_obj)
-            enum_val = self._linked_enum_value(ctx, expr)
-            if enum_val is None:
-                enum_val = self._resolve_enum_constant(ctx, name)
+            # What the linker found first; by name only for a reference it
+            # left unresolved.
+            if name not in ctx.local_vars:
+                linked = self._linked_constant(ctx, expr)
+                if linked is not None:
+                    return self._apply_ref_bit_slice(expr, linked)
+            enum_val = self._resolve_enum_constant(ctx, name)
             if enum_val is not None:
                 return self._apply_ref_bit_slice(
                     expr, ir.ExprConstant(value=enum_val))
             if name in ctx.const_map and name not in ctx.local_vars:
                 return self._apply_ref_bit_slice(
                     expr, ir.ExprConstant(value=ctx.const_map[name]))
-            if name not in ctx.local_vars:
-                linked = self._linked_static_const(ctx, expr)
-                if linked is not None:
-                    return self._apply_ref_bit_slice(
-                        expr, ir.ExprConstant(value=linked))
 
         # Build the ExprAttribute chain starting from self. (`super.x` was
         # handled above: the front end gives it its own node, ExprRefPathSuper.)
@@ -5119,14 +5214,17 @@ class AstToIrTranslator:
             s = s.getUpper()
         return "::".join(reversed(names)) or None
 
-    def _symbol_scope_at(self, ctx: AstToIrContext, ref, depth: int):
-        """The symbol scope a `SymbolRefPath` names, or None."""
+    def _symbol_scope_at(self, ctx: AstToIrContext, ref, depth: int,
+                         drop: int = 0):
+        """The symbol scope a `SymbolRefPath` names, or None. With *drop*,
+        the scope that many steps short of it (1: what contains it)."""
         root = getattr(ctx, "symbol_root", None)
         if ref is None or root is None or depth > 64:
             return None
         K = pss_ast.SymbolRefPathElemKind
         scope = root
-        for pe in ref.getPathList():
+        path = list(ref.getPathList())
+        for pe in path[:len(path) - drop] if drop else path:
             if pe.kind == K.ElemKind_ChildIdx:
                 if not hasattr(scope, "numChildren") \
                         or not 0 <= pe.idx < scope.numChildren():
@@ -5368,9 +5466,14 @@ class AstToIrTranslator:
             return ir.DataTypeList(element_type=get_type_param(0))
 
         elif coll_name == "array":
+            size_ref = None
+            if params.numValues() > 1:
+                size_ref = self._linked_const_name(
+                    ctx, params.getValue(1).getValue())
             return ir.DataTypeArray(
                 element_type=get_type_param(0),
                 size=get_int_param(1),
+                size_ref=size_ref,
             )
 
         elif coll_name == "map":

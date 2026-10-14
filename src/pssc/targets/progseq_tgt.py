@@ -110,6 +110,10 @@ class ProgSeqTarget(OpModelTarget):
     def sections(self, model, opts: argparse.Namespace) -> Dict[str, str]:
         return self.backend_for(opts).sections(model)
 
+    def include_only_files(self, outputs) -> List[str]:
+        """Each class's `.svh`: the package includes it (`sv/backend.py`)."""
+        return [Path(p).name for p in outputs if str(p).endswith(".svh")]
+
     def emit(self, model, opts: argparse.Namespace) -> List[Path]:
         # COMPILATION ORDER, not creation order. The returned list is what a
         # build system hands the compiler (dv-flow's `classify_outputs`

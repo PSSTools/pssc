@@ -125,3 +125,56 @@ def test_the_new_fields_are_ordinary_dataclass_fields(probe):
     assert "doc" in {f.name for f in dc.fields(ir.Function)}
     assert {"comment", "comment_trailing"} <= {f.name for f in dc.fields(ir.Stmt)}
     assert "doc" in {f.name for f in dc.fields(type(probe.body[0]))}
+
+
+DOXY_SRC = '''
+component pss_top {
+    /// A function documented with `///`.
+    target function void f() {
+        int i;
+        /// Step: Reset the moderator
+        i = 0;
+        //! Bang form
+        i = 1;
+        /*! Block bang form */
+        i = 2;
+        /*!
+         * Block bang, its own line
+         */
+        i = 3;
+        i = 4;  ///< trailing doc
+        i = 5;  //!< trailing bang
+        i = 6;  /**< trailing block doc */
+        // / a slash that is prose
+        i = 7;
+        ////////
+        i = 8;
+        ///   indented
+        i = 9;
+    }
+}
+'''
+
+
+def test_a_doxygen_marker_is_not_prose():
+    """pssparser leaves `///`'s third `/` in the text, and every target
+    printed it: `/* / Step: Reset the moderator */`."""
+    p = Parser(collect_comments=True)
+    p.parses([("m.pss", DOXY_SRC)])
+    ctx = AstToIrTranslator().translate(p.link())
+    assert not ctx.errors, ctx.errors
+    f = next(f for f in ctx.type_map["pss_top"].functions if f.name == "f")
+    assert f.doc == "A function documented with `///`."
+    got = [(s.comment, s.comment_trailing) for s in f.body[1:]]
+    assert got == [
+        ("Step: Reset the moderator", None),
+        ("Bang form", None),
+        ("Block bang form", None),
+        ("Block bang, its own line", None),
+        (None, "trailing doc"),
+        (None, "trailing bang"),
+        (None, "trailing block doc"),
+        ("/ a slash that is prose", None),
+        ("//////", None),
+        ("  indented", None),
+    ]

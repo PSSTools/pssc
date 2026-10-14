@@ -88,7 +88,8 @@ def _c_progseq_overrides(p) -> Dict[str, Any]:
     # styles existed byte-identical rather than pinning it to a name.
     if _get(p, "style", ""):
         ov["c_style"] = _get(p, "style")
-    ov["c_link_style"] = _get(p, "link_style", "vtable")
+    from ..targets.c.c_progseq_gen import DEFAULT_LINK_STYLE
+    ov["c_link_style"] = _get(p, "link_style", DEFAULT_LINK_STYLE)
     ov["c_reg_style"] = _get(p, "reg_style", "bitfields")
     ov["c_lifecycle"] = _get(p, "lifecycle", "malloc")
     if _get(p, "header_only", False):

@@ -12,6 +12,7 @@ import argparse
 import pytest
 
 from pssc import driver
+from .sv_text import sv_package_text
 
 _MODEL = """
 package key_pkg {
@@ -39,7 +40,7 @@ def _gen(tmp_path):
     src.write_text(_MODEL)
     ns = argparse.Namespace(progseq_root="root_c", output_dir=str(tmp_path))
     driver.compile([str(src)], target="op-model-sv", opts=ns)
-    return (tmp_path / "root_c_pkg.sv").read_text()
+    return sv_package_text(tmp_path / "root_c_pkg.sv")
 
 
 def test_an_array_member_lowers_to_an_unpacked_sv_array(tmp_path):

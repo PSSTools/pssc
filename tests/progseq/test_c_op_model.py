@@ -53,7 +53,8 @@ def assert_c(text, *, has=(), has_not=(), code=False):
 @pytest.fixture(scope="module")
 def gen(tmp_path_factory):
     out = tmp_path_factory.mktemp("op_model_c")
-    ns = argparse.Namespace(progseq_root="wb_dma_c", output_dir=str(out))
+    ns = argparse.Namespace(progseq_root="wb_dma_c", output_dir=str(out),
+                            c_link_style="vtable")
     res = driver.compile(_sources(), target="op-model-c", opts=ns)
     return out, res
 
@@ -223,6 +224,7 @@ def test_prefix_collision_is_an_error():
 def test_prefix_map_is_the_escape_hatch(gen, tmp_path_factory):
     out = tmp_path_factory.mktemp("op_model_c_pfx")
     ns = argparse.Namespace(progseq_root="wb_dma_c", output_dir=str(out),
+                            c_link_style="vtable",
                             c_prefix_map=["wb_dma_ch_c=chan"])
     driver.compile(_sources(), target="op-model-c", opts=ns)
     h = (out / "wb_dma.h").read_text()
@@ -482,6 +484,7 @@ def test_no_allocator_below_the_root(gen):
 def gen_static(tmp_path_factory):
     out = tmp_path_factory.mktemp("op_model_c_static")
     ns = argparse.Namespace(progseq_root="wb_dma_c", output_dir=str(out),
+                            c_link_style="vtable",
                             c_lifecycle="static")
     driver.compile(_sources(), target="op-model-c", opts=ns)
     return out
