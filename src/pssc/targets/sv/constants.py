@@ -5,9 +5,12 @@ value, and keeps the name it was folded from (`ExprConstant.ref`,
 `DataTypeArray.size_ref`). This module decides how op-model-sv SPELLS such a
 reference, and declares what it spells:
 
-* An enum item is its item name -- an SV enum literal is a package-scope name
-  -- when the package declares its enum (`lower_api_types`); otherwise it
-  stays a number, since there is nothing to name.
+* An enum item is its enumerator (`item_name`). An SV enum literal is a
+  package-scope name and PSS scopes an item by its enum, so it is prefixed
+  with the enum's name (`WB_DMA_STATUS_WB_DMA_DONE`), unless
+  `--sv-enum-items verbatim`. The package declares every enum whose item the
+  code writes (`collect_api_types(type_map=...)`); an item of any other stays
+  a number, since there is nothing to name.
 * A `static const` is a `localparam` of the generated package, under its PSS
   name (`WB_DMA_MAX_CH`) and its declared type. Two constants of one name in
   different PSS scopes are both qualified with their scope
@@ -25,6 +28,7 @@ from typing import Dict, Iterable, List, Optional, Set
 
 from zuspec.ir.core.expr import int_literal_type
 
+from ..enum_names import prefixed_item
 from .keywords import SV_KEYWORDS
 
 
@@ -49,7 +53,16 @@ class SvConstants(object):
 
     def __init__(self, enums: Iterable[object] = (),
                  known_enums: Iterable[object] = (),
-                 consts: Optional[Dict[str, object]] = None):
+                 consts: Optional[Dict[str, object]] = None,
+                 enum_items: str = "prefixed",
+                 value_structs: Iterable[object] = ()):
+        #: `prefixed` or `verbatim` -- `--sv-enum-items`.
+        self.enum_items = enum_items
+        #: Register value structs, whose members are bit vectors: an enum
+        #: field of one is read as an integer (`int_storage`).
+        self._value_structs: Set[int] = {id(v) for v in value_structs}
+        #: Enums whose name function `%n` calls (`name_fn`).
+        self.name_fns: Set[str] = set()
         #: Enum name -> its items: the enums the package DECLARES, and every
         #: enum the model knows (an item of one the package does not declare
         #: has no SV name, and stays a number).
@@ -69,6 +82,8 @@ class SvConstants(object):
     def final(self) -> "SvConstants":
         """The table that declares what this recording one was asked for."""
         t = SvConstants(consts=self.used)
+        t.enum_items, t._value_structs = self.enum_items, self._value_structs
+        t.name_fns = set(self.name_fns)
         t._enum_items, t._known_enums = self._enum_items, self._known_enums
         t._names = t._assign_names(self.used)
         return t
@@ -77,8 +92,8 @@ class SvConstants(object):
 
     def _assign_names(self, consts: Dict[str, object]) -> Dict[str, str]:
         taken = set()
-        for items in self._enum_items.values():
-            taken |= items
+        for enum, items in self._enum_items.items():
+            taken |= {self.item_name(enum, i) for i in items}
         by_name: Dict[str, List[str]] = {}
         for q in consts:
             by_name.setdefault(_split(q)[1], []).append(q)
@@ -108,14 +123,68 @@ class SvConstants(object):
         if not ref:
             return None
         if self._item_of(self._known_enums, ref):
-            return (_split(ref)[1] if self._item_of(self._enum_items, ref)
-                    else None)
+            if not self._item_of(self._enum_items, ref):
+                return None
+            head, item = _split(ref)
+            return self.item_name(_split(head)[1], item)
         if self._recording:
             if ref not in self.used or ref in self._sized_only:
                 self.used[ref] = c
                 self._sized_only.discard(ref)
             return None
         return self._names.get(ref)
+
+    def item_name(self, enum_name: str, item: str) -> str:
+        """The enumerator for *item* of the enum named *enum_name* (without
+        its package)."""
+        name = (item if self.enum_items == "verbatim"
+                else prefixed_item(_strip_pkg(enum_name), item))
+        return name + "_" if name in SV_KEYWORDS else name
+
+    def first_item(self, dtype) -> Optional[str]:
+        """An enum's first item, spelled, when SV's 0 is not it; else None."""
+        from ..progseq_model import enum_first_item
+        item = enum_first_item(dtype)
+        return (self.item_name(dtype.name, item) if item is not None
+                else None)
+
+    def int_storage(self, struct_dtype) -> bool:
+        """Is *struct_dtype* a register value, whose members are bits?"""
+        return id(struct_dtype) in self._value_structs
+
+    def name_fn(self, enum_dtype) -> str:
+        """The package function giving an item's PSS name (`%n`), which the
+        package then declares (`name_fn_decl`)."""
+        n = _strip_pkg(enum_dtype.name)
+        self.name_fns.add(n)
+        return f"pss_{n}_name"
+
+    def name_fn_decl(self, enum_dtype) -> List[str]:
+        """`%n` of an enum prints the PSS item's name (21.1.1), which is
+        not the enumerator's when it is prefixed: `.name()` will not do."""
+        n = _strip_pkg(enum_dtype.name)
+        if n not in self.name_fns:
+            return []
+        lines = [f"  function automatic string pss_{n}_name(longint v);",
+                 "    case (v)"]
+        lines += [f'      {int(v)}: return "{k}";'
+                  for k, v in enum_dtype.items.items()]
+        lines += ['      default: return $sformatf("%0d", v);',
+                  "    endcase", "  endfunction"]
+        return lines
+
+    def item_clashes(self) -> List[str]:
+        """Two declared enums' items with one enumerator, described."""
+        by_name: Dict[str, str] = {}
+        out: List[str] = []
+        for enum in sorted(self._enum_items):
+            for item in sorted(self._enum_items[enum]):
+                n = self.item_name(enum, item)
+                who = f"item '{item}' of enum '{enum}'"
+                if n in by_name:
+                    out.append(f"'{n}' is both {by_name[n]} and {who}")
+                by_name.setdefault(n, who)
+        return out
 
     def size_name(self, dtype) -> Optional[str]:
         """The SV spelling of array type ``dtype``'s size, or None.

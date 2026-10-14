@@ -58,12 +58,15 @@ class SvOpModelBackend(object):
     """Turns an `OpModel` into the text of one SystemVerilog package and the
     files it includes."""
 
-    def __init__(self, pkg_name: str = "", reg_fields: str = "named"):
+    def __init__(self, pkg_name: str = "", reg_fields: str = "named",
+                 enum_items: str = "prefixed"):
         #: The package name. Empty means `<root>_pkg`.
         self.pkg_name = pkg_name
         #: `named` or `folded` -- `--sv-reg-fields`. Spelling only: both
         #: generate the same bus traffic (see `progseq_gen.generate`).
         self.reg_fields = reg_fields
+        #: `prefixed` or `verbatim` -- `--sv-enum-items`. Spelling only.
+        self.enum_items = enum_items
         #: `constants()`'s answer, and the model it is for.
         self._consts = None
         self._consts_model = None
@@ -190,7 +193,8 @@ class SvOpModelBackend(object):
     def _api_args(self, model):
         return (model.comp_dtypes, model.value_structs, model.ctor_names,
                 [fn for e in model.entries for fn in e.functions]
-                + list(model.functions))
+                + list(model.functions),
+                getattr(model.ctx, "type_map", None) or {})
 
     def constants(self, model) -> SvConstants:
         """How this package spells a folded PSS constant
@@ -207,7 +211,15 @@ class SvOpModelBackend(object):
         enums, _ = collect_api_types(*self._api_args(model))
         known = [t for t in (getattr(model.ctx, "type_map", {}) or {}).values()
                  if type(t).__name__ == "DataTypeEnum"]
-        rec = SvConstants(enums, known)
+        rec = SvConstants(enums, known, enum_items=self.enum_items,
+                          value_structs=model.value_structs)
+        clashes = rec.item_clashes()
+        if clashes:
+            from ...driver import CompileError
+            raise CompileError(
+                f"{len(clashes)} enum item name(s) would be declared twice in "
+                f"the generated SV package. Rename one in the model, or drop "
+                f"--sv-enum-items verbatim", clashes)
         self._consts, self._consts_model = rec, model
         try:
             for name, emit in self.package_sections(model):

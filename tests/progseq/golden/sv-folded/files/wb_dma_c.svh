@@ -105,10 +105,10 @@
       wb_dma_intmsk_s vec;
       vec.ch = channel_mask;
       case (bank)
-        WB_DMA_INT_A: begin
+        WB_DMA_INT_BANK_WB_DMA_INT_A: begin
           regs.int_msk_a.write(vec);
         end
-        WB_DMA_INT_B: begin
+        WB_DMA_INT_BANK_WB_DMA_INT_B: begin
           regs.int_msk_b.write(vec);
         end
       endcase

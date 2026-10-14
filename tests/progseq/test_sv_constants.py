@@ -19,8 +19,8 @@ from pssc.targets.sv.constants import SvConstants
 from .sv_text import sv_package_text
 
 
-def _final(enums=(), known=(), refs=()):
-    rec = SvConstants(enums, known)
+def _final(enums=(), known=(), refs=(), enum_items="prefixed"):
+    rec = SvConstants(enums, known, enum_items=enum_items)
     for c in refs:
         rec.name_of(c)
     return rec.final()
@@ -43,11 +43,28 @@ def test_two_constants_of_one_name_are_both_qualified():
     assert t.name_of(_c("a_pkg::M")) == "M"
 
 
-def test_a_constant_named_like_a_declared_enum_item_is_qualified():
-    e = DataTypeEnum(name="e_t", items={"N": 0})
+def test_an_enum_item_is_prefixed_with_its_enum():
+    e = DataTypeEnum(name="op_e", items={"N": 0})
     t = _final(enums=[e], refs=[_c("p::N")])
+    assert t.name_of(ExprConstant(value=0, ref="p::op_e::N")) == "OP_N"
+    assert t.name_of(_c("p::N")) == "N"
+
+
+def test_a_constant_named_like_a_declared_enum_item_is_qualified():
+    e = DataTypeEnum(name="op_e", items={"N": 0})
+    t = _final(enums=[e], refs=[_c("p::OP_N")])
+    assert t.name_of(_c("p::OP_N")) == "p_OP_N"
+    t = _final(enums=[e], refs=[_c("p::N")], enum_items="verbatim")
     assert t.name_of(_c("p::N")) == "p_N"
-    assert t.name_of(ExprConstant(value=0, ref="p::e_t::N")) == "N"
+    assert t.name_of(ExprConstant(value=0, ref="p::op_e::N")) == "N"
+
+
+def test_two_enums_items_of_one_name_clash_only_verbatim():
+    a = DataTypeEnum(name="dir_e", items={"A": 0})
+    b = DataTypeEnum(name="op_e", items={"A": 7})
+    assert SvConstants([a, b]).item_clashes() == []
+    assert SvConstants([a, b], enum_items="verbatim").item_clashes() == [
+        "'A' is both item 'A' of enum 'dir_e' and item 'A' of enum 'op_e'"]
 
 
 def test_an_sv_keyword_is_renamed():
@@ -118,3 +135,29 @@ def test_end_to_end(tmp_path):
              str(out / "pssc_reg_pkg.sv"), str(out / "top_pkg.sv")],
             capture_output=True, text=True)
         assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_verbatim_items_that_clash_are_refused_before_writing(tmp_path):
+    from pssc.driver import CompileError
+    from . import trace_harness as th
+    from .conftest import diagnostic_text
+    import pytest
+    pss = """
+enum dir_e { A, B = 3 }
+enum op_e { A = 7 }
+component pss_top {
+  target function bit[32] run() {
+    dir_e d = A;
+    op_e o = A;
+    return (bit[32])d + (bit[32])o;
+  }
+}"""
+    for d in ("p", "v"):
+        (tmp_path / d).mkdir()
+    th.compile_model(tmp_path / "p", pss, "sv")
+    with pytest.raises(CompileError) as ei:
+        th.compile_model(tmp_path / "v", pss, "sv",
+                         progseq_enum_items="verbatim")
+    assert ("'A' is both item 'A' of enum 'dir_e' and item 'A' of enum "
+            "'op_e'") in diagnostic_text(ei)
+    assert not (tmp_path / "v" / "sv" / "pss_top_pkg.sv").exists()

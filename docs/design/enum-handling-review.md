@@ -245,7 +245,18 @@ output change, reviewed in the same commit.
    register value read back", passes on c, cpp and py. On sv it is a strict
    xfail: SV reads the packed `bit[1:0]` member into an enum without a cast.
    That is an existing SV gap, which step 6 takes up.
-6. **SV: prefix**, plus the pre-write collision check (D3-SV).
+6. **SV: prefix**, plus the pre-write collision check (D3-SV). **DONE.**
+   `SvConstants.item_name` spells an item with the prefix rule shared with
+   C (`enum_names.prefixed_item`). `--sv-enum-items verbatim` keeps the PSS
+   name. It is declared in `abi_settings`, because the names are what a
+   testbench writes. Two enums' items with one name are then refused before
+   the package is written (`item_clashes`). The SV value lookup in
+   `value_of` and `emit_struct` is gone: a value the package does not hold
+   as the enum gets `E'(x)`, which covers an enum field of a register
+   value, held as bits. `%n` called `.name()`, which would print the
+   prefixed enumerator. It now calls `pss_<enum>_name(v)`, a function the
+   package declares only for enums whose `%n` is used. Goldens `sv-*` were
+   regenerated. Both new construct cases pass on all four targets.
 7. **Manifest enums** (D7). Update `docs/op-model-manifest.md`.
 8. **Enum base type** in declarations and `ExprTypes` (D6). This can wait.
 9. `ExprIn` (D8) is a separate item.

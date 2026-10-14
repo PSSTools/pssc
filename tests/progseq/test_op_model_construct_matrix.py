@@ -97,13 +97,6 @@ def _on(targets, why):
 #: `initialize` call (`_sub_storage`), and it is `None` until then.
 _PY_LAZY_SUB = "py: a sub-component with a constructor is None until called"
 
-#: SV puts an enum's items in the enclosing scope, so two enums with
-#: an item of one name do not compile (enum-handling-review.md D3).
-_ENUM_SCOPE = "enum items are not scoped by their enum (D3)"
-
-#: op-model-sv reads an enum field of a packed value as its `bit[N]` member,
-#: which SV converts to the enum only by a cast.
-_SV_ENUM_FIELD = "sv: an enum field of a packed value is read without a cast"
 
 
 CASES = {
@@ -967,8 +960,7 @@ component pss_top {""" + _ONE + """
     if (d == dir_e::A && o == op_e::A) { a.STS.write_val(1); }
     message(LOW, "%n %n", d, o);
   }
-}""", ["write 32 0x1004 0x7", "write 32 0x1004 0x1", "A A"],
-        xfail=_on(["sv"], _ENUM_SCOPE)),
+}""", ["write 32 0x1004 0x7", "write 32 0x1004 0x1", "A A"]),
 
     # An enum field of a register value is held as an integer where the
     # language's enums are scoped (a C++ bitfield): read into an enum, compared
@@ -995,7 +987,7 @@ component pss_top {
     message(LOW, "%n %d", v.mode, v.mode);
   }
 }""", ["read 32 0x1000 0x2", "write 32 0x1000 0x6", "Z3 3"],
-        mem={0x1000: 0x2}, xfail={"sv": _SV_ENUM_FIELD}),
+        mem={0x1000: 0x2}),
 
     # An initializer has the array's element count (8.1), at every level.
     "an array initializer of the wrong size": Case("""

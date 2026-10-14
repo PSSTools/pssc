@@ -591,7 +591,11 @@ class _BodyEmitter(BodyWalker):
                 # different widths, and `?:` pads the shorter (" true").
                 return "%s", f'(({x}) ? string\'("true") : string\'("false"))'
             if kind == "enum":
-                return "%s", f"{x}.name()"
+                # The PSS item's name (21.1.1), not the enumerator's.
+                from .constants import SvConstants
+                spell = self.consts if self.consts is not None \
+                    else SvConstants()
+                return "%s", f"{spell.name_fn(t.dtype)}({x})"
             raise ValueError(f"'%n' takes a bool or an enum; '{x}' is {kind}")
         # An integer conversion. A bool or enum formats as its value.
         signed = t.signed if (t is not None and kind == "int") else kind == "enum"
@@ -1036,8 +1040,8 @@ class _BodyEmitter(BodyWalker):
         if v is None and _dt_name(s.annotation) == "DataTypeArray":
             # Each element its type's default (8.1); an enum's is its first
             # item, and an SV enum element starts at 0.
-            first = enum_first_item(self.types.resolve(
-                _array_leaf(s.annotation)))
+            first = _first_item(self.types.resolve(
+                _array_leaf(s.annotation)), self.consts)
             if first is None:
                 return self._declare(s, decl, [])
             fill = f"'{{default: {first}}}"
@@ -1047,9 +1051,12 @@ class _BodyEmitter(BodyWalker):
         if v is None:
             # An enum's default is its FIRST item (7.5), which need not be 0;
             # an SV enum variable starts at 0 whatever its items are.
-            first = _enum_first(s.annotation, self.types)
+            dt = self.types.resolve(s.annotation)
+            first = enum_first_item(dt)
             if first is not None:
-                v = ir.ExprConstant(value=first)
+                # The item, by its name, as the model would have written it.
+                v = ir.ExprConstant(value=dt.items[first],
+                                    ref=f"{dt.name}::{first}")
         if self._block is not None and id(s) in self._block[0]:
             # Declared at the top of the block (`enter_block`); set here.
             self._block[1].append(f"{decl};")
@@ -1270,10 +1277,11 @@ class _BodyEmitter(BodyWalker):
     def value_of(self, dtype, e) -> str:
         """Render ``e`` as a value of ``dtype``.
 
-        The one case that matters: an enum constant reaches the IR as a plain
-        integer, and SV rejects an implicit integer-to-enum conversion. Writing
-        the mnemonic keeps the generated code both legal and readable -- the
-        alternative, a static cast, would compile and read as a magic number.
+        The one case that matters: SV converts no integer to an enum
+        implicitly (6.19.3). An item is written as its enumerator
+        (`expr_constant`); any other value not already held as the enum --
+        an integer, or an enum field of a register value, which is bits --
+        is cast to it.
         """
         if dtype is not None:
             dtype = self.types.resolve(dtype)
@@ -1286,17 +1294,32 @@ class _BodyEmitter(BodyWalker):
             # `array_literal.shape_error` has checked that it fits.
             return "'{" + ", ".join(self.value_of(dtype.element_type, x)
                                     for x in e.elts) + "}"
-        if (dtype is not None and _dt_name(dtype) == _DT_ENUM
-                and _dt_name(e) == "ExprConstant" and isinstance(e.value, int)):
-            # The item it was written as, when the front end kept it: two
-            # items may share a value.
-            item = (getattr(e, "ref", None) or "").rpartition("::")[2]
-            if item in dtype.items and dtype.items[item] == e.value:
-                return item
-            for nm, val in dtype.items.items():
-                if val == e.value:
-                    return nm
+        if dtype is not None and _dt_name(dtype) == _DT_ENUM \
+                and not self._held_as(e, dtype):
+            return f"{_strip_pkg(dtype.name)}'({self.expr(e)})"
         return self.expr(e)
+
+    def _held_as(self, e, enum_dtype) -> bool:
+        """Is *e* held in SV as a value of *enum_dtype*?"""
+        if _dt_name(e) == "ExprConstant":
+            return (self.consts is not None
+                    and self.consts.name_of(e) is not None
+                    and self.types.type_of(e).dtype is not None
+                    and _strip_pkg(self.types.type_of(e).dtype.name)
+                    == _strip_pkg(enum_dtype.name))
+        t = self.types.type_of(e)
+        if t is None or t.kind != "enum" or self._bits_held(e):
+            return False
+        return _strip_pkg(getattr(t.dtype, "name", "")) == \
+            _strip_pkg(enum_dtype.name)
+
+    def _bits_held(self, e) -> bool:
+        """An enum field of a register value is held as its bits."""
+        if _dt_name(e) != "ExprAttribute" or self.consts is None:
+            return False
+        base = self.types.type_of(e.value)
+        return (base is not None and base.kind == "struct"
+                and self.consts.int_storage(self.types.resolve(base.dtype)))
 
     def _struct_literal(self, dtype, e) -> str:
         """`{.a = 1, .b = 2}` (8.2.2) as a typed SV assignment pattern,
@@ -1494,14 +1517,12 @@ class _BodyEmitter(BodyWalker):
         return lines
 
 
-def _enum_first(dtype, types) -> Optional[int]:
-    """The first item's value of an enum ``dtype`` when it is not 0, else
-    None (0 is SV's default already)."""
-    dt = types.resolve(dtype)
-    if _dt_name(dt) != _DT_ENUM or not dt.items:
+def _first_item(dtype, consts) -> Optional[str]:
+    """An enum's first item, spelled, when SV's 0 is not it; else None."""
+    if _dt_name(dtype) != _DT_ENUM:
         return None
-    first = next(iter(dt.items.values()))
-    return int(first) if int(first) != 0 else None
+    from .constants import SvConstants
+    return (consts if consts is not None else SvConstants()).first_item(dtype)
 
 
 def _local_names(body) -> frozenset:
@@ -1917,13 +1938,13 @@ def _field_defaults(view, members: Dict[str, str], consts=None) -> List[str]:
                          f"{be.value_of(f.datatype, f.initial_value)};")
             continue
         # An enum starts at its first item (7.5); an SV enum member at 0.
-        first = enum_first_item(f.datatype)
+        first = _first_item(f.datatype, consts)
         if first is not None:
             lines.append(f"      {members[f.name]} = {first};")
             continue
         if (_dt_name(f.datatype) == "DataTypeArray"
                 and enum_first_item(_array_leaf(f.datatype))):
-            first = enum_first_item(_array_leaf(f.datatype))
+            first = _first_item(_array_leaf(f.datatype), consts)
             m = members[f.name]
             if _dt_name(f.datatype.element_type) == "DataTypeArray":
                 lines.append(f"      {m} = '{{default: {first}}};")

@@ -2,10 +2,10 @@
 // Included by wb_dma_c_pkg.sv; not a compilation unit.
 
   // ----- Data types used by the export API. -----
-  typedef enum {WB_DMA_DONE = 0, WB_DMA_ERROR = 1, WB_DMA_PENDING = 2} wb_dma_status_e;
-  typedef enum {WB_DMA_IF0 = 0, WB_DMA_IF1 = 1} wb_dma_if_e;
-  typedef enum {WB_DMA_SOFTWARE = 0, WB_DMA_HW_HANDSHAKE = 1} wb_dma_mode_e;
-  typedef enum {WB_DMA_INT_A = 0, WB_DMA_INT_B = 1} wb_dma_int_bank_e;
+  typedef enum {WB_DMA_STATUS_WB_DMA_DONE = 0, WB_DMA_STATUS_WB_DMA_ERROR = 1, WB_DMA_STATUS_WB_DMA_PENDING = 2} wb_dma_status_e;
+  typedef enum {WB_DMA_IF_WB_DMA_IF0 = 0, WB_DMA_IF_WB_DMA_IF1 = 1} wb_dma_if_e;
+  typedef enum {WB_DMA_MODE_WB_DMA_SOFTWARE = 0, WB_DMA_MODE_WB_DMA_HW_HANDSHAKE = 1} wb_dma_mode_e;
+  typedef enum {WB_DMA_INT_BANK_WB_DMA_INT_A = 0, WB_DMA_INT_BANK_WB_DMA_INT_B = 1} wb_dma_int_bank_e;
 
   typedef struct {
     bit present = 1;

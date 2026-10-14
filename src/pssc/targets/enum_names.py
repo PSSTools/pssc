@@ -16,7 +16,7 @@ from typing import Iterator, Optional, Tuple
 
 from .progseq_model import _dt_name
 
-__all__ = ["item_of", "written_enums"]
+__all__ = ["item_of", "prefixed_item", "written_enums"]
 
 
 def item_of(c, type_map) -> Optional[Tuple[object, str]]:
@@ -39,6 +39,15 @@ def item_of(c, type_map) -> Optional[Tuple[object, str]]:
                 return dt, item
             return None
     return None
+
+
+def prefixed_item(enum_name: str, item: str) -> str:
+    """An item named for a language with one namespace for every enum's
+    items (C, SV): the enum's name without `_e`, upper-cased, then the item.
+    `op_e` + `RD` -> `OP_RD`. It depends on the enum alone, so adding an enum
+    to a model never renames another's items."""
+    stem = enum_name[:-2] if enum_name.endswith("_e") else enum_name
+    return f"{stem.upper()}_{item}"
 
 
 def written_enums(node, type_map) -> Iterator[object]:

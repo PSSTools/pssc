@@ -174,8 +174,8 @@ class CStylePolicy(StylePolicy):
         collision is then refused before any file is written (`c_names`).
         *enum_name* is the C type name, without its package.
         """
-        stem = enum_name[:-2] if enum_name.endswith("_e") else enum_name
-        return f"{stem.upper()}_{item}"
+        from ..enum_names import prefixed_item
+        return prefixed_item(enum_name, item)
 
     # -- register / memory access --------------------------------------------
     #

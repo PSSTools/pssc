@@ -338,7 +338,11 @@ policy (`CStylePolicy.enum_item`: `WB_DMA_STATUS_WB_DMA_DONE`), with every
 enumerator gathered by `c_names`, and C++ declares an `enum class`
 (`wb_dma_status_e::WB_DMA_DONE`), casting where PSS uses an enum as an
 integer -- including an enum field of a register value, which C++ holds in
-an unsigned bitfield. SV is to prefix too. An enum whose item a body writes is declared whatever names
+an unsigned bitfield. SV prefixes as C does (`SvConstants.item_name`;
+`--sv-enum-items verbatim` keeps the PSS name, and a clash is then
+refused), casts what it does not hold as the enum (`E'(x)`), and prints
+`%n` through a generated `pss_<enum>_name`, since `.name()` would give
+the prefixed name. The prefix rule is `enum_names.prefixed_item`. An enum whose item a body writes is declared whatever names
 its type (`collect_api_types(type_map=...)`, `written_enums`).
 
 Python binds each register GROUP's base separately (`naming.group_base`,

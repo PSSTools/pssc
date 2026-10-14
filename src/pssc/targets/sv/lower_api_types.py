@@ -124,15 +124,19 @@ def _visit_stmt(s, visit):
             _visit_stmt(inner, visit)
 
 
-def emit_enum(enum_dtype) -> str:
+def emit_enum(enum_dtype, consts=None) -> str:
     """``typedef enum`` with explicit values.
 
     Values are stated rather than left implicit because the model's own numbers
     are load-bearing -- they are register field encodings (`WB_DMA_IF1 = 1`),
-    not an arbitrary ordering.
+    not an arbitrary ordering. An enumerator is a package-scope name, so it
+    is spelled by `SvConstants.item_name` (prefixed with its enum's name).
     """
+    from .constants import SvConstants
+    spell = consts if consts is not None else SvConstants()
     name = _strip_pkg(enum_dtype.name)
-    items = ", ".join(f"{k} = {v}" for k, v in enum_dtype.items.items())
+    items = ", ".join(f"{spell.item_name(name, k)} = {v}"
+                      for k, v in enum_dtype.items.items())
     return f"  typedef enum {{{items}}} {name};"
 
 
@@ -180,15 +184,14 @@ def emit_struct(struct_dtype, consts=None) -> str:
                 and isinstance(init.value, (bool, int))):
             named = consts.name_of(init) if consts is not None else None
             dflt = f" = {named or int(init.value)}"
-            # An enum item reaches here folded to its value, and SV converts
-            # no integer to an enum implicitly (6.19.3): name the item.
+            # SV converts no integer to an enum implicitly (6.19.3).
             if _dt_name(f.datatype) == "DataTypeEnum" and named is None:
-                for k, v in f.datatype.items.items():
-                    if int(v) == int(init.value):
-                        dflt = f" = {k}"
+                dflt = f" = {_strip_pkg(f.datatype.name)}'({int(init.value)})"
         elif not packed and init is None and enum_first_item(f.datatype):
             # An enum starts at its first item (7.5); SV's starts at 0.
-            dflt = f" = {enum_first_item(f.datatype)}"
+            from .constants import SvConstants
+            spell = consts if consts is not None else SvConstants()
+            dflt = f" = {spell.first_item(f.datatype)}"
         if _dt_name(f.datatype) == "DataTypeArray":
             elem, dims = _array_dims(f.datatype, consts)
             dim_str = "".join(f"[{n}]" for n in dims)
@@ -200,16 +203,21 @@ def emit_struct(struct_dtype, consts=None) -> str:
 
 
 def lower_api_types(components, reg_value_structs=(), ctor_names=None,
-                    bodies=(), consts=None) -> str:
-    """Package-body text for the enums and structs the API mentions."""
+                    bodies=(), type_map=None, consts=None) -> str:
+    """Package-body text for the enums and structs the API mentions, and every
+    enum whose item the code writes (see `collect_api_types`)."""
     enums, structs = collect_api_types(components, reg_value_structs,
-                                       ctor_names, bodies)
+                                       ctor_names, bodies, type_map)
     if not enums and not structs:
         return ""
     parts = ["  // ----- Data types used by the export API. -----"]
-    parts += [emit_enum(e) for e in enums]
+    parts += [emit_enum(e, consts) for e in enums]
     if enums:
         parts.append("")
+    fns = [l for e in enums
+           for l in (consts.name_fn_decl(e) if consts is not None else [])]
+    if fns:
+        parts += fns + [""]
     for s in structs:
         parts.append(emit_struct(s, consts))
         parts.append("")

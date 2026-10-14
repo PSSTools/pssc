@@ -260,12 +260,14 @@ def test_enum_typedefs_and_mnemonics(sv):
 
     Explicit values matter because these are not an arbitrary ordering: the
     generated code compares against the mnemonic, and anything that reads the
-    raw number depends on the numbering being the model's.
+    raw number depends on the numbering being the model's. An SV enumerator
+    is a package-scope name, so it is prefixed with its enum's.
     """
     assert_generated(sv,
-                     has=["typedef enum {WB_DMA_DONE = 0, WB_DMA_ERROR = 1, "
-                          "WB_DMA_PENDING = 2} wb_dma_status_e;",
-                          "status = WB_DMA_ERROR;"],
+                     has=["typedef enum {WB_DMA_STATUS_WB_DMA_DONE = 0, "
+                          "WB_DMA_STATUS_WB_DMA_ERROR = 1, "
+                          "WB_DMA_STATUS_WB_DMA_PENDING = 2} wb_dma_status_e;",
+                          "status = WB_DMA_STATUS_WB_DMA_ERROR;"],
                      has_not=["status = 1;"])
 
 
@@ -327,8 +329,9 @@ def test_constants_are_declared_with_their_pss_type(gen):
 
 def test_enum_items_are_spelled_by_name_in_comparisons(sv):
     """An enum item kept its value only; a comparison then read `!= 2`."""
-    assert_generated(sv, has=["if (status != WB_DMA_PENDING) begin",
-                              "if (status == WB_DMA_PENDING) begin"],
+    assert_generated(sv, has=[
+        "if (status != WB_DMA_STATUS_WB_DMA_PENDING) begin",
+        "if (status == WB_DMA_STATUS_WB_DMA_PENDING) begin"],
                      has_not=["status != 2", "status == 2"])
 
 

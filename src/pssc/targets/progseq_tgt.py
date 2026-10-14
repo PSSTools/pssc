@@ -81,6 +81,20 @@ class ProgSeqTarget(OpModelTarget):
                  "write_field(<FIELD_CONST>, v) ('named', default) or as "
                  "write_val_masked(<mask>, <val>) ('folded')",
         )
+        # An SV enum literal is a package-scope name; PSS scopes an item by
+        # its enum. Prefixed by default, like op-model-c's default style.
+        parser.add_argument(
+            "--sv-enum-items", dest="progseq_enum_items",
+            choices=("prefixed", "verbatim"), default="prefixed",
+            help="sv-progseq: name an enum item <ENUM>_<ITEM> ('prefixed', "
+                 "default: `op_e { RD }` is OP_RD) or as written "
+                 "('verbatim'; two enums' items of one name are refused)",
+        )
+
+    def abi_settings(self, opts: argparse.Namespace) -> Dict[str, str]:
+        """`--sv-enum-items`: an enumerator's name is what a testbench
+        writes. `--sv-reg-fields` is spelling inside the package only."""
+        return {"enum_items": getattr(opts, "progseq_enum_items", "prefixed")}
 
     # -- entry point --------------------------------------------------------
 
@@ -105,7 +119,8 @@ class ProgSeqTarget(OpModelTarget):
         pkg_name = (getattr(opts, "progseq_package", None)
                     or (f"{root_name}_pkg" if root_name else ""))
         return self.backend_class()(
-            pkg_name, getattr(opts, "progseq_reg_fields", "named"))
+            pkg_name, getattr(opts, "progseq_reg_fields", "named"),
+            getattr(opts, "progseq_enum_items", "prefixed"))
 
     def sections(self, model, opts: argparse.Namespace) -> Dict[str, str]:
         return self.backend_for(opts).sections(model)

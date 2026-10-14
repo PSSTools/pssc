@@ -144,7 +144,7 @@
       bit tok;
       forever begin
         probe_status(status);
-        if (status != WB_DMA_PENDING) begin
+        if (status != WB_DMA_STATUS_WB_DMA_PENDING) begin
           break;
         end
         wait_hint();
@@ -248,7 +248,7 @@
       // wait_completion()'s loop, minus the guard release. See above.
       forever begin
         probe_status(status);
-        if (status != WB_DMA_PENDING) begin
+        if (status != WB_DMA_STATUS_WB_DMA_PENDING) begin
           break;
         end
         wait_hint();
@@ -310,11 +310,11 @@
       bit tok;
       if (!(inflight.try_get(tok))) begin
         $display("wb_dma: check_completion() with no operation in progress on this channel -- either no *_start() was called, or a previous completion was already consumed");
-        status = WB_DMA_PENDING;
+        status = WB_DMA_STATUS_WB_DMA_PENDING;
         return;
       end
       probe_status(status);
-      if (status == WB_DMA_PENDING) begin
+      if (status == WB_DMA_STATUS_WB_DMA_PENDING) begin
         // Still running: hand the token back. try_put cannot fail -- this
         // is the only holder, and it was just emptied.
         void'(inflight.try_put(tok));
@@ -411,14 +411,14 @@
       wb_dma_csr_s csr;
       regs.csr.read(csr);
       if (csr.err == 1) begin
-        status = WB_DMA_ERROR;
+        status = WB_DMA_STATUS_WB_DMA_ERROR;
         return;
       end
       if (csr.done == 1) begin
-        status = WB_DMA_DONE;
+        status = WB_DMA_STATUS_WB_DMA_DONE;
         return;
       end
-      status = WB_DMA_PENDING;
+      status = WB_DMA_STATUS_WB_DMA_PENDING;
       return;
     endtask
 
