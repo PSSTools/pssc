@@ -92,7 +92,7 @@ verbatim, a consumer (the corpus SV adapter writing a testbench, for example)
 has to parse generated code to find them, which is exactly what the manifest
 exists to prevent.
 
-**D9. A negative enumerator value is lost in the front end.**
+**D9. A negative enumerator value is lost in the front end.** (Fixed; see §5.)
 `enum mode_e { OFF, SLOW = 5, NEG = -3, FAST = 6 }` gives `NEG` the value 6.
 `-3` is an `ExprUnary`, which has no `getValue()`, so both ast2ir walks (the
 `DataTypeEnum` build and `_linked_enum_value`) skip it and the auto-increment
@@ -198,8 +198,11 @@ output change, reviewed in the same commit.
    cases. A construct-matrix case covers `%n`/`%d` on all four targets.
    Still open here: SV refuses flags, widths and `%X` ("no SystemVerilog
    rendering yet").
-2. **§4.1 (1)**: enum-typed constants in `ExprTypes`. No output change is
-   expected. Goldens must stay byte-identical, which is the check.
+2. **§4.1 (1)**: enum-typed constants in `ExprTypes`. **DONE.**
+   `ExprTypes.enum_of_item` types an `ExprConstant` whose `ref` names an item
+   of a `DataTypeEnum` (with that value) as the enum. Tests:
+   `test_enum_item_types.py`. No output change was expected, and the golden
+   snapshots are byte-identical.
 3. **Shared spelling module + Python namespace classes** (D1, D4-py).
 4. **C: prefix by policy, names from `ref`** (D3-C, D4-C), plus the enumerator
    check in `c_names`.
@@ -209,8 +212,20 @@ output change, reviewed in the same commit.
 7. **Manifest enums** (D7). Update `docs/op-model-manifest.md`.
 8. **Enum base type** in declarations and `ExprTypes` (D6). This can wait.
 9. `ExprIn` (D8) is a separate item.
-10. **D9** (negative enumerator values) belongs before step 3, since spelling
-    by name only helps if the values are right.
+10. **D9** (negative enumerator values). **DONE**, before step 2. An item's
+    value is folded as a constant expression (`_enum_decl_values`: `-3`,
+    `K + 2`, `~0`). A value that does not fold is an error, not a guess. Two
+    more defects turned up on the way and are fixed:
+    - A reference to an item ADDED by `extend enum` became `self.B`, a field
+      that does not exist. The linker resolves it into the enum's scope, but
+      its value was looked up in the base `EnumDecl` only. Item values are now
+      recorded by the item's AST node, and `extend enum` is applied in a pass
+      of its own (`_Phase.ENUM`), before any body is translated.
+    - `static const` folds were cached by `id()` of a pssparser wrapper.
+      pssparser makes a new wrapper per access, so a collected wrapper's id
+      could be reused by another field. They are now keyed by the node's own
+      `id()` (`_node_key`).
+    Tests: `test_scalar_types_ast_to_ir.py`.
 
 Tests: the probe in §6 becomes a construct-matrix case ("two enums with an item
 of one name") with the trace below, held on all four targets. Each backend also

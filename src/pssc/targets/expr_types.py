@@ -206,7 +206,30 @@ class ExprTypes:
         return hook(e) if hook is not None else None
 
     def _ExprConstant(self, e):
+        enum = self.enum_of_item(e)
+        if enum is not None:
+            return enum
         return literal_type(e.value, getattr(e, "width", 0), getattr(e, "signed", None))
+
+    def enum_of_item(self, e) -> Optional[PssType]:
+        """The enum type of folded enum item *e* (an `ExprConstant` whose
+        `ref` names an item the linker resolved), or None.
+
+        An item is of its enum's type (LRM 7.5), not `int`: `%n` prints its
+        name, and an emitter spells it by that name.
+        """
+        ref = getattr(e, "ref", None)
+        head, _, item = (ref or "").rpartition("::")
+        if not head:
+            return None
+        for name in (head, head.rpartition("::")[2]):
+            dt = self._tm.get(name)
+            if _dt_name(dt) == "DataTypeEnum":
+                items = getattr(dt, "items", {}) or {}
+                if items.get(item) == e.value:
+                    return self.of_datatype(dt)
+                return None
+        return None
 
     def _ExprRefLocal(self, e):
         if e.name in self.loop_vars:
