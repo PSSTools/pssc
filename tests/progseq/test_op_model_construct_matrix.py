@@ -97,7 +97,7 @@ def _on(targets, why):
 #: `initialize` call (`_sub_storage`), and it is `None` until then.
 _PY_LAZY_SUB = "py: a sub-component with a constructor is None until called"
 
-#: C, C++ and SV put an enum's items in the enclosing scope, so two enums with
+#: C++ and SV put an enum's items in the enclosing scope, so two enums with
 #: an item of one name do not compile (enum-handling-review.md D3).
 _ENUM_SCOPE = "enum items are not scoped by their enum (D3)"
 
@@ -964,7 +964,7 @@ component pss_top {""" + _ONE + """
     message(LOW, "%n %n", d, o);
   }
 }""", ["write 32 0x1004 0x7", "write 32 0x1004 0x1", "A A"],
-        xfail=_on(["c", "cpp", "sv"], _ENUM_SCOPE)),
+        xfail=_on(["cpp", "sv"], _ENUM_SCOPE)),
 
     # An initializer has the array's element count (8.1), at every level.
     "an array initializer of the wrong size": Case("""

@@ -161,6 +161,22 @@ class CStylePolicy(StylePolicy):
         """An emitted macro: ``wb_dma`` + ``CH_COUNT`` -> ``WB_DMA_CH_COUNT``."""
         return f"{comp_prefix}_{name}".upper()
 
+    def enum_item(self, enum_name: str, item: str) -> str:
+        """An enumerator: ``op_e`` + ``RD`` -> ``OP_RD``; ``wb_dma_status_e``
+        + ``WB_DMA_DONE`` -> ``WB_DMA_STATUS_WB_DMA_DONE``.
+
+        PSS scopes an item by its enum (LRM 7.5); C puts every enumerator in
+        the one file-scope namespace, so two enums with an `A` do not compile
+        unless their items are told apart. The prefix is the enum's name
+        without `_e`, upper-cased, and depends on nothing else, so adding an
+        enum to a model never renames another's items. A house style whose
+        items are unique by convention may return *item* verbatim; a
+        collision is then refused before any file is written (`c_names`).
+        *enum_name* is the C type name, without its package.
+        """
+        stem = enum_name[:-2] if enum_name.endswith("_e") else enum_name
+        return f"{stem.upper()}_{item}"
+
     # -- register / memory access --------------------------------------------
     #
     # Every hook below returns None by default, meaning "use the funnel's own

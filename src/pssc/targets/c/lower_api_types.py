@@ -24,7 +24,7 @@ _DT_INT = "DataTypeInt"
 _DT_BOOL = "DataTypeBool"
 
 
-def emit_enum(enum_dtype) -> str:
+def emit_enum(enum_dtype, style=None) -> str:
     """``typedef enum`` with EXPLICIT values.
 
     C would happily number these itself, and that is exactly the risk. The
@@ -35,13 +35,15 @@ def emit_enum(enum_dtype) -> str:
     reproduce them today and silently renumber the day someone reorders the PSS
     declaration.
 
-    Enumerator names are emitted verbatim. They are already device-prefixed in
-    this model, and a collision in C is a compile error at the point of
-    declaration -- loud, which is the acceptance criterion.
+    An enumerator is named by the style (`CStylePolicy.enum_item`: the
+    enum's name, upper-cased without `_e`, then the item), because C has one
+    namespace for every enum's items and PSS has one per enum.
     """
-    from .lower_progseq import c_enum_name
+    from .lower_progseq import CEnums, c_enum_name
     name = c_enum_name(enum_dtype)
-    items = ",\n".join(f"    {k} = {v}" for k, v in enum_dtype.items.items())
+    spell = CEnums(style)
+    items = ",\n".join(f"    {spell.item(enum_dtype, k)} = {v}"
+                        for k, v in enum_dtype.items.items())
     return f"typedef enum {{\n{items}\n}} {name};"
 
 
@@ -96,15 +98,16 @@ def emit_struct(struct_dtype) -> str:
 
 
 def lower_api_types(components, reg_value_structs=(),
-                    ctor_names=None) -> str:
-    """Header text for the enums and structs the API mentions."""
+                    ctor_names=None, style=None, type_map=None) -> str:
+    """Header text for the enums and structs the API mentions, and every
+    enum whose item a body writes (see `collect_api_types`)."""
     enums, structs = collect_api_types(components, reg_value_structs,
-                                       ctor_names)
+                                       ctor_names, type_map=type_map or {})
     if not enums and not structs:
         return ""
     parts: List[str] = ["/* ----- Data types used by the export API. ----- */"]
     for e in enums:
-        parts.append(emit_enum(e))
+        parts.append(emit_enum(e, style))
         parts.append("")
     for s in structs:
         parts.append(emit_struct(s))

@@ -11,11 +11,12 @@ language spells it.
 """
 from __future__ import annotations
 
-from typing import Optional, Tuple
+import dataclasses as dc
+from typing import Iterator, Optional, Tuple
 
 from .progseq_model import _dt_name
 
-__all__ = ["item_of"]
+__all__ = ["item_of", "written_enums"]
 
 
 def item_of(c, type_map) -> Optional[Tuple[object, str]]:
@@ -38,3 +39,43 @@ def item_of(c, type_map) -> Optional[Tuple[object, str]]:
                 return dt, item
             return None
     return None
+
+
+def written_enums(node, type_map) -> Iterator[object]:
+    """The enum of each item written under *node* (a body, an initializer,
+    or a list of them), in the order written; repeats included.
+
+    A target that spells an item by its enum's name must declare that enum,
+    whether or not a signature or a declaration names its type. The one item
+    no target renders is `message()`'s verbosity (21.1.3), which is skipped:
+    it would declare `message_verbosity_e` in every model that logs.
+    """
+    from .validate_calls import callee_name
+
+    def walk(n):
+        if isinstance(n, (list, tuple)):
+            for x in n:
+                yield from walk(x)
+            return
+        if not dc.is_dataclass(n) or isinstance(n, type):
+            return
+        cn = _dt_name(n)
+        if cn == "ExprConstant":
+            found = item_of(n, type_map)
+            if found is not None:
+                yield found[0]
+            return
+        if cn == "ExprCall" and _is_message(n.func, callee_name):
+            yield from walk(list(n.args or [])[1:])
+            return
+        for f in dc.fields(n):
+            yield from walk(getattr(n, f.name, None))
+
+    yield from walk(node)
+
+
+def _is_message(func, callee_name) -> bool:
+    cn = _dt_name(func)
+    if cn == "ExprRefUnresolved":
+        return callee_name(func) == "message"
+    return cn == "ExprAttribute" and func.attr == "message"

@@ -132,6 +132,13 @@ combination with `--link-style vtable` is refused at start-up — that seam
 reaches the bus through a per-instance function-pointer struct, which is a
 third mechanism.
 
+`enum_item(enum_name, item)` names an enumerator. PSS scopes an item by its
+enum; C has one file-scope namespace, so the default prefixes each item with
+its enum's name (`op_e { RD }` → `OP_RD`). A style whose models keep their
+items unique by convention may return `item` unchanged. Two items that then
+share a name are refused before any file is written, naming both enums, not
+left to the C compiler.
+
 ---
 
 ## Level 2 — override parts of an existing backend

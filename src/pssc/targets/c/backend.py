@@ -215,8 +215,9 @@ class COpModelBackend:
         no forward reference for a type used by value.
         """
         from .lower_api_types import lower_api_types
-        return self._block(lower_api_types(self.comps, model.value_structs,
-                                           model.ctor_names))
+        return self._block(lower_api_types(
+            self.comps, model.value_structs, model.ctor_names, self.style,
+            getattr(model.ctx, "type_map", None)))
 
     @overridable(since='0.1', stability='provisional')
     def api_value_structs(self, model, s: CSettings):

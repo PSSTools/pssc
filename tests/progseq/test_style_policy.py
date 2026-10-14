@@ -65,6 +65,10 @@ def test_the_default_policy_is_what_the_backend_uses_unasked():
     ("type_name", ("wb_dma_c",), "wb_dma_c"),
     ("struct_tag", ("wb_dma_c",), "wb_dma_c"),
     ("macro", ("wb_dma", "ch_COUNT"), "WB_DMA_CH_COUNT"),
+    ("enum_item", ("op_e", "RD"), "OP_RD"),
+    ("enum_item", ("wb_dma_status_e", "WB_DMA_DONE"),
+     "WB_DMA_STATUS_WB_DMA_DONE"),
+    ("enum_item", ("mode", "X"), "MODE_X"),
 ])
 def test_the_default_spellings_are_pinned(method, args, expected):
     assert getattr(CStylePolicy(), method)(*args) == expected

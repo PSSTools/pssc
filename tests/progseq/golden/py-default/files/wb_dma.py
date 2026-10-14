@@ -67,13 +67,6 @@ class wb_dma_mode_e(object):
     WB_DMA_SOFTWARE = 0
     WB_DMA_HW_HANDSHAKE = 1
 
-class message_verbosity_e(object):
-    NONE = 0
-    LOW = 1
-    MEDIUM = 2
-    HIGH = 3
-    FULL = 4
-
 class _Struct(object):
     """Base of every plain (non-register) struct: a PSS value.
 

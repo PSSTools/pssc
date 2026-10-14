@@ -18,7 +18,7 @@ from typing import List
 from ..executors import has_executors, mem_access_desc
 from ..progseq_model import (_dt_name, resolve_ref, struct_base,
                              struct_fields, sub_components)
-from ..enum_names import item_of
+from ..enum_names import written_enums
 from .naming import enum_class_name, mangle
 
 __all__ = ["collect_module_types", "emit_enum", "emit_struct",
@@ -278,11 +278,8 @@ def collect_module_types(model):
     def visit_items(node):
         # An item is spelled by its enum's class wherever it is written,
         # whatever the type of the expression it is written in.
-        for n in _nodes(node):
-            if _dt_name(n) == "ExprConstant":
-                found = item_of(n, tm)
-                if found is not None:
-                    visit(found[0])
+        for e in written_enums(node, tm):
+            visit(e)
 
     for comp in (list(model.comp_dtypes_root_first)
                  + list(getattr(model, "base_classes", ()) or ())):

@@ -218,7 +218,20 @@ output change, reviewed in the same commit.
    construct-matrix case, "two enums with an item of one name", passes on
    py and is a strict xfail on c, cpp and sv (D3).
 4. **C: prefix by policy, names from `ref`** (D3-C, D4-C), plus the enumerator
-   check in `c_names`.
+   check in `c_names`. **DONE.** `CStylePolicy.enum_item(enum_name, item)`
+   defaults to the enum's name without `_e`, upper-cased, then `_` and the
+   item (`WB_DMA_STATUS_WB_DMA_DONE`). `CEnums` (`c/lower_progseq.py`) spells
+   items from `ref` in bodies, initializers and first-item defaults.
+   `c_names` gathers every enumerator, so a verbatim style that collides is
+   refused naming both enums (`test_c_names.py`). An enum whose item a body
+   or initializer writes is declared even if no signature names its type
+   (`collect_api_types(type_map=...)`, which uses the shared
+   `enum_names.written_enums`). `message()`'s verbosity is skipped there, so
+   `message_verbosity_e` is no longer declared in Python either. Goldens
+   `c-*` were regenerated (enumerators, comparisons, returns, `case` labels).
+   `tests/progseq/data/c/op_model_tb.c` uses the new names. The two-enum
+   construct case now passes on C. `--prefix-map` does not rename enum
+   items, since it does not rename enum types either.
 5. **C++: `enum class`** (or prefix, per your choice), then delete the
    value-recovery code (D3-C++, D5).
 6. **SV: prefix**, plus the pre-write collision check (D3-SV).

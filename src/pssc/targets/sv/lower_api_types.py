@@ -35,7 +35,8 @@ def _is_packed(struct_dtype) -> bool:
 
 def collect_api_types(components, reg_value_structs=(),
                       ctor_names=None,
-                      bodies=()) -> Tuple[List[object], List[object]]:
+                      bodies=(),
+                      type_map=None) -> Tuple[List[object], List[object]]:
     """``(enums, structs)`` mentioned by ``components``' exported API.
 
     Structs come back in dependency order (a nested struct before the struct
@@ -44,6 +45,11 @@ def collect_api_types(components, reg_value_structs=(),
     ``bodies`` are further functions whose signatures and locals count --
     exported actions and package-scope functions, which are no component's
     declared functions.
+
+    With ``type_map``, an enum whose ITEM is written -- in any body of the
+    components or in ``bodies``, or in a field's initializer -- counts too
+    (`enum_names.written_enums`): a target that spells an item by its name
+    must declare the enum, whatever names its type.
     """
     skip = {id(s) for s in reg_value_structs}
     enums: List[object] = []
@@ -91,6 +97,16 @@ def collect_api_types(components, reg_value_structs=(),
             visit(a.annotation)
         for s in (fn.body or []):
             _visit_stmt(s, visit)
+    if type_map is not None:
+        from ..enum_names import written_enums
+        written = [f.initial_value for c in components for f in c.fields
+                   if getattr(f, "initial_value", None) is not None]
+        written += [fn.body for c in components for fn in c.functions]
+        written += [fn.body for fn in bodies]
+        written += [f.initial_value for st in structs for f in st.fields
+                    if getattr(f, "initial_value", None) is not None]
+        for e in written_enums(written, type_map):
+            visit(e)
 
     return enums, structs
 

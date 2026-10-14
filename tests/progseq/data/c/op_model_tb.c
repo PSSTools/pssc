@@ -76,7 +76,7 @@ static void case_transfer_on_channel_2(wb_dma_c *dma)
 
     st = wb_dma_ch_transfer_single(wb_dma_ch(dma, CH), cfg);
 
-    CHECK(st == WB_DMA_DONE, "transfer_single returned %d, expected DONE", st);
+    CHECK(st == WB_DMA_STATUS_WB_DMA_DONE, "transfer_single returned %d, expected DONE", st);
 
     /* The configuration landed in CHANNEL 2's bank, at base+0x60, and nowhere
      * else. `om_n_writes` on channel 0's ADR0 is the assertion that actually
@@ -148,7 +148,7 @@ static void case_stop_is_an_error(wb_dma_c *dma)
     wb_dma_ch_transfer_single_start(wb_dma_ch(dma, CH), cfg);
     st = wb_dma_ch_stop_channel(wb_dma_ch(dma, CH));
 
-    CHECK(st == WB_DMA_ERROR,
+    CHECK(st == WB_DMA_STATUS_WB_DMA_ERROR,
           "stop_channel returned %d, expected ERROR -- the device sets ERR on "
           "a STOP write and the contract carries that verbatim", st);
     CHECK((om_last_write(&mock, om_ch_reg(&mock, CH, R_CSR)) & OM_CSR_STOP) != 0,

@@ -21,7 +21,7 @@ from pssc.driver import CompileError
 from pssc.targets import op_model as om
 from pssc.targets.c import c_names
 from pssc.targets.c.backend import COpModelBackend
-from pssc.targets.c.style import CSettings
+from pssc.targets.c.style import CSettings, CStylePolicy
 
 from . import trace_harness as th
 from .conftest import diagnostic_text
@@ -135,3 +135,52 @@ def test_every_gathered_name_is_one_the_backend_emits(ctx, tmp_path, kw):
     missing = [(n, who) for n, who in names
                if not re.search(rf"\b{re.escape(n)}\b", text)]
     assert not missing, missing
+
+
+# -- enumerators ---------------------------------------------------------------
+#
+# PSS scopes an item by its enum; C puts every enumerator at file scope. The
+# default style prefixes each with its enum's name (`CStylePolicy.enum_item`),
+# and the construct matrix runs two enums with an `A` each. A style may spell
+# items verbatim, and then a clash is refused here, before any file is written.
+
+_TWO_AS = """
+enum dir_e { A, B = 3 }
+enum op_e { A = 7 }
+component pss_top {
+  target function bit[32] f(dir_e d, op_e o) {
+    if (d == A) { return 1; }
+    return 0;
+  }
+  target function void run() { }
+}"""
+
+
+class _Verbatim(CStylePolicy):
+    def enum_item(self, enum_name, item):
+        return item
+
+
+def _check(tmp_path, style):
+    p = tmp_path / "m.pss"
+    p.write_text(th._PRELUDE + _TWO_AS)
+    tgt = targets.get("op-model-c")
+    ctx = driver.translate([str(p)], prelude=tgt.prelude(argparse.Namespace()))
+    model = om.elaborate(ctx, ctx.type_map["pss_top"], tmp_path / "out")
+    s = CSettings(prefix="pss_top", seam_include="pssc_mem_vtable.h")
+    be = COpModelBackend(style)
+    be.prepare(model, s)
+    c_names.check(be, model, s)
+    return be.header_text(model, s)
+
+
+def test_enumerators_are_prefixed_with_their_enum(tmp_path):
+    h = _check(tmp_path, None)
+    assert "DIR_A = 0" in h and "OP_A = 7" in h
+
+
+def test_a_style_whose_enumerators_clash_is_refused(tmp_path):
+    with pytest.raises(CompileError) as ei:
+        _check(tmp_path, _Verbatim())
+    assert ("'A' is both item 'A' of enum 'dir_e' and item 'A' of enum "
+            "'op_e'") in diagnostic_text(ei)

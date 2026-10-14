@@ -52,8 +52,8 @@ def declared_names(backend, model, s) -> List[Tuple[str, str]]:
     from ..reg_layout import reg_maps_for
     from .lower_api_types import c_member_type
     from ..progseq_model import sub_components
-    from .lower_progseq import (_ctor, _operations, _solve_operations, mangle,
-                                 regular_nodes)
+    from .lower_progseq import (CEnums, _ctor, _operations, _solve_operations,
+                                 mangle, regular_nodes)
     from .lower_reg_model import accessor_kinds, c_struct_name, map_type_name
 
     style, prefixes = backend.style, backend.prefixes
@@ -64,10 +64,15 @@ def declared_names(backend, model, s) -> List[Tuple[str, str]]:
     for comp in backend.comps:
         out.append((style.type_name(prefixes.type_name(comp)),
                     f"component type '{_qual(comp)}'"))
-    enums, structs = collect_api_types(backend.comps, model.value_structs,
-                                       model.ctor_names)
+    enums, structs = collect_api_types(
+        backend.comps, model.value_structs, model.ctor_names,
+        type_map=getattr(model.ctx, "type_map", None) or {})
+    spell = CEnums(style)
     for e in enums:
         out.append((c_member_type(e), f"enum '{_qual(e)}'"))
+        for item in e.items:
+            out.append((spell.item(e, item),
+                        f"item '{item}' of enum '{_qual(e)}'"))
     for st in structs:
         if _short(st) != "addr_handle_t":
             out.append((c_struct_name(st), f"struct '{_qual(st)}'"))

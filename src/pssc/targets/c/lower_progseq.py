@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Set
 import zuspec.ir.core as ir
 
 from ..array_literal import is_literal
+from ..enum_names import item_of
 from ..progseq_model import (
     func_kind, FuncKind, field_is_reg_group, _dt_name, CompKind,
     sub_components, channel_fields, array_base_stride, scalar_offset,
@@ -253,6 +254,30 @@ def c_enum_name(enum_dtype) -> str:
     if not n:
         raise ValueError("enum type has no name; cannot emit a C typedef")
     return n
+
+
+class CEnums(object):
+    """How C spells an enum item: the style's enumerator name
+    (`CStylePolicy.enum_item`) for the item the linker resolved
+    (`enum_names.item_of`), never a name looked up from a value."""
+
+    def __init__(self, style=None, type_map=None):
+        self.style = _style(style)
+        self.type_map = type_map or {}
+
+    def item(self, enum_dtype, item: str) -> str:
+        return self.style.enum_item(c_enum_name(enum_dtype), item)
+
+    def constant(self, e) -> Optional[str]:
+        """The enumerator constant *e* is, or None if it is no item."""
+        found = item_of(e, self.type_map)
+        return self.item(*found) if found is not None else None
+
+    def first(self, dtype) -> Optional[str]:
+        """An enum's first item, spelled, when zero-initialisation does not
+        give it (`enum_first_item`); else None."""
+        name = enum_first_item(dtype)
+        return self.item(dtype, name) if name is not None else None
 
 
 def c_type(dtype) -> str:
@@ -548,7 +573,8 @@ def _array_copy(dst: str, src: str, dtype, pad: str,
             + body + [f"{pad}}}"])
 
 
-def _field_defaults(comp, target: str = HANDLE) -> List[str]:
+def _field_defaults(comp, target: str = HANDLE,
+                    enums: Optional[CEnums] = None) -> List[str]:
     """PSS field initializers, as assignments in `_init`.
 
     A default is part of a field's MEANING, not a convenience:
@@ -567,32 +593,35 @@ def _field_defaults(comp, target: str = HANDLE) -> List[str]:
         iv = getattr(f, "initial_value", None)
         if is_literal(iv):
             out += _literal_assigns(f"{target}->{mangle(f.name)}", iv,
-                                    "    ")
+                                    "    ", enums)
             continue
         if iv is not None:
-            out.append(f"    {target}->{mangle(f.name)} = {_const_expr(iv)};")
+            out.append(f"    {target}->{mangle(f.name)} = "
+                       f"{_const_expr(iv, enums)};")
             continue
         # A struct-typed attribute carries its defaults on the STRUCT's fields
         # rather than on the instance, so they have to be walked out member by
         # member -- through nested structs and arrays of them alike.
         out += _default_assigns(f"{target}->{mangle(f.name)}", f.datatype,
-                                "    ")
+                                "    ", enums=enums)
     return out
 
 
-def _literal_assigns(lv: str, lst, pad: str) -> List[str]:
+def _literal_assigns(lv: str, lst, pad: str,
+                     enums: Optional[CEnums] = None) -> List[str]:
     """A field's array initializer, one assignment per element: its elements
     are constants, and `_init` writes into storage the caller owns."""
     out: List[str] = []
     for i, e in enumerate(lst.elts):
         if is_literal(e):
-            out += _literal_assigns(f"{lv}[{i}]", e, pad)
+            out += _literal_assigns(f"{lv}[{i}]", e, pad, enums)
         else:
-            out.append(f"{pad}{lv}[{i}] = {_const_expr(e)};")
+            out.append(f"{pad}{lv}[{i}] = {_const_expr(e, enums)};")
     return out
 
 
-def _default_assigns(lv: str, dtype, pad: str, depth: int = 0) -> List[str]:
+def _default_assigns(lv: str, dtype, pad: str, depth: int = 0,
+                     enums: Optional[CEnums] = None) -> List[str]:
     """Assignments giving ``lv`` (of type ``dtype``) its PSS defaults: one per
     member that declares an initial value, at any depth, and a loop over an
     array whose elements have some. Nothing for a type whose defaults are all
@@ -603,19 +632,19 @@ def _default_assigns(lv: str, dtype, pad: str, depth: int = 0) -> List[str]:
         for sf in getattr(dtype, "fields", []) or []:
             siv = getattr(sf, "initial_value", None)
             if siv is not None:
-                out.append(f"{pad}{lv}.{sf.name} = {_const_expr(siv)};")
+                out.append(f"{pad}{lv}.{sf.name} = {_const_expr(siv, enums)};")
             else:
                 out += _default_assigns(f"{lv}.{sf.name}", sf.datatype, pad,
-                                        depth)
+                                        depth, enums)
         return out
     if cn == _DT_ENUM:
-        first = enum_first_item(dtype)
+        first = (enums or CEnums()).first(dtype)
         return [f"{pad}{lv} = {first};"] if first else []
     if cn == _DT_ARRAY:
         n = _array_size(dtype)
         i = f"i{depth}"
         body = _default_assigns(f"{lv}[{i}]", dtype.element_type,
-                                pad + "    ", depth + 1)
+                                pad + "    ", depth + 1, enums)
         if not body or not n:
             return []
         return ([f"{pad}for (unsigned {i} = 0; {i} < {n}u; {i}++) {{"]
@@ -623,7 +652,7 @@ def _default_assigns(lv: str, dtype, pad: str, depth: int = 0) -> List[str]:
     return []
 
 
-def _default_init(dtype) -> Optional[str]:
+def _default_init(dtype, enums: Optional[CEnums] = None) -> Optional[str]:
     """A C initializer giving a value of ``dtype`` its PSS defaults, or None
     if they are all zero. Designated, so every member it does not name is
     zero (C99 6.7.8): `{.y = 7, .q = {.z = 5}}`."""
@@ -632,26 +661,30 @@ def _default_init(dtype) -> Optional[str]:
         parts = []
         for sf in getattr(dtype, "fields", []) or []:
             siv = getattr(sf, "initial_value", None)
-            sub = (_const_expr(siv) if siv is not None
-                   else _default_init(sf.datatype))
+            sub = (_const_expr(siv, enums) if siv is not None
+                   else _default_init(sf.datatype, enums))
             if sub is not None:
                 parts.append(f".{sf.name} = {sub}")
         return "{" + ", ".join(parts) + "}" if parts else None
     if cn == _DT_ENUM:
-        return enum_first_item(dtype)
+        return (enums or CEnums()).first(dtype)
     if cn == _DT_ARRAY:
         n = _array_size(dtype)
-        sub = _default_init(dtype.element_type)
+        sub = _default_init(dtype.element_type, enums)
         if sub is None or not n:
             return None
         return "{" + ", ".join([sub] * n) + "}"
     return None
 
 
-def _const_expr(e) -> str:
-    """A field initializer, which is a compile-time constant by construction."""
+def _const_expr(e, enums: Optional[CEnums] = None) -> str:
+    """A field initializer, which is a compile-time constant by construction.
+    An enum item is its enumerator when *enums* says how to spell one."""
     cn = _dt_name(e)
     if cn == "ExprConstant":
+        item = enums.constant(e) if enums is not None else None
+        if item is not None:
+            return item
         v = e.value
         if isinstance(v, bool):
             return "1" if v else "0"
@@ -1176,6 +1209,8 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         #: -- a sibling call, a sub-component's `_init` -- so it consults the
         #: same policy rather than rebuilding the name from the prefix.
         self.style = _style(style)
+        #: How an enum item is spelled: the style's enumerator name.
+        self.enums = CEnums(self.style, getattr(ctx, "type_map", None))
         #: `{accessor stem: _Acc}`, from `lower_reg_model.accessor_map`.
         self.accs = dict(accs or {})
         #: Every memory access this body emits goes through here -- register
@@ -1520,6 +1555,9 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
     # -- expressions, one hook per node kind ---------------------------------
 
     def expr_constant(self, e) -> str:
+        item = self.enums.constant(e)
+        if item is not None:
+            return item
         v = e.value
         if isinstance(v, bool):
             return "1" if v else "0"
@@ -1854,7 +1892,7 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
                         + self._array_assign(name, s.value, s.annotation, pad)
                         + tail)
             # Each element its type's default (LRM 8.1); `{0}` zeroes all.
-            init = _default_init(s.annotation) or "{0}"
+            init = _default_init(s.annotation, self.enums) or "{0}"
             return [f"{pad}{decl} = {init};"] + tail
         if getattr(s, "value", None) is not None:
             value = self.convert_to(s.value,
@@ -1864,15 +1902,16 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             # The struct's PSS defaults, every other member (and the reserved
             # and padding bits) zero. C has no default member initializer, so
             # a declaration that said only `{0}` lost `bit[8] y = 7;`.
-            init = _default_init(s.annotation) or "{0}"
+            init = _default_init(s.annotation, self.enums) or "{0}"
             return [f"{pad}{ct} {name} = {init};"] + tail
         if _dt_name(s.annotation) in (_DT_INT, _DT_BOOL, _DT_ENUM,
                                       _DT_CHANDLE):
             # PSS gives a declared variable a value (0, false, an enum's
             # first item); C leaves an automatic one indeterminate.
-            init = _default_init(s.annotation) or "0"
+            init = _default_init(s.annotation, self.enums) or "0"
             if _dt_name(s.annotation) == _DT_ENUM and s.annotation.items:
-                init = next(iter(s.annotation.items))   # the item, even if 0
+                init = self.enums.item(            # the item, even if 0
+                    s.annotation, next(iter(s.annotation.items)))
             return [f"{pad}{ct} {name} = {init};"] + tail
         return [f"{pad}{ct} {name};"] + tail
 
@@ -2388,7 +2427,8 @@ def _lifecycle_impl(node, prefixes, link_style: str, qual: str,
         body.append(f"    {HANDLE}->{BUS} = {BUS};")
     for f in channel_fields(comp):
         body.append(f"    pssc_chan1_init(&{HANDLE}->{mangle(f.name)});")
-    body += _field_defaults(comp)
+    body += _field_defaults(
+        comp, enums=CEnums(style, getattr(be_kw.get("ctx"), "type_map", None)))
     for sub in sub_components(comp):
         sub_construct = sym(prefixes[sub.dtype], "pss_construct")
         fwd = f", {HANDLE}->{BUS}" if link_style == "vtable" else ""

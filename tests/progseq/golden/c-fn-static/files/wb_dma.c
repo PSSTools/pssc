@@ -201,11 +201,11 @@ void wb_dma_ch_init(wb_dma_ch_c *_self, int id, pssc_addr_t bank) {
  *    this operation.
  */
 wb_dma_status_e wb_dma_ch_wait_completion(wb_dma_ch_c *_self) {
-    wb_dma_status_e status = WB_DMA_DONE;
+    wb_dma_status_e status = WB_DMA_STATUS_WB_DMA_DONE;
     uint64_t tok;   /* PSS: uint8_t -- widened: channel try_get output */
     while (1) {
         status = wb_dma_ch_probe_status(_self);
-        if (status != 2) {
+        if (status != WB_DMA_STATUS_WB_DMA_PENDING) {
             break;
         }
         wb_dma_ch_wait_hint(_self);
@@ -304,12 +304,12 @@ wb_dma_status_e wb_dma_ch_transfer_list(wb_dma_ch_c *_self, pssc_addr_t head) {
  * consumes the ERR is not determined by this model -- and for open item §6.5.
  */
 wb_dma_status_e wb_dma_ch_stop_channel(wb_dma_ch_c *_self) {
-    wb_dma_status_e status = WB_DMA_DONE;
+    wb_dma_status_e status = WB_DMA_STATUS_WB_DMA_DONE;
     wb_dma_ch_stop_channel_start(_self);
     /* wait_completion()'s loop, minus the guard release. See above. */
     while (1) {
         status = wb_dma_ch_probe_status(_self);
-        if (status != 2) {
+        if (status != WB_DMA_STATUS_WB_DMA_PENDING) {
             break;
         }
         wb_dma_ch_wait_hint(_self);
@@ -367,14 +367,14 @@ wb_dma_status_e wb_dma_ch_stop_channel(wb_dma_ch_c *_self) {
  *    consumed by whoever broke the rule.
  */
 wb_dma_status_e wb_dma_ch_check_completion(wb_dma_ch_c *_self) {
-    wb_dma_status_e status = WB_DMA_DONE;
+    wb_dma_status_e status = WB_DMA_STATUS_WB_DMA_DONE;
     uint64_t tok;   /* PSS: uint8_t -- widened: channel try_get output */
     if (!(pssc_chan1_try_get(&_self->inflight, &tok))) {
         pssc_message("wb_dma: check_completion() with no operation in progress on this channel -- either no *_start() was called, or a previous completion was already consumed");
-        return 2;
+        return WB_DMA_STATUS_WB_DMA_PENDING;
     }
     status = wb_dma_ch_probe_status(_self);
-    if (status == 2) {
+    if (status == WB_DMA_STATUS_WB_DMA_PENDING) {
         /*
          * Still running: hand the token back. try_put cannot fail -- this
          * is the only holder, and it was just emptied.
@@ -476,12 +476,12 @@ wb_dma_status_e wb_dma_ch_probe_status(wb_dma_ch_c *_self) {
     wb_dma_csr_s csr = {0};
     csr = wb_dma_ch_regs_csr_read(_self);
     if (csr.err == 1) {
-        return 1;
+        return WB_DMA_STATUS_WB_DMA_ERROR;
     }
     if (csr.done == 1) {
-        return 0;
+        return WB_DMA_STATUS_WB_DMA_DONE;
     }
-    return 2;
+    return WB_DMA_STATUS_WB_DMA_PENDING;
 }
 
 /*
@@ -799,10 +799,10 @@ void wb_dma_configure_interrupt_routing(wb_dma_c *_self, wb_dma_int_bank_e bank,
     wb_dma_intmsk_s vec = {0};
     vec.ch = channel_mask;
     switch (bank) {
-    case 0:
+    case WB_DMA_INT_BANK_WB_DMA_INT_A:
         wb_dma_regs_int_msk_a_write(_self, vec);
         break;
-    case 1:
+    case WB_DMA_INT_BANK_WB_DMA_INT_B:
         wb_dma_regs_int_msk_b_write(_self, vec);
         break;
     default:
