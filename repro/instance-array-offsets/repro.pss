@@ -1,0 +1,30 @@
+import addr_reg_pkg::*;
+
+struct ctl_s : packed_s<> { bit[1] en; bit[31] _r; }
+
+pure component blk_c : reg_group_c {
+    reg_c<ctl_s, READWRITE, 32> CTL;
+    pure function bit[64] get_offset_of_instance(string name) {
+        if (name == "CTL") { return 0x0; }
+        return 0xFFFF_FFFF_FFFF_FFFF;
+    }
+}
+
+pure component top_c : reg_group_c {
+    blk_c blk[2];
+    pure function bit[64] get_offset_of_instance_array(string name, int index) {
+        if (name == "blk" && index == 0) {
+            return 0x100;
+        } else if (name == "blk" && index == 1) {
+            return 0x200;
+        }
+        return 0xFFFF_FFFF_FFFF_FFFF;
+    }
+}
+
+component dev_c {
+    top_c regs;
+    export target function go;
+    solve function void initialize(addr_handle_t base) { regs.set_handle(base); }
+    target function void go(int i) { regs.blk[i].CTL.write_val(1); }
+}
