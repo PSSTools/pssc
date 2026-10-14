@@ -97,9 +97,13 @@ def _on(targets, why):
 #: `initialize` call (`_sub_storage`), and it is `None` until then.
 _PY_LAZY_SUB = "py: a sub-component with a constructor is None until called"
 
-#: C++ and SV put an enum's items in the enclosing scope, so two enums with
+#: SV puts an enum's items in the enclosing scope, so two enums with
 #: an item of one name do not compile (enum-handling-review.md D3).
 _ENUM_SCOPE = "enum items are not scoped by their enum (D3)"
+
+#: op-model-sv reads an enum field of a packed value as its `bit[N]` member,
+#: which SV converts to the enum only by a cast.
+_SV_ENUM_FIELD = "sv: an enum field of a packed value is read without a cast"
 
 
 CASES = {
@@ -964,7 +968,34 @@ component pss_top {""" + _ONE + """
     message(LOW, "%n %n", d, o);
   }
 }""", ["write 32 0x1004 0x7", "write 32 0x1004 0x1", "A A"],
-        xfail=_on(["cpp", "sv"], _ENUM_SCOPE)),
+        xfail=_on(["sv"], _ENUM_SCOPE)),
+
+    # An enum field of a register value is held as an integer where the
+    # language's enums are scoped (a C++ bitfield): read into an enum, compared
+    # with an item, and written back from an enum local.
+    "an enum field of a register value read back": Case("""
+enum e2_e : bit[2] { Z0, Z1, Z2, Z3 }
+struct fld_s : packed_s<> { bit[1] lo; e2_e mode; bit[29] hi; }
+pure component ge_c : reg_group_c {
+  reg_c<fld_s, READWRITE, 32> F;
+  function bit[64] get_offset_of_instance(string name) {
+    match (name) { ["F"]: return 0x0; }
+    return 0xFFFFFFFFFFFFFFFF;
+  }
+}
+component pss_top {
+  ge_c a;
+  solve function void initialize(addr_handle_t base) { a.set_handle(base); }
+  target function void run() {
+    fld_s v = a.F.read();
+    e2_e m = v.mode;
+    if (v.mode == Z1 && m == Z1) { m = Z3; }
+    v.mode = m;
+    a.F.write(v);
+    message(LOW, "%n %d", v.mode, v.mode);
+  }
+}""", ["read 32 0x1000 0x2", "write 32 0x1000 0x6", "Z3 3"],
+        mem={0x1000: 0x2}, xfail={"sv": _SV_ENUM_FIELD}),
 
     # An initializer has the array's element count (8.1), at every level.
     "an array initializer of the wrong size": Case("""

@@ -102,7 +102,8 @@ def generate(model, namespace: str, *,
     # The register value structs are emitted by the register model; the API
     # types pass must not emit them a second time.
     api_types = lower_api_types(comps, model.value_structs,
-                                model.ctor_names)
+                                model.ctor_names,
+                                getattr(model.ctx, "type_map", None))
     import_api = emit_import_api(imports, namespace,
                                  yield_mode=yield_mode)
     components = lower_components(model, names, namespace, imports=imports,

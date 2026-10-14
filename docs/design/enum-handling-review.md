@@ -233,7 +233,18 @@ output change, reviewed in the same commit.
    construct case now passes on C. `--prefix-map` does not rename enum
    items, since it does not rename enum types either.
 5. **C++: `enum class`** (or prefix, per your choice), then delete the
-   value-recovery code (D3-C++, D5).
+   value-recovery code (D3-C++, D5). **DONE.** `enum class E : int`, and an
+   item is `E::ITEM` (`cpp_enum_item`, from `ref`). The value lookups in
+   `_coerce` and `_cpp_const` are gone. `_coerce` and `_binop` decide from
+   `ExprTypes`, and an enum leaf of integer arithmetic is
+   `static_cast<std::int32_t>` (`int_leaf_text`). An enum field of a
+   register value struct is an unsigned bitfield in C++, so it is converted
+   both ways (`_enum_type`/`_int_storage`). Golden `cpp-virtual` was
+   regenerated, and `tests/progseq/data/cpp/op_model_tb.cpp` updated. The
+   two-enum case passes on C++. A new construct case, "an enum field of a
+   register value read back", passes on c, cpp and py. On sv it is a strict
+   xfail: SV reads the packed `bit[1:0]` member into an enum without a cast.
+   That is an existing SV gap, which step 6 takes up.
 6. **SV: prefix**, plus the pre-write collision check (D3-SV).
 7. **Manifest enums** (D7). Update `docs/op-model-manifest.md`.
 8. **Enum base type** in declarations and `ExprTypes` (D6). This can wait.

@@ -108,23 +108,23 @@ private:
 };
 
 // ----- Data types used by the export API. -----
-enum wb_dma_int_bank_e : int {
+enum class wb_dma_int_bank_e : int {
     WB_DMA_INT_A = 0,
     WB_DMA_INT_B = 1
 };
 
-enum wb_dma_status_e : int {
+enum class wb_dma_status_e : int {
     WB_DMA_DONE = 0,
     WB_DMA_ERROR = 1,
     WB_DMA_PENDING = 2
 };
 
-enum wb_dma_if_e : int {
+enum class wb_dma_if_e : int {
     WB_DMA_IF0 = 0,
     WB_DMA_IF1 = 1
 };
 
-enum wb_dma_mode_e : int {
+enum class wb_dma_mode_e : int {
     WB_DMA_SOFTWARE = 0,
     WB_DMA_HW_HANDSHAKE = 1
 };
@@ -883,7 +883,7 @@ public:
         bool tok{};
         while (true) {
             status = this->probe_status();
-            if (status != WB_DMA_PENDING) {
+            if (status != wb_dma_status_e::WB_DMA_PENDING) {
                 break;
             }
             this->wait_hint();
@@ -985,7 +985,7 @@ public:
         // wait_completion()'s loop, minus the guard release. See above.
         while (true) {
             status = this->probe_status();
-            if (status != WB_DMA_PENDING) {
+            if (status != wb_dma_status_e::WB_DMA_PENDING) {
                 break;
             }
             this->wait_hint();
@@ -1047,10 +1047,10 @@ public:
         bool tok{};
         if (!(this->inflight.try_get(tok))) {
             pssc::message("wb_dma: check_completion() with no operation in progress on this channel -- either no *_start() was called, or a previous completion was already consumed");
-            return WB_DMA_PENDING;
+            return wb_dma_status_e::WB_DMA_PENDING;
         }
         status = this->probe_status();
-        if (status == WB_DMA_PENDING) {
+        if (status == wb_dma_status_e::WB_DMA_PENDING) {
             // Still running: hand the token back. try_put cannot fail -- this
             // is the only holder, and it was just emptied.
             this->inflight.try_put(tok);
@@ -1091,11 +1091,11 @@ public:
         // CH_EN is what arms the channel, so it must not ride along with the
         // configuration write.
         csr.ch_en = 0;
-        csr.src_sel = (cfg.src_if & 0x1);
-        csr.dst_sel = (cfg.dst_if & 0x1);
+        csr.src_sel = ((static_cast<std::int32_t>(cfg.src_if)) & 0x1);
+        csr.dst_sel = ((static_cast<std::int32_t>(cfg.dst_if)) & 0x1);
         csr.inc_src = cfg.inc_src;
         csr.inc_dst = cfg.inc_dst;
-        csr.mode = (cfg.mode & 0x1);
+        csr.mode = ((static_cast<std::int32_t>(cfg.mode)) & 0x1);
         csr.prio = cfg.prio;
         csr.sz_wb = cfg.sz_wb;
         // Capability-gated. Hardware silently ignores these on a channel built
@@ -1146,12 +1146,12 @@ public:
         wb_dma_csr_s csr{};
         csr = this->regs.csr.read();
         if (csr.err == 1) {
-            return WB_DMA_ERROR;
+            return wb_dma_status_e::WB_DMA_ERROR;
         }
         if (csr.done == 1) {
-            return WB_DMA_DONE;
+            return wb_dma_status_e::WB_DMA_DONE;
         }
-        return WB_DMA_PENDING;
+        return wb_dma_status_e::WB_DMA_PENDING;
     }
 
     /**
@@ -1482,10 +1482,10 @@ public:
         wb_dma_intmsk_s vec{};
         vec.ch = channel_mask;
         switch (bank) {
-        case 0:
+        case wb_dma_int_bank_e::WB_DMA_INT_A:
             this->regs.int_msk_a.write(vec);
             break;
-        case 1:
+        case wb_dma_int_bank_e::WB_DMA_INT_B:
             this->regs.int_msk_b.write(vec);
             break;
         default:

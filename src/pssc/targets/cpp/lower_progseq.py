@@ -37,7 +37,6 @@ from ..body_walker import match_values
 from ..comments import LINE, append_trailing, blank_line, comment_lines, doc_block
 from ..array_literal import is_literal
 from ..progseq_model import (
-    enum_first_item,
     func_kind, FuncKind, field_is_reg_group, _dt_name, channel_fields,
     sub_components, array_base_stride, scalar_offset,
 )
@@ -188,7 +187,8 @@ def _array_init(dtype) -> str:
             if sub is None:
                 return None
             return "{{" + ", ".join([sub] * _array_size(dt)) + "}}"
-        return enum_first_item(dt)
+        from .lower_api_types import cpp_first_item
+        return cpp_first_item(dt)
     return init(dtype) or "{}"
 
 
@@ -323,8 +323,11 @@ class _BodyEmitter(CIntSemantics):
     def __init__(self, fn, comp, names, *, imports=None,
                  yield_mode: str = "none", match_default: str = "message",
                  message_style: str = "import", cls: str = "",
-                 ctor_names=None, ctx=None):
+                 ctor_names=None, ctx=None, value_structs=()):
         self.fn = fn
+        #: Register value structs: C++ bitfields of unsigned integers, so an
+        #: enum field of one is held as an integer (`_enum_type`).
+        self.value_structs = {id(v) for v in value_structs}
         #: The compile context, for `ExprTypes`.
         self.ctx = ctx
         #: `IntSemantics`' per-root final types.
@@ -378,18 +381,13 @@ class _BodyEmitter(CIntSemantics):
         for f in dc.fields(node):
             self._scan_locals(getattr(node, f.name, None))
 
-    # -- enum coercion ------------------------------------------------------
+    # -- enum conversion ----------------------------------------------------
     #
-    # PSS ENUMERATORS DO NOT SURVIVE INTO THE IR. `return PENDING` arrives here
-    # as `ExprConstant(2)`, its name and its type both folded away. C converts
-    # int to enum implicitly, so the C backend never had to notice; C++ does not,
-    # so an uncoerced `return 2;` from a function returning an enum is a hard
-    # compile error -- which is how this was found, and is the good case.
-    #
-    # The recovery is to look the value back up in the enum's own table and emit
-    # the NAME, which restores what the model wrote. A value with no matching
-    # enumerator (arithmetic on an encoding, say) falls back to a `static_cast`,
-    # which states the conversion rather than performing it silently.
+    # A PSS enum is an `enum class`, which C++ converts to and from an integer
+    # only when told. An item keeps its name and its type through the IR
+    # (`ExprConstant.ref`, typed by `ExprTypes`), so it is written as the item;
+    # an integer where an enum is expected is a `static_cast` to it, and an
+    # enum operand of integer arithmetic a `static_cast` to `int`.
 
     @property
     def types(self):
@@ -418,6 +416,10 @@ class _BodyEmitter(CIntSemantics):
         if s.width == 1 and _c_carrier(s, t.as_int()) is None \
                 and e is not getattr(self, "_int_root_e", None):
             return self.int_cast_text("std::uint32_t", self.expr(e), True)
+        own = self.types.type_of(e)
+        if own is not None and own.kind == "enum":
+            # An `enum class` takes part in no arithmetic until converted.
+            return self.int_cast_text("std::int32_t", self.expr(e), True)
         return CIntSemantics.int_leaf_text(self, e, s, t)
 
     def _expr_type(self, e):
@@ -475,18 +477,29 @@ class _BodyEmitter(CIntSemantics):
         s = self.expr(e)
         if dtype is None or _dt_name(dtype) != _DT_ENUM:
             return s
-        actual = self._expr_type(e)
-        if actual is not None and _dt_name(actual) == _DT_ENUM and \
-                _strip_pkg(getattr(actual, "name", "")) == \
+        t = self._enum_type(e)
+        if t is not None and _strip_pkg(getattr(t.dtype, "name", "")) == \
                 _strip_pkg(getattr(dtype, "name", "")):
             return s
-        if _dt_name(e) == "ExprConstant" and isinstance(e.value, int) and \
-                not isinstance(e.value, bool):
-            for name, value in (getattr(dtype, "items", None) or {}).items():
-                if value == e.value:
-                    return name
         from .lower_api_types import cpp_enum_name
         return f"static_cast<{cpp_enum_name(dtype)}>({s})"
+
+    def _enum_type(self, e):
+        """*e*'s enum type, if it is held as one in C++; else None.
+
+        An enum field of a register value struct is PSS-typed as its enum
+        but held in an unsigned bitfield, so it is converted both ways."""
+        t = self.types.type_of(e)
+        if t is None or t.kind != "enum" or self._int_storage(e):
+            return None
+        return t
+
+    def _int_storage(self, e) -> bool:
+        if _dt_name(e) != "ExprAttribute":
+            return False
+        base = self.types.type_of(e.value)
+        return (base is not None and base.kind == "struct"
+                and id(self.types.resolve(base.dtype)) in self.value_structs)
 
     def _callee(self, call):
         """The `Function` a call resolves to, or ``None``.
@@ -850,22 +863,17 @@ class _BodyEmitter(CIntSemantics):
                               "Gt", "GtE", "Ge"})
 
     def _binop(self, e, op: str) -> str:
-        """`status != PENDING` -- with the enumerator, not with `2`.
-
-        The IR folded the enumerator to an integer, so the naive rendering is
-        `status != 2`, which compiles (an unscoped enum promotes to int) and
-        says nothing. Where one side of a comparison is enum-typed, the other
-        is rendered in that type, which recovers the name the model wrote.
-        """
+        """A comparison with an enum on one side only (`status != x`, `x` an
+        integer) compares in the enum's type: an `enum class` compares with
+        nothing else."""
         lhs, rhs = e.lhs, e.rhs
         if e.op.name in self._COMPARISONS:
-            lt, rt = self._expr_type(lhs), self._expr_type(rhs)
-            lt_is = lt is not None and _dt_name(lt) == _DT_ENUM
-            rt_is = rt is not None and _dt_name(rt) == _DT_ENUM
+            lt, rt = self._enum_type(lhs), self._enum_type(rhs)
+            lt_is, rt_is = lt is not None, rt is not None
             if lt_is and not rt_is:
-                return f"{self._operand(lhs)} {op} {self._coerce(rhs, lt)}"
+                return f"{self._operand(lhs)} {op} {self._coerce(rhs, lt.dtype)}"
             if rt_is and not lt_is:
-                return f"{self._coerce(lhs, rt)} {op} {self._operand(rhs)}"
+                return f"{self._coerce(lhs, rt.dtype)} {op} {self._operand(rhs)}"
         return f"{self._operand(lhs)} {op} {self._operand(rhs)}"
 
     def _operand(self, e) -> str:
@@ -881,6 +889,10 @@ class _BodyEmitter(CIntSemantics):
     def expr(self, e) -> str:
         cn = _dt_name(e)
         if cn == "ExprConstant":
+            from .lower_api_types import cpp_enum_constant
+            item = cpp_enum_constant(e, self.types._tm)
+            if item is not None:
+                return item
             v = e.value
             if isinstance(v, bool):
                 return "true" if v else "false"
@@ -989,7 +1001,11 @@ class _BodyEmitter(CIntSemantics):
                 value = c_select_write(sel, self.expr, s.value,
                                        getattr(self.fn, "name", "?"))
                 return [f"{pad}{self.expr(sel.base)} = {value};"]
-            value = self._coerce(s.value, self._expr_type(tgt))
+            if self._int_storage(tgt) and self._enum_type(s.value) is not None:
+                # An enum into a register value field: its integer value.
+                value = f"static_cast<std::int32_t>({self.expr(s.value)})"
+            else:
+                value = self._coerce(s.value, self._expr_type(tgt))
             return [f"{pad}{self.expr(tgt)} = {value};"]
         if cn == "StmtAugAssign":
             op = _BINOP.get(s.op.name)
@@ -1057,7 +1073,8 @@ class _BodyEmitter(CIntSemantics):
         # Value-initialised rather than left indeterminate. PSS gives a
         # declared variable a defined value; C++ does not, and the difference
         # is a read of stack garbage that behaves differently under -O2.
-        first = enum_first_item(s.annotation)
+        from .lower_api_types import cpp_first_item
+        first = cpp_first_item(s.annotation)
         if first is not None:
             # An enum starts at its first item (7.5), which need not be 0.
             return [f"{pad}{ct} {name} = {first};"] + tail
@@ -1394,7 +1411,8 @@ def _data_member(f) -> str:
                 f"array member '{f.name}' has no folded size; the generated "
                 f"member needs a bound.")
         return f"{cpp_type(dt)} {mangle(f.name)}{_array_init(dt)};"
-    first = enum_first_item(dt)
+    from .lower_api_types import cpp_first_item
+    first = cpp_first_item(dt)
     if first is not None:
         # An enum starts at its first item (7.5), which need not be 0.
         return f"{cpp_type(dt)} {mangle(f.name)} = {first};"
@@ -1517,7 +1535,8 @@ def emit_component(node, names, ns: str, *, imports=None, is_root: bool,
                                    is_root=is_root, parents=parents,
                                    ctor_names=ctor_names, **be_kw)
     be_kw = dict(be_kw, imports=imports, ctor_names=ctor_names,
-                 ctx=getattr(model, "ctx", None))
+                 ctx=getattr(model, "ctx", None),
+                 value_structs=getattr(model, "value_structs", ()))
     comp = node.dtype
     cls = names[comp]
     ctor = _ctor(comp, ctor_names)
@@ -1646,7 +1665,8 @@ def emit_hier_component(node, names, ns: str, model, *, imports=None,
     interface through its base class, and its own, which extends that one.
     """
     be_kw = dict(be_kw, imports=imports, ctor_names=ctor_names,
-                 ctx=getattr(model, "ctx", None))
+                 ctx=getattr(model, "ctx", None),
+                 value_structs=getattr(model, "value_structs", ()))
     comp = node.dtype
     cls = names[comp]
     base, own_fields, own_fns = _declared(model, comp)

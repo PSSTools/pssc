@@ -13,6 +13,9 @@ from __future__ import annotations
 
 from typing import List
 
+from typing import Optional
+
+from ..enum_names import item_of
 from ..progseq_model import _dt_name, enum_first_item
 from ..sv.lower_api_types import collect_api_types, _strip_pkg
 from ..c.lower_reg_model import c_struct_name
@@ -27,30 +30,46 @@ def cpp_enum_name(enum_dtype) -> str:
     return _strip_pkg(enum_dtype.name)
 
 
-def emit_enum(enum_dtype) -> str:
-    """An UNSCOPED enum with an explicit underlying type and explicit values.
+def cpp_enum_item(enum_dtype, item: str) -> str:
+    """An item, scoped by its enum as in PSS (7.5): `wb_dma_status_e::DONE`."""
+    from .lower_progseq import mangle
+    return f"{cpp_enum_name(enum_dtype)}::{mangle(item)}"
 
-    Unscoped, and this is the one place the C++ output deliberately declines
-    the more modern spelling. A PSS enum IS an integer: the model compares one
-    against an integer expression, casts one to a register field, and switches
-    on a subject that arrives as a raw value from a register read. Under `enum
-    class` every one of those becomes a `static_cast` the generator would have
-    to insert, and the generator would have to decide at each use site whether
-    the operand is meant as the enum or as its value -- a judgement it cannot
-    make from the IR, and one it would get wrong silently in exactly the places
-    that matter (a field encoding).
+
+def cpp_enum_constant(e, type_map) -> Optional[str]:
+    """The item the folded constant *e* is (`enum_names.item_of`), spelled;
+    None if it is no item."""
+    found = item_of(e, type_map)
+    return cpp_enum_item(*found) if found is not None else None
+
+
+def cpp_first_item(dtype) -> Optional[str]:
+    """An enum's first item, spelled, when value-initialisation does not give
+    it (`enum_first_item`); else None."""
+    name = enum_first_item(dtype)
+    return cpp_enum_item(dtype, name) if name is not None else None
+
+
+def emit_enum(enum_dtype) -> str:
+    """A SCOPED enum (`enum class`) with an explicit underlying type and
+    explicit values.
+
+    Scoped because PSS scopes an item by its enum (7.5): two enums may each
+    have an `A`, and unscoped C++ enumerators would be two declarations of one
+    name. An item is written `op_e::A`, as PSS writes `op_e::A`. Every place a
+    PSS enum is used as an integer -- arithmetic, a cast, a register field --
+    is known from `ExprTypes`, which types a folded item as its enum, and
+    states its conversion.
 
     EXPLICIT VALUES for the same reason as in C: the numbers are register field
     encodings and cross-language contract. Implicit numbering would reproduce
     them today and renumber them the day someone reorders the PSS declaration.
-
-    An explicit underlying type is what unscoped enums lack by default -- the
-    size would otherwise be implementation-defined, which matters as soon as
-    one appears in a struct that is memcpy'd.
     """
+    from .lower_progseq import mangle
     name = cpp_enum_name(enum_dtype)
-    items = ",\n".join(f"    {k} = {v}" for k, v in enum_dtype.items.items())
-    return f"enum {name} : int {{\n{items}\n}};"
+    items = ",\n".join(f"    {mangle(k)} = {v}"
+                        for k, v in enum_dtype.items.items())
+    return f"enum class {name} : int {{\n{items}\n}};"
 
 
 def cpp_member_type(dtype) -> str:
@@ -79,23 +98,22 @@ def cpp_member_type(dtype) -> str:
     raise ValueError(f"unsupported C++ struct member type {cn}")
 
 
-def _cpp_const(e, dtype=None) -> str:
+def _cpp_const(e, dtype=None, type_map=None) -> str:
     """A member's initial value, a constant by construction (as in C).
 
-    An enum item reaches here folded to its value, and C++ converts no int
-    to an enum implicitly, so it is spelled as the item that has it."""
+    An enum item is spelled as the item the linker resolved."""
     if _dt_name(e) == "ExprConstant" and isinstance(e.value, bool):
         return "true" if e.value else "false"
+    item = cpp_enum_constant(e, type_map)
+    if item is not None:
+        return item
     if _dt_name(e) == "ExprConstant" and _dt_name(dtype) == _DT_ENUM:
-        for k, v in dtype.items.items():
-            if int(v) == int(e.value):
-                return k
         return f"static_cast<{cpp_enum_name(dtype)}>({e.value})"
     from ..c.lower_progseq import _const_expr
     return _const_expr(e)
 
 
-def emit_struct(struct_dtype) -> str:
+def emit_struct(struct_dtype, type_map=None) -> str:
     """A plain struct, in DECLARATION order, every member initialised.
 
     A default member initializer on every member rather than a constructor: a
@@ -113,20 +131,21 @@ def emit_struct(struct_dtype) -> str:
         # another struct -- not only a component's field.
         iv = getattr(f, "initial_value", None)
         if iv is not None:
-            init = _cpp_const(iv, f.datatype)
+            init = _cpp_const(iv, f.datatype, type_map)
         else:
             # An enum starts at its first item (7.5), which need not be 0.
-            init = enum_first_item(f.datatype) or "{}"
+            init = cpp_first_item(f.datatype) or "{}"
         lines.append(f"    {cpp_member_type(f.datatype)} {f.name} = {init};")
     lines.append("};")
     return "\n".join(lines)
 
 
 def lower_api_types(components, reg_value_structs=(),
-                    ctor_names=None) -> str:
-    """Header text for the enums and structs the API mentions."""
+                    ctor_names=None, type_map=None) -> str:
+    """Header text for the enums and structs the API mentions, and every
+    enum whose item a body writes (see `collect_api_types`)."""
     enums, structs = collect_api_types(components, reg_value_structs,
-                                       ctor_names)
+                                       ctor_names, type_map=type_map or {})
     if not enums and not structs:
         return ""
     parts: List[str] = ["// ----- Data types used by the export API. -----"]
@@ -134,6 +153,6 @@ def lower_api_types(components, reg_value_structs=(),
         parts.append(emit_enum(e))
         parts.append("")
     for s in structs:
-        parts.append(emit_struct(s))
+        parts.append(emit_struct(s, type_map))
         parts.append("")
     return "\n".join(parts).rstrip()

@@ -326,18 +326,19 @@ them (`sv/constants.py`): an item of an enum the package declares by its
 name, a `static const` as a `localparam` under its PSS name, qualified with
 its scope only on a clash. Which constants are declared is found by
 rendering the package once with a recording table
-(`SvOpModelBackend.constants`), so only what the code references is. C++
-still spells the value.
+(`SvOpModelBackend.constants`), so only what the code references is.
 
 **An enum item is spelled by name** (review and plan:
 `docs/design/enum-handling-review.md`). `targets/enum_names.py` (`item_of`)
 is the one reader of an item's `ref`, and `ExprTypes` types an item as its
 enum, never `int`; never recover a name from a value (two items may share
 one). PSS scopes an item by its enum, so Python emits each enum as a
-namespace class (`wb_dma_status_e.WB_DMA_DONE`), and C prefixes it by style
+namespace class (`wb_dma_status_e.WB_DMA_DONE`), C prefixes it by style
 policy (`CStylePolicy.enum_item`: `WB_DMA_STATUS_WB_DMA_DONE`), with every
-enumerator gathered by `c_names`; SV is to prefix too and C++ to use
-`enum class`. An enum whose item a body writes is declared whatever names
+enumerator gathered by `c_names`, and C++ declares an `enum class`
+(`wb_dma_status_e::WB_DMA_DONE`), casting where PSS uses an enum as an
+integer -- including an enum field of a register value, which C++ holds in
+an unsigned bitfield. SV is to prefix too. An enum whose item a body writes is declared whatever names
 its type (`collect_api_types(type_map=...)`, `written_enums`).
 
 Python binds each register GROUP's base separately (`naming.group_base`,

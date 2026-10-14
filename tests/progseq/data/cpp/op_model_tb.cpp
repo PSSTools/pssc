@@ -86,7 +86,7 @@ static void case_transfer_on_channel_2(mock_bus &bus)
 
     wb_dma::wb_dma_status_e st = dma->ch(CH).transfer_single(cfg);
 
-    CHECK(st == wb_dma::WB_DMA_DONE,
+    CHECK(st == wb_dma::wb_dma_status_e::WB_DMA_DONE,
           "transfer_single returned %d, expected DONE", int(st));
 
     CHECK(om_n_writes(&mock, om_ch_reg(&mock, CH, R_ADR0)) >= 1,
@@ -149,7 +149,7 @@ static void case_stop_is_an_error(mock_bus &bus)
     dma->ch(CH).transfer_single_start(cfg);
     wb_dma::wb_dma_status_e st = dma->ch(CH).stop_channel();
 
-    CHECK(st == wb_dma::WB_DMA_ERROR,
+    CHECK(st == wb_dma::wb_dma_status_e::WB_DMA_ERROR,
           "stop_channel returned %d, expected ERROR -- the device sets ERR on "
           "a STOP write and the contract carries that verbatim", int(st));
     CHECK((om_last_write(&mock, om_ch_reg(&mock, CH, R_CSR)) & OM_CSR_STOP) != 0,

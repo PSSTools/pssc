@@ -164,8 +164,10 @@ def test_the_factory_returns_the_interface(h):
 
 def test_enums_reach_the_api(h):
     """The gap that stopped this backend generating the model at all: an
-    operation takes an enum-typed argument and `cpp_type` had no arm for it."""
-    assert_cpp(h, has=["enum wb_dma_int_bank_e : int {", "WB_DMA_INT_A = 0"])
+    operation takes an enum-typed argument and `cpp_type` had no arm for it.
+    Scoped, as PSS scopes an item by its enum (7.5)."""
+    assert_cpp(h, has=["enum class wb_dma_int_bank_e : int {",
+                       "WB_DMA_INT_A = 0"])
 
 
 def test_enum_values_are_explicit(h):
@@ -176,11 +178,10 @@ def test_enum_values_are_explicit(h):
 
 
 def test_an_enumerator_survives_into_a_return(h):
-    """PSS enumerators fold to plain integers in the IR, and C++ -- unlike C --
-    has no implicit int-to-enum conversion, so `return 2;` from a function
-    returning an enum does not compile. The value is looked back up in the
-    enum's own table, which also restores what the model wrote."""
-    assert_cpp(h, has=["return WB_DMA_PENDING;", "return WB_DMA_ERROR;"],
+    """An item is written as the item the model wrote -- the one the linker
+    resolved (`ExprConstant.ref`), never one looked up by its value."""
+    assert_cpp(h, has=["return wb_dma_status_e::WB_DMA_PENDING;",
+                       "return wb_dma_status_e::WB_DMA_ERROR;"],
                has_not=["return 2;"], code=True)
 
 
@@ -347,11 +348,6 @@ def test_yield_import_declares_the_hook_on_the_seam(tmp_path):
 
 
 def test_an_enumerator_survives_into_a_comparison(h):
-    """`status != PENDING`, not `status != 2`.
-
-    The naive rendering compiles -- an unscoped enum promotes to int -- and
-    says nothing. Where one side of a comparison is enum-typed, the other is
-    rendered in that type, which recovers the name the model wrote.
-    """
-    assert_cpp(h, has=["if (status != WB_DMA_PENDING) {"],
+    """`status != PENDING`, not `status != 2`: the item, by name."""
+    assert_cpp(h, has=["if (status != wb_dma_status_e::WB_DMA_PENDING) {"],
                has_not=["status != 2", "status == 2"], code=True)
