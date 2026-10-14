@@ -1,6 +1,6 @@
 """PSS string formatting (LRM 21.1.1) for the generated Python module.
 
-ONE source, used twice. The generator imports `parse_format` to check a
+ONE source, used twice. The generators import `check_args` to check a
 `message()` format when it is lowered -- a bad `%`, a count mismatch or a
 specifier the argument's type cannot take is a build error, not a run-time one.
 And the text between the two `# ---- inline` markers is copied into every
@@ -132,6 +132,36 @@ def _pss_fmt(fmt, *args):
 def parse_format(fmt: str):
     """The specifiers of ``fmt``; raises ValueError for LRM 21.1.1 rule a)."""
     return _pss_parse(fmt)
+
+
+def check_args(name: str, fmt: str, vals, type_of):
+    """``[(spec, PssType)]`` for ``name(fmt, *vals)``, LRM 21.1.1 a)-c)
+    checked: the format parses, there is one argument per specifier, and each
+    argument's type is one its conversion can print. ``type_of`` gives an
+    argument's `PssType` (or None). Raises ValueError naming the call."""
+    try:
+        specs = _pss_parse(fmt)
+    except ValueError as e:
+        raise ValueError(f"{name}({fmt!r}): {e} (LRM 21.1.1 a)") from None
+    if len(specs) != len(vals):
+        raise ValueError(
+            f"{name}({fmt!r}): {len(specs)} format specifier(s) for "
+            f"{len(vals)} argument(s) (LRM 21.1.1 b)")
+    out = []
+    for k, (spec, v) in enumerate(zip(specs, vals), 1):
+        conv, t = spec[5], type_of(v)
+        where = f"{name}({fmt!r}), argument {k}"
+        if t is None:
+            raise ValueError(
+                f"{where}: cannot determine its PSS type, which %{conv} needs "
+                f"to print it")
+        ok = {"n": ("bool", "enum"), "s": ("string",)}.get(
+            conv, ("int", "bool", "enum"))
+        if t.kind not in ok:
+            raise ValueError(
+                f"{where}: %{conv} cannot format a {t.kind} (LRM 21.1.1 c)")
+        out.append((spec, t))
+    return out
 
 
 def inline_source() -> str:

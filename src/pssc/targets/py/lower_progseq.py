@@ -61,7 +61,7 @@ from ..expr_types import (CONTEXT_BINARY, CONTEXT_UNARY, LEFT_TYPED,
                           INT, RELATIONAL, ExprTypes, PssType, is_integral)
 from . import pss_int
 from .lower_reg_model import accessor_map, value_class_name
-from .pss_format import parse_format
+from .pss_format import check_args
 from .naming import (CTOR_METHOD, DEFAULT_EXECUTOR, EXECUTOR_ATTR,
                      IMPORTS_ATTR, class_name, group_base, init_kind_method,
                      mangle, reg_symbol)
@@ -1230,34 +1230,16 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
                 f"{_dt_name(fmt_e)}")
         if "%" not in fmt and not vals:
             return f"self.{IMPORTS_ATTR}.message({self.expr(fmt_e)})"
-        try:
-            specs = parse_format(fmt)
-        except ValueError as e:
-            raise ValueError(f"{name}({fmt!r}): {e} (LRM 21.1.1 a)") from None
-        if len(specs) != len(vals):
-            raise ValueError(
-                f"{name}({fmt!r}): {len(specs)} format specifier(s) for "
-                f"{len(vals)} argument(s) (LRM 21.1.1 b)")
         parts = [self.expr(fmt_e)]
-        for k, (spec, v) in enumerate(zip(specs, vals), 1):
-            parts.append(f"({self.expr(v)}, "
-                         f"{self._fmt_type(name, fmt, k, spec[5], v)})")
+        for (spec, t), v in zip(check_args(name, fmt, vals, self.types.type_of),
+                                vals):
+            parts.append(f"({self.expr(v)}, {self._fmt_type(t)})")
         return (f"self.{IMPORTS_ATTR}.message(_pss_fmt("
                 + ", ".join(parts) + "))")
 
-    def _fmt_type(self, name, fmt, k, conv, v) -> str:
-        """The `_pss_fmt` type tag of argument ``k``; LRM 21.1.1 c) checked."""
-        t = self.types.type_of(v)
-        where = f"{name}({fmt!r}), argument {k}"
-        if t is None:
-            raise ValueError(
-                f"{where}: cannot determine its PSS type, which %{conv} needs "
-                f"to print it")
-        ok = {"n": ("bool", "enum"), "s": ("string",)}.get(
-            conv, ("int", "bool", "enum"))
-        if t.kind not in ok:
-            raise ValueError(
-                f"{where}: %{conv} cannot format a {t.kind} (LRM 21.1.1 c)")
+    @staticmethod
+    def _fmt_type(t) -> str:
+        """The `_pss_fmt` type tag of a checked argument of type ``t``."""
         if t.kind == "bool":
             return '("b",)'
         if t.kind == "string":

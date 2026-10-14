@@ -1752,8 +1752,20 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         # message(verbosity, fmt, args...) -- the verbosity has no C analogue
         # and is dropped, exactly as the SV projection drops it.
         rest = args[1:] if (name == "message" and len(args) >= 2) else args
-        rendered = ", ".join(self.expr(a) for a in rest)
-        return f"pssc_message({rendered})"
+        if not rest:
+            raise ValueError(f"'{name}' needs a format string")
+        fmt_e, vals = rest[0], rest[1:]
+        fmt = getattr(fmt_e, "value", None)
+        if _dt_name(fmt_e) != "ExprConstant" or not isinstance(fmt, str):
+            raise ValueError(
+                f"'{name}' needs a string literal as its format, so the "
+                f"format can be checked when the model is generated; got "
+                f"{_dt_name(fmt_e)}")
+        # Formatted here, not by the platform's printf (`message_format`).
+        from ..c.message_format import CFormat, lower_format
+        parts = lower_format(name, fmt, vals, self.types, self.expr,
+                             CFormat(), c_string_literal)
+        return f"pssc_message({', '.join(parts)})"
 
     def _model_call(self, call) -> str:
         """A call on the model itself -- another operation of this component.

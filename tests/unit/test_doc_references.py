@@ -101,7 +101,8 @@ def test_the_archived_notes_say_they_are_archived():
                "generic-constraints-system-tests.md",
                "activity-flow-resource-bc-design.md",
                "activity-p0-plan.md",
-               "sv-op-model-files-and-constants.md"}
+               "sv-op-model-files-and-constants.md",
+               "enum-handling-review.md"}
     assert set(unmarked) <= allowed, (
         "docs/design/%s has no archived-note banner. Add one, or move the file "
         "to docs/ if it is a current guide -- and add it to the allow-list here "

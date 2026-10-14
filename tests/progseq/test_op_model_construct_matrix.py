@@ -916,6 +916,21 @@ component pss_top {""" + _ONE + """
 }""", ["write 32 0x1004 0x2d", "write 32 0x1004 0x2c3",
        "write 32 0x1004 0xe82", "write 32 0x1004 0x1"]),
 
+    # A PSS format is not a printf format (LRM 21.1.1): `%n` prints an enum's
+    # item and a bool's name, and `%d` reads a value at its PSS width. C and
+    # C++ passed the format to printf, whose `%n` STORES through its argument.
+    "message: %n of an enum and a bool, %d at the PSS width": Case("""
+enum mode_e { OFF, SLOW = 5, FAST }
+component pss_top {""" + _ONE + """
+  target function void run() {
+    mode_e m = FAST;
+    bool ok = true;
+    bit[8] b = 255;
+    message(LOW, "m=%n ok=%n m=%d b=%d b=%u b=%x 100%%", m, ok, m, b, b, b);
+    a.STS.write_val(1);
+  }
+}""", ["m=FAST ok=true m=6 b=-1 b=255 b=ff 100%", "write 32 0x1004 0x1"]),
+
     # An enum item is the one the linker found. By name alone, `C` and `SV`
     # here were the core library's `target_language_e::C` and `::SV` (0, 2).
     "enum items named as the core library's": Case("""
