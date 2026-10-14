@@ -123,6 +123,15 @@ class Export:
     where: str = ""
 
 
+def _node_key(node) -> int:
+    """A key for AST *node* that outlives its Python wrapper.
+
+    pssparser hands out a fresh wrapper per access, so `id()` of one names
+    nothing once it is collected -- and is reused by the next."""
+    nid = getattr(node, "id", None)
+    return nid() if callable(nid) else id(node)
+
+
 def _eval_const_ir(e):
     """The value of constant IR expression *e* (an int or a bool), or None.
 
@@ -193,14 +202,16 @@ class _Phase(enum.Enum):
     """The elaboration passes over the unit list.
 
     CONST records the package- and global-scope constants and enums that other
-    declarations fold against; DECLARE registers every type declaration; EXTEND
-    applies every `extend` to the types DECLARE registered. Splitting them is
+    declarations fold against; ENUM applies every `extend enum`, so a body
+    sees an enum's every item; DECLARE registers every type declaration; EXTEND
+    applies every other `extend` to the types DECLARE registered. Splitting them is
     what makes translation independent of the order the files were presented in
     -- see AstToIrTranslator._translate_global_scope.
     """
     CONST = 0
-    DECLARE = 1
-    EXTEND = 2
+    ENUM = 1
+    DECLARE = 2
+    EXTEND = 3
 
 
 class _PathPrefix:
@@ -271,6 +282,12 @@ class AstToIrContext:
         # `static const` fields folded so far, by AST node id (None: does not
         # fold); see _static_const_value.
         self.static_consts: Dict[int, object] = {}
+        # Enum (and `extend enum`) declarations' item values, by AST node id
+        # (None: an item's value does not fold); see _enum_decl_values. And
+        # each item's value by the ITEM's node id, which is what a reference
+        # the linker resolved names (an added item is in no EnumDecl).
+        self.enum_values: Dict[int, Dict[str, Optional[int]]] = {}
+        self.enum_item_values: Dict[int, Optional[int]] = {}
         # Package- and global-scope generic constraints, by qualified name
         # (`p::lt`). A package is only a namespace prefix in this translator --
         # it has no IR type -- so a generic constraint declared in one has
@@ -470,7 +487,7 @@ class AstToIrTranslator:
         # than its order. Order within a pass is still file order, which is all
         # 18.2 permits a tool to require (a const initializer naming another
         # const is the legitimate case -- see file-order-probes.md Family F).
-        for phase in (_Phase.CONST, _Phase.DECLARE, _Phase.EXTEND):
+        for phase in (_Phase.CONST, _Phase.ENUM, _Phase.DECLARE, _Phase.EXTEND):
             for i in range(global_scope.numUnits()):
                 unit = global_scope.getUnit(i)
                 self._translate_unit(ctx, unit, phase=phase)
@@ -707,7 +724,9 @@ class AstToIrTranslator:
         last because they need their target declared. Everything else is a
         declaration.
         """
-        if isinstance(child, (pss_ast.ExtendType, pss_ast.ExtendEnum)):
+        if isinstance(child, pss_ast.ExtendEnum):
+            return _Phase.ENUM
+        if isinstance(child, pss_ast.ExtendType):
             return _Phase.EXTEND
         if isinstance(child, (pss_ast.EnumDecl, pss_ast.Field)):
             return _Phase.CONST
@@ -744,7 +763,7 @@ class AstToIrTranslator:
         attr = int(field.getAttr()) if hasattr(field, 'getAttr') else 0
         if not attr & int(pss_ast.FieldAttr.Const):
             return None
-        key = id(field)
+        key = _node_key(field)
         if key in ctx.static_consts:
             return ctx.static_consts[key]
         ctx.static_consts[key] = None             # a cycle folds to nothing
@@ -1256,8 +1275,9 @@ class AstToIrTranslator:
 
     def _translate_extend_enum(self, ctx: AstToIrContext, extend: pss_ast.ExtendEnum):
         """Translate a PSS extend enum, appending new items to the existing IR DataTypeEnum."""
-        # As in _translate_extend: this runs after every declaration is
-        # registered, so each early return is a real error, not a "not yet".
+        # This runs after every enum is registered (the ENUM pass), so each
+        # early return is a real error, not a "not yet"; and before any body
+        # is translated, so a reference to an added item folds.
         target_ti = extend.getTarget()
         if target_ti is None:
             ctx.add_error("extend enum: no target type named")
@@ -1286,18 +1306,9 @@ class AstToIrTranslator:
                 f"extend enum of '{target_name}', which is not an enum type")
             return
 
-        next_val = max(target_ir.items.values(), default=-1) + 1
-        for i in range(extend.numItems()):
-            item = extend.getItem(i)
-            if item is None:
-                continue
-            item_name_node = item.getName()
-            item_name = item_name_node.getId() if hasattr(item_name_node, 'getId') else str(item_name_node)
-            val_node = item.getValue() if hasattr(item, 'getValue') else None
-            if val_node is not None and hasattr(val_node, 'getValue'):
-                next_val = val_node.getValue()
-            target_ir.items[item_name] = next_val
-            next_val += 1
+        target_ir.items.update(self._enum_items(
+            ctx, extend, target_name,
+            max(target_ir.items.values(), default=-1) + 1))
 
     def _record_scope_function(self, ctx: AstToIrContext, fdef,
                                namespace_prefix: str = "") -> None:
@@ -3824,17 +3835,7 @@ class AstToIrTranslator:
         if self.debug:
             self.logger.debug(f"Translating enum: {enum_name}")
 
-        items: dict = {}
-        next_val = 0
-        for i in range(enum_decl.numItems()):
-            item = enum_decl.getItem(i)
-            item_name_node = item.getName()
-            item_name = item_name_node.getId() if hasattr(item_name_node, 'getId') else str(item_name_node)
-            val_node = item.getValue()
-            if val_node is not None and hasattr(val_node, 'getValue'):
-                next_val = val_node.getValue()
-            items[item_name] = next_val
-            next_val += 1
+        items = self._enum_items(ctx, enum_decl, enum_name)
 
         # The declared base type (`enum e : bit[2]`, PSS 3.1) fixes the
         # enumerators' representation -- and so the width of an enum-typed
@@ -4962,6 +4963,9 @@ class AstToIrTranslator:
         item = self._symbol_scope_at(ctx, ref, depth=0) if ref is not None else None
         if not isinstance(item, pss_ast.EnumItem):
             return None
+        if _node_key(item) in ctx.enum_item_values:
+            return ctx.enum_item_values[_node_key(item)]
+        # Not translated yet (a constant folding against a later file's enum).
         # An item has no parent link; its enum is the path's next-to-last step.
         decl = ctx.symbol_root
         for pe in list(ref.getPathList())[:-1]:
@@ -4973,16 +4977,64 @@ class AstToIrTranslator:
             decl = decl.getDecl()           # a SymbolEnumScope's EnumDecl
         if decl is None or not hasattr(decl, 'numItems'):
             return None
-        next_val = 0
+        return self._enum_decl_values(ctx, decl).get(item.getName().getId())
+
+    def _enum_decl_values(self, ctx: AstToIrContext, decl,
+                          first: int = 0) -> Dict[str, Optional[int]]:
+        """Each item of enum (or `extend enum`) *decl* with its value, None
+        where the value does not fold.
+
+        An item's value is a constant expression (LRM 7.5.1) -- `-3` is a
+        unary minus, `K + 2` names a constant -- folded as a `static const`
+        initializer is; an item without one is its predecessor's plus one.
+        An item whose value names itself, directly or not, does not fold.
+        """
+        key = _node_key(decl)
+        if key in ctx.enum_values:
+            return ctx.enum_values[key]
+        values: Dict[str, Optional[int]] = {}
+        ctx.enum_values[key] = values          # a cycle sees what is done
+        next_val: Optional[int] = first
         for i in range(decl.numItems()):
             it = decl.getItem(i)
-            val_node = it.getValue()
-            if val_node is not None and hasattr(val_node, 'getValue'):
-                next_val = val_node.getValue()
-            if it is item or it.getName().getId() == item.getName().getId():
-                return next_val
-            next_val += 1
-        return None
+            if it is None:
+                continue
+            val_node = it.getValue() if hasattr(it, 'getValue') else None
+            if val_node is not None:
+                next_val = self._fold_enum_value(ctx, val_node)
+            values[it.getName().getId()] = next_val
+            ctx.enum_item_values[_node_key(it)] = next_val
+            next_val = None if next_val is None else next_val + 1
+        return values
+
+    def _fold_enum_value(self, ctx: AstToIrContext, val_node) -> Optional[int]:
+        """The value of enum item initializer *val_node*, or None."""
+        value = getattr(val_node, 'getValue', lambda: None)()
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        saved = list(ctx.errors)
+        try:
+            value = _eval_const_ir(self._translate_expression(ctx, val_node))
+        except Exception:
+            value = None
+        # A failed fold is reported by the caller, once, with its item.
+        ctx.errors[:] = saved
+        return value if isinstance(value, int) and not isinstance(value, bool) \
+            else None
+
+    def _enum_items(self, ctx: AstToIrContext, decl, enum_name: str,
+                    first: int = 0) -> Dict[str, int]:
+        """*decl*'s items and values for the IR; an item whose value does
+        not fold is an error, never a guess."""
+        items: Dict[str, int] = {}
+        for name, value in self._enum_decl_values(ctx, decl, first).items():
+            if value is None:
+                ctx.add_error(
+                    f"enum '{enum_name}': the value of item '{name}' is not "
+                    f"a constant expression")
+                value = 0
+            items[name] = value
+        return items
 
     def _resolve_enum_constant(self, ctx: AstToIrContext, name: str) -> Optional[int]:
         """Check if *name* is an enum member across all registered enums.

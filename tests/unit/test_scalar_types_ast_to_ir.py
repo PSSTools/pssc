@@ -68,6 +68,58 @@ class TestEnumAstToIr(unittest.TestCase):
         self.assertEqual(items["GREEN"], 5)
         self.assertEqual(items["BLUE"], 6)
 
+    def test_enum_values_are_constant_expressions(self):
+        """An item's value is a constant expression (LRM 7.5.1): a negative
+        literal is `-` applied to one, and was read as no value at all."""
+        ctx = self.parse_and_translate("""
+            static const int K = 10;
+            enum e { A, NEG = -3, B, C = K + 2, D, E = ~0, F = (1 << 4) }
+        """)
+        self.assertEqual(ctx.type_map["e"].items, {
+            "A": 0, "NEG": -3, "B": -2, "C": 12, "D": 13, "E": -1, "F": 16})
+
+    def test_extend_enum_values_are_constant_expressions(self):
+        ctx = self.parse_and_translate("""
+            enum e { A }
+            extend enum e { NEG = -3, B }
+        """)
+        self.assertEqual(ctx.type_map["e"].items, {"A": 0, "NEG": -3, "B": -2})
+
+    def test_enum_item_reference_folds_a_negative_value(self):
+        """A reference folds to the item's value, not its neighbour's."""
+        ctx = self.parse_and_translate("""
+            enum e { NEG = -3, FAST = 6 }
+            component pss_top {
+                function int f() { return NEG; }
+            }
+        """)
+        f = next(fn for fn in ctx.type_map["pss_top"].functions
+                 if fn.name == "f")
+        ret = f.body[-1].value
+        self.assertEqual(ret.value, -3)
+
+    def test_enum_item_added_by_an_extension_folds(self):
+        """An added item is in no EnumDecl; it was `self.B`, a field that
+        does not exist."""
+        ctx = self.parse_and_translate("""
+            component pss_top {
+                function int f() { return B; }
+            }
+            enum e { A }
+            extend enum e { NEG = -3, B }
+        """)
+        f = next(fn for fn in ctx.type_map["pss_top"].functions
+                 if fn.name == "f")
+        ret = f.body[-1].value
+        self.assertIsInstance(ret, ir.ExprConstant)
+        self.assertEqual((ret.value, ret.ref), (-2, "e::B"))
+
+    def test_enum_value_that_does_not_fold_is_an_error(self):
+        ctx = self.parse_and_translate("enum e { A = B, B }")
+        self.assertIn(
+            "enum 'e': the value of item 'A' is not a constant expression",
+            ctx.errors)
+
     # --- item ordering -------------------------------------------------------
 
     def test_enum_item_order_preserved(self):
