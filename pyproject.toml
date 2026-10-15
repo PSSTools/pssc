@@ -24,11 +24,18 @@ dependencies = [
   # PSS018, PSS064) and every constraint statement is located -- the tests
   # expect those diagnostics from the parser, not from ast2ir.
   "pssparser>=3.3",
-  "zuspec-ir-core",
-  "zuspec-be-py",
-  "zuspec-be-sv",
-  "zuspec-be-sw",
-  "dv-solve",
+  # 0.2.0 across the zuspec set: pssc reads IR that 0.1.0 does not have
+  # (typed and named constants, FlowKind/JoinKind, the action and component
+  # trees), and the 0.2.0 backends read it too. Without floors a resolver
+  # may pick 0.1.0 and fail on first compile.
+  "zuspec-ir-core>=0.2.0",
+  "zuspec-be-py>=0.2.0",
+  "zuspec-be-sv>=0.2.0",
+  "zuspec-be-sw>=0.2.0",
+  # The bc backend (user ruling, 2026-10-15): lowering, the interpreter, and
+  # through it zuspec-solver, zuspec-rt-core and zuspec-rt-eng.
+  "zuspec-be-bc>=0.1.0",
+  "dv-solve>=0.2.3",
 ]
 
 # zuspec-dataclasses is the Python authoring frontend (``@zdc``); pssc's
