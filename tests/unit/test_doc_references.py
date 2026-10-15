@@ -104,6 +104,7 @@ def test_the_archived_notes_say_they_are_archived():
                "sv-op-model-files-and-constants.md",
                "enum-handling-review.md",
                "zuspec-pypi-release-plan.md",
+               "future-projects.md",
                "activity-p1-plan.md",
                "bc-procedural-gaps-plan.md",
                "nvme-bench-plan.md",

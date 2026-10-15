@@ -126,9 +126,10 @@ complete. Needed:
   others, so the workflow can stamp `SUFFIX`. Right now each has a literal
   `version = "0.0.1"`.
 - **Dependencies, from the audit:**
-  - be-bc declares `zuspec-solver`, which it never imports; only its
-    docstrings mention it. Drop it. That also cuts dataclasses and be-sv out of
-    be-bc's closure.
+  - be-bc declares `zuspec-solver`. Since be-bc ae24268 it really uses it: its
+    constraints lower through `zuspec.solver.translate`. Keep the dependency.
+    zuspec-solver must ship first, pure Python (section 5, item 5), so that
+    dataclasses and be-sv drop out of be-bc's closure.
   - be-bc imports `dv_solve` lazily in four places, but that is the solve path
     every activation takes. Declare `dv-solve>=0.2.3`.
   - be-bc's `format/emit_c.py` imports `zuspec.rt.core` lazily. Declare it, or
@@ -224,7 +225,45 @@ The run-time drivers stay where they are, because they run a problem rather
 than translate one: be-bc's interpreter calls `SolveCtx`, and rt-eng's
 `zbc_solver.c` is its C mirror.
 
-Order: (1) and (2), with be-bc switched over and the bc suite and corpus
+### Progress (2026-10-15)
+
+- **(1) done for be-bc.** The walk is `zuspec.solver.translate` (`walk.py`,
+  `ProblemTranslator`), writing through a `Sink` protocol: the subset of
+  dv-solve's growable builder that it calls, so the builder is the sink as it
+  stands. `build_solve_blob` and `translate(problem, sink)` are the front doors;
+  refusals are `TranslateError`. be-bc's `lower/constraints.py` is a wrapper
+  that re-raises a refusal as `LoweringError`. Its 62 translator tests moved to
+  zuspec-solver `tests/translate/`, plus a recording-sink test that holds the
+  walk to the protocol. zuspec-solver's `pyproject.toml` now lists the
+  subpackage and `dv-solve`.
+- **(2), the way back:** `writeback_slots`/`slot_of` moved with the walk. be-bc's
+  `provenance.py` is bc's own (it builds a ZBC `ProvTable`), so nothing else in
+  it is shared.
+- **be-sw's C emitter is dead code.** pssc never calls
+  `zuspec.be.sw.scenario` (c-host uses `CGenerator` plus `sw_solve.py`), and
+  be-sw's end-to-end tests all skip: `_pss_harness.py` imports
+  `zuspec.fe.pss`, the old name of pssc. Its emitter also names fields by
+  `ExprAttribute`, not ir-core's `ExprRefField` slots, so it could not take an
+  ir-core-collected problem anyway. **Decision (user, 2026-10-15): revive it
+  over time**, because other flows will need IR to C; it does not block the
+  release.
+- **`sw_solve.py` cannot go onto `ConstraintCollect` yet.** It flattens rand
+  arrays and arrays of structs and unrolls `foreach`. ir-core's collect refuses
+  `foreach` ("not yet wired"), and `layout.py` gives an array one leaf. So the
+  switch needs ir-core to flatten arrays in the slot layout first, and bc shares
+  that layout. Meanwhile, `sw_solve` **silently drops** any constraint it cannot
+  translate (`_translate` returns `None`), so c-host can bake in values that
+  violate a constraint.
+- **The copies already disagree on `>>`.** be-bc's and pssc's tables send
+  `BinOp.RShift` to `BIN_RSHIFT` (logical); be-sw's sends it to `BIN_ASHR`.
+  The LRM settles which is right for a signed operand. Once there is one walk,
+  there is one answer.
+
+**Release first, refactor after (user, 2026-10-15).** For 0.2.0, only
+zuspec-solver's item (5) is release work: it must ship pure Python. Everything
+else here, from be-sw onward, is in `future-projects.md`.
+
+Original order: (1) and (2), with be-bc switched over and the bc suite and corpus
 unchanged. Then be-sw on the C sink, checked by the golden snapshots and the
 c-host behaviour tests. Then pssc's presolve. This is pre-release work for
 pssc 0.2.0, since bc and be-sw would both depend on it.
