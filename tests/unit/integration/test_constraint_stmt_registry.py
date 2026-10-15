@@ -33,10 +33,9 @@ pytestmark = pytest.mark.filterwarnings("ignore::UserWarning")
 
 
 class Ledger:
-    """Recorded on c1 as untranslated *kind*, on line 1 when *located*."""
-    def __init__(self, kind, located=True):
+    """Recorded on c1 as untranslated *kind*, on line 1."""
+    def __init__(self, kind):
         self.kind = kind
-        self.located = located
 
 
 def _translate(body: str):
@@ -88,7 +87,7 @@ CASES = {
     "ConstraintStmtUnique":      ("unique { x, y };", lambda b: _shape(b) == ["StmtUnique"]),
     "ConstraintStmtSoft":        ("soft x == 3;", Ledger("soft")),
     # pssparser does not locate a dist statement (pssc-requests-2026-09-30.md P2).
-    "ConstraintStmtDist":        ("dist x in [0..3 := 1, 4 := 5];", Ledger("dist", located=False)),
+    "ConstraintStmtDist":        ("dist x in [0..3 := 1, 4 := 5];", Ledger("dist")),
     "ConstraintStmtDefault":     ("default x == 3;", lambda b: _shape(b) == ["StmtDefault"]),
     "ConstraintStmtDefaultDisable": ("default disable x;",
                                      lambda b: _shape(b) == ["StmtDefaultDisable"]),
@@ -122,8 +121,7 @@ def test_constraint_statement(name):
     ctx = _translate(body)
     if isinstance(expect, Ledger):
         assert not ctx.errors, ctx.errors
-        where = "line 1: " if expect.located else ""
-        assert _c1_fn(ctx).metadata["untranslated"] == [(expect.kind, where)]
+        assert _c1_fn(ctx).metadata["untranslated"] == [(expect.kind, "line 1: ")]
     else:
         assert not ctx.errors, ctx.errors
         assert expect(_c1(ctx)), _shape(_c1(ctx))

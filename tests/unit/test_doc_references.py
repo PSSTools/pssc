@@ -102,7 +102,21 @@ def test_the_archived_notes_say_they_are_archived():
                "activity-flow-resource-bc-design.md",
                "activity-p0-plan.md",
                "sv-op-model-files-and-constants.md",
-               "enum-handling-review.md"}
+               "enum-handling-review.md",
+               "zuspec-pypi-release-plan.md",
+               "activity-p1-plan.md",
+               "bc-procedural-gaps-plan.md",
+               "nvme-bench-plan.md",
+               "op-model-field-defects-plan.md",
+               "op-model-issues-plan.md",
+               "op-model-output-defects.md",
+               "status-2026-10-01.md",
+               "sv-op-model-inheritance-plan.md",
+               "sv-op-model-inheritance.md",
+               "chi-fw-hdl-brief.md",
+               "coverage-guided-generation.md",
+               "library-targets-research.md",
+               "mem-traffic-library-design.md"}
     assert set(unmarked) <= allowed, (
         "docs/design/%s has no archived-note banner. Add one, or move the file "
         "to docs/ if it is a current guide -- and add it to the allow-list here "

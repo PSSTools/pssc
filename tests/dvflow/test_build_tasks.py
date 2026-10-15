@@ -13,6 +13,7 @@ from pssc.dvflow import build
 # every front-end defect in its history presented), so a model without one is
 # not a valid input to those tasks.
 _MODEL = """
+import std_pkg::*;
 component pss_top {
     int count;
     function void bump() { count = count + 1; }
@@ -129,8 +130,12 @@ def test_pysource_emit_repr_manifest(tmp_path):
 
 @requires_dfm
 def test_svprogseq_with_root(tmp_path):
+    # op-model-sv's API is what the root EXPORTS, and it refuses a root that
+    # exports nothing; the other targets publish every operation.
+    model = _MODEL.replace("function void bump()",
+                           "export target function bump;\n    function void bump()")
     status, output, errors = run_task(
-        tmp_path, "pssc.SvProgSeq", pss_text=_MODEL, root="pss_top")
+        tmp_path, "pssc.SvProgSeq", pss_text=model, root="pss_top")
     assert status == 0, errors
     assert "systemVerilogSource" in filesets_by_type(output)
 

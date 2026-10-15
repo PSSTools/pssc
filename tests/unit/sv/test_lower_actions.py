@@ -247,7 +247,7 @@ class TestSuperTypeResolution:
             }
             component pss_top {
                 sub_c sub;
-                action root_a { activity { do sub::impl_op; } }
+                action root_a { activity { do sub_c::impl_op; } }
             }
         ''')])
         ast = p.link()

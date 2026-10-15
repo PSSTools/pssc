@@ -63,8 +63,8 @@ component pss_top {
 
     action do_test {
         activity {
-            do dma::burst_copy;
-            do dma::mem_copy;
+            do dma_c::burst_copy;
+            do dma_c::mem_copy;
         }
     }
 }

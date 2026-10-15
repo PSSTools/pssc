@@ -57,7 +57,7 @@ _BUILTIN_MEMBERS = {
 
 #: `--py-await async` only. The wait primitive a PSS `yield` lowers to: what
 #: "let something else run" COSTS on this platform. See
-#: `docs/op-model-export-design.md` §4.4 -- it is a scheduler hint, never an
+#: `docs/design/op-model-export-design.md` §4.4 -- it is a scheduler hint, never an
 #: interrupt wait, and a platform implementing it as one changes what the model
 #: means.
 _YIELD_DOC = (

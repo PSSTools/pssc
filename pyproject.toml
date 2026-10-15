@@ -20,7 +20,10 @@ authors = [
 requires-python = ">=3.12"
 license = "Apache-2.0"
 dependencies = [
-  "pssparser",
+  # 3.3: only a namespace qualifies a name, symbols are checked (PSS006,
+  # PSS018, PSS064) and every constraint statement is located -- the tests
+  # expect those diagnostics from the parser, not from ast2ir.
+  "pssparser>=3.3",
   "zuspec-ir-core",
   "zuspec-be-py",
   "zuspec-be-sv",

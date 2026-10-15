@@ -45,9 +45,9 @@ component soc_c {
 
         activity {
             repeat (num_instructions) {
-                do cpu::fetch;
-                do cpu::execute;
-                do mem::cache_op;
+                do cpu_c::fetch;
+                do cpu_c::execute;
+                do mem_c::cache_op;
             }
         }
     }
@@ -58,8 +58,8 @@ component pss_top {
 
     action do_test {
         activity {
-            do soc::run_workload;
-            do soc::run_workload;
+            do soc_c::run_workload;
+            do soc_c::run_workload;
         }
     }
 }

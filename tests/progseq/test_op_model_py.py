@@ -18,7 +18,7 @@ takes the platform's `event()` and never names a scheduler) is what keeps it
 reachable later without regenerating anything. Its absence is a decision, not an
 oversight.
 
-Plan: P8.T1; `docs/op-model-py-async-plan.md`.
+Plan: P8.T1; `docs/design/op-model-py-async-plan.md`.
 """
 from __future__ import annotations
 

@@ -1818,7 +1818,7 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
         to and only the platform knows what that costs -- `asyncio.sleep(0)`, a
         clock edge, a watchdog kick. Still a HINT and never an interrupt wait:
         the surrounding poll decides when it is done
-        (`docs/op-model-export-design.md` §4.4). The C and C++ targets spell the
+        (`docs/design/op-model-export-design.md` §4.4). The C and C++ targets spell the
         same seam `--yield import` and call the same `yield_()`.
         """
         pad = self.pad(ind)

@@ -31,7 +31,11 @@ def _errors(src: str):
         os.close(fd)
         parser = pssc.Parser()
         parser.parse([fname])
-        return AstToIrTranslator().translate(parser.link(), files=parser.file_map).errors
+        try:
+            root = parser.link()
+        except pssc.ParseException as e:
+            return [str(e)]
+        return AstToIrTranslator().translate(root, files=parser.file_map).errors
     finally:
         os.unlink(fname)
 
@@ -184,22 +188,24 @@ def test_a_labeled_traversal_is_a_name_in_its_block():
         assert l2 < l1
 
 
+# pssparser checks these when it links (PSS064, PSS006, PSS018), which is
+# where pssc asked for them to be checked (pssparser requests Q3/Q4): the
+# refusal comes from the front end, located, before ast2ir sees the model.
 @pytest.mark.parametrize("src,pattern", [
     ("""
     action T {
         symbol s1(int n) { s2(n); }
         symbol s2(int n) { s1(n); }
         activity { s1(1); }
-    }""", r"line 7: symbol 's1' activates itself \(s1 -> s2 -> s1\); "
-          r"symbols are not recursive"),
+    }""", r"symbol 's1' activates itself: s1 -> s2 -> s1 \(11\.7\) \S+:7:"),
     ("""
     action T { symbol s(A h) { h; } activity { s(3); } }""",
-     r"line 5: the argument for this symbol parameter is not an action handle"),
-    # A `with` that names anything stops in pssparser first: it does not
-    # resolve names in a `with` on a symbol, and reports them as unbound.
+     r"argument 1 of 's' is a value, but parameter 'h' is a handle of "
+     r"action 'A' \S+:5:"),
     ("""
     action T { symbol s { do A; } activity { s with { 1 < 2; }; } }""",
-     r"line 5: symbol 's' is not an action: it takes no 'with'"),
+     r"'s' is a symbol, not an action handle; a symbol takes no 'with' "
+     r"constraints \(11\.7\) \S+:5:"),
 ], ids=["recursive", "not_a_handle", "with_on_a_symbol"])
 def test_refused_with_a_location(src, pattern):
     errs = _errors(src)
