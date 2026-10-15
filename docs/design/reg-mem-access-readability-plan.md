@@ -166,3 +166,29 @@ Golden snapshots regenerated and reviewed (`c-vtable`, `c-mmio`,
 diff is the value-layout extraction alone, nothing else moved. `c-mmio`'s and
 `c-mmio-hdr`'s generated C recompiled clean under `gcc -std=c99 -Wall -Wextra
 -Werror`.
+
+## Follow-up (2026-10-14): the layout struct on the functions seam
+
+The scope note above ("the only mechanism that is a real in-process pointer,
+so the only one this applies to") was wrong in its premise. Generated code
+never dereferences `&_self->regs->X`; it computes an address and hands it to a
+primitive, and only the primitive decides what an address becomes. So:
+
+* **`pssc_mem_reg.h` is seam-agnostic.** Each `pssc_read<N>`/`pssc_write<N>`
+  converts the pointer back to a `pssc_addr_t` and calls the seam's own
+  `pssc_r<N>`/`pssc_w<N>` with a NULL context. Barriers are the seam's
+  (`pssc_mem_ptr.h` applies them; `pssc_mem_fn.h` deliberately does not). It
+  requires `PSSC_MEM_SEAM_CONTEXT_FREE`, which only the pointer and functions
+  seams define, and asserts `sizeof(pssc_addr_t) <= sizeof(uintptr_t)`.
+* **`reg_map = link_style != "vtable"`** (`c_progseq_gen.settings_for`):
+  `--link-style direct` (with or without `--mem-access functions`) and
+  `--mem-access selectable` now get the layout struct too. vtable keeps the
+  folded accessors: its primitives need a real `const pssc_mem_if *`.
+* **Cost:** a functions-seam build on a 32-bit core with a 64-bit
+  `pssc_addr_t` no longer compiles (the assert says `--addr-bits 32` or
+  vtable). Before, its folded accessors carried the address by value.
+* **Stride padding** (`reg_layout.element_sizes`): one struct per group type,
+  padded to the largest stride any array of it uses, decided before any map is
+  built. Previously the first visit won, and since `collect_reg_groups` is
+  post-order an element type was always first seen unpadded.
+

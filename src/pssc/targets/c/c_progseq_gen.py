@@ -31,11 +31,13 @@ _CORE_HEADERS = ["pssc_mem.h", "pssc_mem_ptr.h", "pssc_mem_fn.h",
 
 _SEAM_HEADERS = {k: list(_CORE_HEADERS) for k in ("vtable", "direct", "mmio")}
 
-#: The `--link-style` a build gets when it names none. `mmio` is the only
-#: style whose registers are addressed through the layout struct with the
-#: generic `pssc_read<N>`/`pssc_write<N>`/`pssc_write_masked<N>` primitives;
-#: the other two bake a family of `static inline` accessors per register.
-#: Every place that defaults the option reads this.
+#: The `--link-style` a build gets when it names none. `mmio` and `direct`
+#: address registers through the layout struct with the generic
+#: `pssc_read<N>`/`pssc_write<N>`/`pssc_write_masked<N>` primitives
+#: (pssc_mem_reg.h, which routes them through the seam); `vtable` bakes a
+#: family of `static inline` accessors per register, because its primitives
+#: need a bus handle a register pointer cannot carry. Every place that
+#: defaults the option reads this.
 DEFAULT_LINK_STYLE = "mmio"
 
 
@@ -98,16 +100,21 @@ def settings_for(model, prefix: str, *,
                  prefix_map=None, lifecycle: str = "malloc",
                  emit_stubs: bool = False, mem_access=None,
                  includes=None, includes_impl=None,
-                 omit_stdint: bool = False, addr_bits: int = 64) -> "CSettings":
+                 omit_stdint: bool = False, addr_bits: int = 64,
+                 style=None) -> "CSettings":
     """Turn the command line's keywords into the backend's `CSettings`.
 
     THE flag-shaped door, and the only place that knows the flag spellings.
     Separate from `generate` so that something which needs to know what WOULD
     be generated -- the differential test helper, a `--dry-run` -- can ask
     without writing anything.
+
+    ``style`` is the policy the backend renders with (`None`: the default).
+    It is read for one thing: whether it renders register accesses itself,
+    which keeps the folded accessors its renderings are written against.
     """
     from .. import op_model as om
-    from .style import CSettings
+    from .style import CSettings, coerce
     from ..progseq_model import channel_fields
 
     tree = model.tree
@@ -120,21 +127,33 @@ def settings_for(model, prefix: str, *,
         prefix=prefix, seam_include=seam_include(link_style, mem_access),
         link_style=link_style, mem_access=mem_access, reg_style=reg_style,
         lifecycle=lifecycle, addr_bits=addr_bits, header_only=header_only,
-        # THE BARE-METAL SHAPE, and it follows from the SEAM rather than being
-        # a knob of its own -- but from the seam's mechanism, not from the
-        # absence of a bus handle.
+        # REGISTERS THROUGH THE LAYOUT STRUCT on every seam but vtable.
         #
-        # Only the pointer-dereference seam qualifies. It is the one where the
-        # device IS memory, so an address and a pointer are the same thing and
-        # the layout can be followed. `vtable` and `direct` both take the
-        # address BY VALUE and route it somewhere -- a sequencer, a mock, a
-        # platform function -- so for them a layout struct would be a shape
-        # nothing may dereference, and they keep the folded accessors.
+        # The struct is address ARITHMETIC: generated code takes
+        # `&_self->regs->LOAD` and hands it to `pssc_write32`, and never
+        # dereferences it. pssc_mem_reg.h turns that pointer back into a
+        # `pssc_addr_t` and calls the seam's own `pssc_w32`, so whether the
+        # address becomes a `volatile` store (pointer) or a call to the
+        # platform's `pssc_mem_write32` (functions) is the seam's decision, as
+        # it is for every other access. `direct` is the functions seam under its
+        # old name, so it takes the same shape: one seam, one register API,
+        # whichever spelling selected it.
         #
-        # `direct` having no bus CONTEXT is what made this look like the test
-        # for a while; it is not. Its primitives still take a `pssc_addr_t` and
-        # hand it to a user-supplied function.
-        reg_map=(link_style == "mmio" or mem_access == "pointer"),
+        # vtable is the exception, and it is a real one: its `pssc_w32` needs
+        # the instance's `const pssc_mem_if *`, which a pointer to a register
+        # has no room to carry. It keeps the folded per-register accessors,
+        # which take the bus handle and the address by value.
+        #
+        # An address wider than a pointer cannot be formed as one under any
+        # seam; pssc_mem_reg.h asserts it (see `--addr-bits`).
+        #
+        # A style that renders register accesses itself (a house-macro
+        # mandate, `reg_accessor_form() == "macro"`) or supplies its own
+        # mechanism (`overrides_bus`) keeps the folded accessors too: its
+        # `render_reg_*` hooks are handed an accessor (`acc`, `<base>_addr`),
+        # and the layout path would bypass them without a word.
+        reg_map=(link_style != "vtable"
+                 and not _style_renders_registers(coerce(style), link_style)),
         omit_stdint=omit_stdint,
         has_channels=any(channel_fields(c)
                          for c in model.comp_dtypes_root_first),
@@ -143,6 +162,11 @@ def settings_for(model, prefix: str, *,
         yield_mode=yield_mode, match_default=match_default,
         message_style=message_style, emit_stubs=emit_stubs,
         prefix_map=tuple(prefix_map or ()))
+
+
+def _style_renders_registers(style, link_style: str) -> bool:
+    return (style.reg_accessor_form() == "macro"
+            or style.overrides_bus(link_style))
 
 
 def generate(model, prefix: str, *, style=None, backend_cls=None,
@@ -156,5 +180,6 @@ def generate(model, prefix: str, *, style=None, backend_cls=None,
     Returns the list of written file paths.
     """
     from .backend import COpModelBackend
-    settings = settings_for(model, prefix, **flags)
-    return (backend_cls or COpModelBackend)(style).generate(model, settings)
+    backend = (backend_cls or COpModelBackend)(style)
+    settings = settings_for(model, prefix, style=backend.style, **flags)
+    return backend.generate(model, settings)

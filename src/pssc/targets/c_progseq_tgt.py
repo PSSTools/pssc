@@ -62,8 +62,10 @@ class CProgSeqTarget(OpModelTarget):
         parser.add_argument(
             "--link-style", dest="c_link_style",
             choices=("vtable", "direct", "mmio"), default=DEFAULT_LINK_STYLE,
-            help="c-progseq: memory-access seam (default: %s)"
-                 % DEFAULT_LINK_STYLE,
+            help="c-progseq: memory-access seam (default: %s). mmio and "
+                 "direct reach registers through the register-layout struct; "
+                 "vtable keeps per-register accessors, which carry its bus "
+                 "handle" % DEFAULT_LINK_STYLE,
         )
         parser.add_argument(
             "--mem-access", dest="c_mem_access",
@@ -72,8 +74,9 @@ class CProgSeqTarget(OpModelTarget):
                  "direct/mmio spelling of --link-style. 'pointer' dereferences "
                  "the address; 'functions' calls extern symbols; 'selectable' "
                  "defers the choice to the C compile line "
-                 "(-DPSSC_MEM_ACCESS_FUNCTIONS). Omitted: --link-style decides, "
-                 "which is what every existing build gets",
+                 "(-DPSSC_MEM_ACCESS_FUNCTIONS). Every one reaches registers "
+                 "through the register-layout struct and routes the access "
+                 "through the chosen mechanism. Omitted: --link-style decides",
         )
         parser.add_argument(
             "--reg-style", dest="c_reg_style",
@@ -101,8 +104,12 @@ class CProgSeqTarget(OpModelTarget):
             default=64,
             help="op-model-c: width of pssc_addr_t (default 64, matching PSS "
                  "addr_handle_t). 32 saves 4 bytes per address held in a "
-                 "component and is required by nothing -- narrow it only when "
-                 "the device map fits, which this generator cannot check",
+                 "component, and is required on a target whose pointers are "
+                 "32-bit unless --link-style is vtable: every other seam forms "
+                 "register addresses as pointers, and the generated code "
+                 "fails a static assertion if pssc_addr_t is wider. Narrow it "
+                 "only when the device map fits, which this generator cannot "
+                 "check",
         )
         parser.add_argument(
             "--include", dest="c_include", metavar="HEADER",
@@ -335,7 +342,8 @@ class CProgSeqTarget(OpModelTarget):
         """
         from .c.c_progseq_gen import settings_for
         be = self.backend_for(opts)
-        s = settings_for(model, self.prefix_for(opts), **self.flags_for(opts))
+        s = settings_for(model, self.prefix_for(opts), style=be.style,
+                         **self.flags_for(opts))
         be.prepare(model, s)
         out: Dict[str, str] = {}
         files = [(be.style.header_name(s.prefix), be.header_sections(model, s))]
@@ -355,5 +363,6 @@ class CProgSeqTarget(OpModelTarget):
         # package there is no compilation order to honour, and the generated
         # header stays first in the list a build system reads.
         be = self.backend_for(opts)
-        s = settings_for(model, self.prefix_for(opts), **self.flags_for(opts))
+        s = settings_for(model, self.prefix_for(opts), style=be.style,
+                         **self.flags_for(opts))
         return be.generate(model, s) + self.install_core(model, opts)

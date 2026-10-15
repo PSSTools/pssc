@@ -227,8 +227,8 @@ C backend (``op-model-c``)
 
 The ``op-model-c`` target emits the same programming API in C: register value
 **unions** (anonymous-union bitfields, so ``csr.FIELD`` works), register
-access through a **layout struct** (or, under ``vtable``/``direct``, baked
-inline accessors), and free functions over a handle struct named as
+access through a **layout struct** (or, under ``vtable``, baked inline
+accessors), and free functions over a handle struct named as
 the PSS component type is (``dma_engine_c``); structs and enums keep their PSS
 names too.
 Bodies keep native value-returning reads, native ``return``, and native
@@ -242,12 +242,17 @@ Bodies keep native value-returning reads, native ``return``, and native
 
    $ pssc c-core-path --file pssc_mem_vtable.h   # locate a core seam header
 
-The link style chooses the **memory-access seam**, and with it how a
-register is reached. Under ``mmio`` a register is a member of a generated
+The link style chooses the **memory-access seam**. Under ``mmio`` and
+``direct`` (and every ``--mem-access``) a register is a member of a generated
 layout struct, touched with the generic ``pssc_read<N>``/``pssc_write<N>``/
-``pssc_write_masked<N>`` primitives; ``vtable`` and ``direct`` take an address
-by value, so they generate a family of ``static inline`` accessors per
-register instead.
+``pssc_write_masked<N>`` primitives. The layout only computes the address:
+``pssc_mem_reg.h`` hands it to the seam, which makes it a ``volatile``
+load/store (``mmio``) or a call to your ``pssc_mem_read32``/
+``pssc_mem_write32`` (``direct``). ``vtable`` needs a bus handle that a
+register pointer cannot carry, so it generates a family of ``static inline``
+accessors per register instead. Because the layout forms addresses as
+pointers, every seam but ``vtable`` needs ``pssc_addr_t`` to fit in a pointer
+(``--addr-bits 32`` on a 32-bit core); the generated code asserts it.
 
 ================  ==========================================================
 ``--link-style``  Seam / when to use
@@ -275,9 +280,9 @@ actually differs between them, which is how an address becomes an access.
 ``pointer``         forms a pointer from the address and dereferences it
                     (``pssc_mem_ptr.h``). Requires the address to *fit* a
                     pointer -- statically asserted.
-``functions``       calls ``extern`` symbols; forms no pointer
-                    (``pssc_mem_fn.h``), so it is available where ``pointer``
-                    is not.
+``functions``       calls ``extern`` symbols (``pssc_mem_fn.h``) with the
+                    address by value. Register addresses still come from the
+                    layout struct, so they too must fit a pointer.
 ``selectable``      emits neither choice; the C compile line decides, via
                     ``-DPSSC_MEM_ACCESS_FUNCTIONS``. One generated driver,
                     two mechanisms.

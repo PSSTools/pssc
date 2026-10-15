@@ -97,9 +97,15 @@ void     pssc_mem_write32(pssc_addr_t a, uint32_t d);
 /* ...and the 8/16/64 pairs */
 ```
 
-Forms no pointer, so it works where `pointer` cannot — a 32-bit core addressing a
-64-bit device map, or a bus reached through an accessor rather than the address
-space.
+Registers are still addressed through the generated layout struct
+(`pssc_write32(&_self->regs->LOAD, v)`), exactly as under `pointer`; the
+difference is only what happens to the address, which here becomes a call to
+your function. That suits a bus reached through an accessor rather than the
+address space -- a logger, a mock, a simulated bus. Because the layout forms
+the address as a pointer first, a device address must fit a pointer here too
+(`--addr-bits 32` on a 32-bit core); the generated header asserts it. A 64-bit
+device map on a 32-bit core needs `--link-style vtable`, whose per-register
+accessors carry the address by value throughout.
 
 **`--mem-access selectable`** emits neither and lets the C compile line choose:
 add `-DPSSC_MEM_ACCESS_FUNCTIONS` for the function seam, omit it for the pointer

@@ -24,7 +24,7 @@ Design: docs/design/generator-style-extensions-design.md; plan P8.T1.
 from __future__ import annotations
 
 import dataclasses as dc
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..reg_field_resolve import field_width
 from .progseq_model import (_dt_name, array_element_type, array_base_stride,
@@ -280,13 +280,15 @@ def _pad_name(offset: int) -> str:
     return f"_rsvd_{offset:x}"
 
 
-def _group_size(group_dt, min_size: Optional[int] = None, _seen=None) -> int:
+def _group_size(group_dt, min_size: Optional[int] = None, _seen=None,
+                _sizes=None) -> int:
     """Bytes spanned by ``group_dt``, at least ``min_size``."""
-    return build_reg_map(group_dt, min_size=min_size, _seen=_seen).size
+    return build_reg_map(group_dt, min_size=min_size, _seen=_seen,
+                         sizes=_sizes).size
 
 
 def build_reg_map(group_dt, *, min_size: Optional[int] = None,
-                  _seen=None) -> RegMap:
+                  sizes=None, _seen=None) -> RegMap:
     """The struct layout of one register group.
 
     Members come back in ADDRESS order with every hole declared as a PAD, so a C
@@ -298,8 +300,17 @@ def build_reg_map(group_dt, *, min_size: Optional[int] = None,
     own indexing lands between banks, and a trailing hole in the last register
     of a bank is invisible without it.
 
+    ``sizes`` maps ``id(group type)`` to the size every use of that type must
+    have (`element_sizes`). There is ONE C struct per group type, so a group
+    embedded here is laid out at that size, not at the size this one use would
+    have asked for; without it, a group embedded both as an array element and
+    as anything else gets two layouts, and whichever the emitter keeps is wrong
+    for the other use. ``None`` lays out each embedded group for its own use
+    alone.
+
     Raises `RegMapError` on a map a struct cannot express -- overlapping
-    instances, or an array whose stride is smaller than its element.
+    instances, an array whose stride is smaller than its element, or one group
+    type used with two different strides.
     """
     _seen = set() if _seen is None else _seen
     if id(group_dt) in _seen:
@@ -310,7 +321,7 @@ def build_reg_map(group_dt, *, min_size: Optional[int] = None,
 
     placed: List[MapMember] = []
     for f in getattr(group_dt, "fields", []) or []:
-        placed.append(_place(group_dt, f, _seen))
+        placed.append(_place(group_dt, f, _seen, sizes or {}))
 
     placed.sort(key=lambda m: m.offset)
     members: List[MapMember] = []
@@ -344,7 +355,7 @@ def _pad(offset: int, nbytes: int) -> MapMember:
                      stride=nbytes)
 
 
-def _place(group_dt, f, _seen) -> MapMember:
+def _place(group_dt, f, _seen, sizes) -> MapMember:
     """One field, placed. Reserved instances keep their own name."""
     if field_is_register(f):
         return MapMember(kind=REG, name=f.name, dtype=f.datatype,
@@ -353,7 +364,8 @@ def _place(group_dt, f, _seen) -> MapMember:
                          count=None,
                          stride=prim_bits(value_bits(f.datatype)) // 8)
     if field_is_reg_group(f):
-        sz = _group_size(f.datatype, _seen=_seen)
+        sz = _group_size(f.datatype, min_size=sizes.get(id(f.datatype)),
+                         _seen=_seen, _sizes=sizes)
         return MapMember(kind=GROUP, name=f.name, dtype=f.datatype,
                          offset=scalar_offset(group_dt, f.name),
                          elem_size=sz, count=None, stride=sz)
@@ -372,7 +384,13 @@ def _place(group_dt, f, _seen) -> MapMember:
         if _dt_name(elem) == _DT_REGISTER_GROUP:
             # min_size=stride: the element struct must be exactly the stride,
             # or C's indexing and the device's disagree from bank 1 onward.
-            sz = _group_size(elem, min_size=stride, _seen=_seen)
+            need = max(stride, sizes.get(id(elem), 0))
+            if need > stride:
+                raise RegMapError(
+                    f"'{_name(group_dt)}.{f.name}' has stride 0x{stride:x}, "
+                    f"but '{_name(elem)}' is also used with a stride of "
+                    f"0x{need:x}; one struct cannot be both sizes")
+            sz = _group_size(elem, min_size=stride, _seen=_seen, _sizes=sizes)
             return MapMember(kind=GROUP, name=f.name, dtype=elem, offset=base,
                              elem_size=sz, count=count, stride=stride)
     raise RegMapError(
@@ -386,26 +404,67 @@ def _name(dtype) -> str:
     return nm.split("::")[-1]
 
 
+def element_sizes(groups, *, strides=None) -> Dict[int, int]:
+    """``id(group type)`` -> the size its ONE struct must have.
+
+    A group type used as an array element must span exactly its stride, and
+    there is one C struct per type, so the struct is padded for every use at
+    once: the largest stride any array of it has (plus ``strides``, a caller's
+    own requirement per root). Tail padding moves no member, so the padded
+    struct is still right where the type is used alone; a use that cannot take
+    the padding is refused when its map is built.
+
+    A pass of its own, ahead of any layout, because a use can be reached in
+    any order: `collect_reg_groups` lists an element type BEFORE the group
+    holding the array, and laying it out on first sight is what left
+    `ch[2]` at stride 0x100 with a 0x10 element.
+    """
+    need: Dict[int, int] = dict(strides or {})
+    seen = set()
+
+    def walk(g):
+        if id(g) in seen:
+            return
+        seen.add(id(g))
+        for f in getattr(g, "fields", []) or []:
+            if field_is_reg_group(f):
+                walk(f.datatype)
+            elif field_is_array(f):
+                elem = array_element_type(f)
+                if _dt_name(elem) == _DT_REGISTER_GROUP:
+                    _, stride = array_base_stride(g, f.name)
+                    need[id(elem)] = max(need.get(id(elem), 0), stride)
+                    walk(elem)
+
+    for g in groups:
+        walk(g)
+    return need
+
+
 def reg_maps_for(groups, *, strides=None) -> "List[RegMap]":
-    """Layouts for ``groups``, innermost first.
+    """Layouts for ``groups``, innermost first, ONE per group type.
 
     ORDER IS THE POINT: C has no forward reference for a struct used by value,
     so a bank's layout must be emitted before the map that embeds an array of
     it. Dependency order is derived here, from the maps themselves, rather than
     left to the caller's iteration order.
+
+    Each map is built once, at the size every use of its type needs
+    (`element_sizes`), so the order ``groups`` arrive in cannot decide which
+    use's layout wins.
     """
+    sizes = element_sizes(groups, strides=strides)
     by_id, order = {}, []
 
-    def visit(g, min_size=None):
-        m = build_reg_map(g, min_size=min_size)
+    def visit(g):
+        if id(g) in by_id:
+            return
+        m = build_reg_map(g, min_size=sizes.get(id(g)), sizes=sizes)
         for sub in m.groups:
-            visit(sub.dtype, min_size=sub.stride if sub.is_array else None)
-        if id(g) not in by_id:
-            by_id[id(g)] = m
-            order.append(m)
-        return m
+            visit(sub.dtype)
+        by_id[id(g)] = m
+        order.append(m)
 
-    strides = strides or {}
     for g in groups:
-        visit(g, min_size=strides.get(id(g)))
+        visit(g)
     return order

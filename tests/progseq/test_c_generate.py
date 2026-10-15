@@ -101,28 +101,29 @@ def _op_body(text, sig_substr):
     return body
 
 
-def test_body_identical_across_address_seams(tmp_path):
-    """The seams that take an ADDRESS emit the same body.
+def test_body_identical_across_layout_seams(tmp_path):
+    """The seams that reach registers through the layout struct emit the same
+    body.
 
-    `mmio` is deliberately not in the set any more. It is the pointer-
-    dereference seam, so the device IS memory and the generated body follows
-    the register-layout struct -- `write32(&_self->regs->csr, v)` rather than a
-    baked accessor over a folded offset. That is a different body on purpose,
-    and it is the one thing this test must not average away.
+    `mmio` (pointer) and `direct` (functions) both follow the register-layout
+    struct -- `pssc_write32(&_self->regs->csr, v)` -- and differ only in what
+    pssc_mem_reg.h's primitive does with the address: a `volatile` store, or a
+    call to the platform. `vtable` is deliberately not in the set: its
+    primitives need a bus handle a register pointer cannot carry, so it keeps a
+    baked accessor over a folded offset, a different body on purpose.
 
     What remains is the invariant that was always the point: a change to WHERE
     an access goes must not change WHAT the operation does.
     """
     bodies = {}
-    for style in ("vtable", "direct"):
+    for style in ("mmio", "direct"):
         d = _gen(tmp_path / style, link_style=style)
-        # Every style now has a .c, mmio included: it no longer implies a
-        # header-only API, so there is no per-style question about where a
+        # Every style has a .c: there is no per-style question about where a
         # body landed -- which is itself part of the invariant.
         src = (d / "wb_dma.c").read_text()
         bodies[style] = _op_body(src, "wb_dma_mem_to_mem_copy(")
-    assert bodies["vtable"] == bodies["direct"], \
-        "operation bodies must be byte-identical across the address seams"
+    assert bodies["mmio"] == bodies["direct"], \
+        "operation bodies must be byte-identical across the layout seams"
 
 
 def test_reg_style_accessors(tmp_path):

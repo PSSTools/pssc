@@ -651,4 +651,4 @@ def test_the_mmio_driver_refuses_a_32_bit_target(tmp_path):
     r = subprocess.run([cc, "-m32", "-std=c99", "-c", src],
                        cwd=str(out), capture_output=True, text=True)
     assert r.returncode != 0, "the truncating mmio driver compiled for 32-bit"
-    assert "use_vtable_or_direct" in r.stderr, r.stderr
+    assert "use_addr_bits_32_or_vtable" in r.stderr, r.stderr

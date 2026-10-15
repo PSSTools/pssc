@@ -4,9 +4,11 @@
  * rather than a mechanism. `pssc_mem_direct.h` remains as an including shim.
  *
  * The address is passed BY VALUE and never becomes a pointer, so unlike
- * pssc_mem_ptr.h this seam is correct on a target whose pointers are narrower
- * than `pssc_addr_t` -- which is the choice the ptr seam's static assertion
- * points the reader at.
+ * pssc_mem_ptr.h these primitives are correct on a target whose pointers are
+ * narrower than `pssc_addr_t`. Register access is not: a generated driver
+ * reaches its registers through the layout struct (pssc_mem_reg.h), which
+ * forms the address as a pointer before handing it here, and asserts the
+ * width for that reason.
  *
  * The seam inlines over user-supplied extern functions linked by name. Zero
  * per-instance storage, direct symbol linkage. Cost: one bus implementation per
@@ -19,6 +21,11 @@
 /* See pssc_mem_ptr.h for what this marker is for. */
 #define PSSC_MEM_SEAM_CHOSEN 1
 #include "pssc_mem.h"
+
+/* Every primitive below ignores its context argument, so pssc_mem_reg.h may
+ * call it with NULL (layout-struct register access). The vtable seam does not
+ * set this, and pssc_mem_reg.h refuses to build without it. */
+#define PSSC_MEM_SEAM_CONTEXT_FREE 1
 
 /* User-provided -- implement these and link them in. */
 void     pssc_mem_write8 (pssc_addr_t a, uint8_t  d);

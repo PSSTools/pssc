@@ -328,8 +328,8 @@ class COpModelBackend:
     def emit_reg_maps(self, model, s: CSettings) -> List[str]:
         """The register-group layout structs, with their offset assertions.
 
-        The bare-metal alternative to a baked accessor per register, and the
-        reason is scale: an IP with a thousand registers of which a driver
+        The alternative to a baked accessor per register, used on every seam
+        but vtable (`CSettings.reg_map`), and the reason is scale: an IP with a thousand registers of which a driver
         touches thirty got a thousand accessor sets. A layout is DATA
         proportional to the register map and leaves the CODE proportional to
         the registers actually used.
@@ -385,6 +385,9 @@ class COpModelBackend:
     @overridable(since='0.1', stability='provisional')
     def emit_accessors(self, model, s: CSettings) -> List[str]:
         """The inline register accessors (`<base>_read_val`, ...).
+
+        Empty under `reg_map` (every link style but vtable): those reach
+        registers through the layout struct instead.
 
         Returns LINES. Provisional: `mem_access.py` owns both the naming scheme
         and the access rendering, and this method is the DEFINITION side of a

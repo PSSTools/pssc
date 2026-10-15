@@ -67,8 +67,9 @@ def test_a_64_bit_address_on_a_32_bit_target_fails_to_compile(tmp_path):
     there. There is no runtime symptom that points back at the cast.
 
     The assertion's tag is the fix, not a restatement of the problem: the reader
-    is told to use vtable or direct, whose primitives take the address by value
-    and never form a pointer from it.
+    is told to narrow the address (`--addr-bits 32`) or use vtable, whose
+    primitives and register accessors take the address by value and never form
+    a pointer from it.
     """
     cc = _CC[0]
     if not _has_m32(cc):
@@ -80,7 +81,7 @@ def test_a_64_bit_address_on_a_32_bit_target_fails_to_compile(tmp_path):
     r = subprocess.run([cc, "-m32", "-std=c99", "-c", "t.c", "-o", os.devnull],
                        cwd=str(out), capture_output=True, text=True)
     assert r.returncode != 0, "the truncating cast compiled cleanly"
-    assert "use_vtable_or_direct" in r.stderr, r.stderr
+    assert "use_addr_bits_32_or_vtable" in r.stderr, r.stderr
 
 
 def test_the_static_assert_works_without_c11(tmp_path):

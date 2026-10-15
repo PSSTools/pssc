@@ -8,8 +8,11 @@ Emits, for the register subtree reachable from a root component:
     component ``base`` and any array indices are runtime). Every memory access
     in them is rendered by the funnel in ``mem_access.py`` -- this module owns
     the addresses, not the spelling of the access -- and they are emitted
-    identically across all link styles; only ``pssc_bus`` (defined in
-    lower_progseq) varies.
+    identically across the link styles that use them; only ``pssc_bus``
+    (defined in lower_progseq) varies. Under ``reg_map`` (every link style but
+    vtable) the accessors give way to one layout struct per register group
+    (``lower_reg_maps``), whose accesses pssc_mem_reg.h routes through the
+    seam.
 
 Design: docs/design/pss-c-cpp-progseq-gen-design.md (§3.3, §3.4).
 """
@@ -332,6 +335,10 @@ def lower_accessors(comps, prefixes, *, link_style: str = "vtable",
                     mem: MemAccess = None, style=None) -> str:
     """Accessors for every component, each keyed to ITS OWN handle and base.
 
+    Emitted only without `reg_map` -- today, `--link-style vtable` -- since
+    every other seam reaches its registers through the layout struct
+    (`lower_reg_maps`) and these would be a second way to the same member.
+
     Per component rather than per model, because the address a register lives at
     depends on which component you reach it through. `wb_dma_ch_c.regs.csr` is
     `ch->base + 0x0`; the same physical register reached from the root is
@@ -377,9 +384,9 @@ def accessor_map(comps, prefixes, style=None):
 
 # --- the register map, as C -------------------------------------------------
 #
-# The struct the bare-metal driver follows to reach a register. This replaces
-# the per-register accessor set for the no-context link styles, and the reason
-# is scale: an IP with a thousand registers, of which a driver touches thirty,
+# The struct the driver follows to reach a register. This replaces the
+# per-register accessor set on every link style but vtable (whose primitives
+# need a bus handle a register pointer cannot carry), and the reason is scale: an IP with a thousand registers, of which a driver touches thirty,
 # got a thousand accessor sets. A layout is DATA proportional to the register
 # map and leaves the code proportional to the registers actually used.
 

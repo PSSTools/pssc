@@ -14,7 +14,9 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include "pssc_mem_fn.h"
+#include "pssc_mem_reg.h"
 #include "pssc_env.h"
 #include "pssc_chan.h"
 
@@ -86,6 +88,10 @@ typedef struct {
     uint8_t int_on_chunk;
 } wb_dma_ch_cfg_s;
 
+/* ----- Register-map types (full layout: wb_dma_regs.h). ----- */
+typedef struct wb_dma_ch_regs_c wb_dma_ch_regs_c;
+typedef struct wb_dma_regs_c wb_dma_regs_c;
+
 /* ----- Component handles. ----- */
 /*
  * The per-channel MMIO operation model (§3).
@@ -125,6 +131,7 @@ typedef struct {
  */
 typedef struct wb_dma_ch_c {
     pssc_addr_t base_regs;
+    wb_dma_ch_regs_c *regs;
     /*
      * Which channel this is, in ``dma_req_i``/``dma_ack_o`` and INT_SRC bit
      * numbering.
@@ -173,6 +180,7 @@ typedef struct wb_dma_ch_c {
  */
 typedef struct wb_dma_c {
     pssc_addr_t base_regs;
+    wb_dma_regs_c *regs;
     /*
      * How many channels this instance actually uses.
      *
@@ -193,8 +201,6 @@ typedef struct wb_dma_c {
     wb_dma_ch_c ch[4];
 } wb_dma_c;
 
-/* pssc_bus(s): the seam's first argument -- the ONLY line varying by style. */
-#define pssc_bus(s) ((void)(s), (const void *)0)
 
 /* ----- Sub-component access. ----- */
 #define WB_DMA_CH_COUNT 4u

@@ -5,6 +5,7 @@
 #define WB_DMA_REGS_H
 
 #include <stdint.h>
+#include <stddef.h>
 
 /* ----- Register value layouts. ----- */
 typedef union { uint32_t raw; struct {
@@ -62,5 +63,42 @@ typedef union { uint32_t raw; struct {
     uint32_t ch           : 31;   /* [30:0] sw=r hw=w reset=0x0 */
     uint32_t rsvd_31      :  1;   /* [31] reserved */
 }; } wb_dma_intsrc_s;
+
+/* ----- Register map. The layout IS the address arithmetic. ----- */
+struct wb_dma_ch_regs_c {
+    uint32_t csr;                            /* 0x000 readwrite */
+    uint32_t sz;                             /* 0x004 readwrite */
+    uint32_t adr0;                           /* 0x008 readwrite */
+    uint32_t am0;                            /* 0x00c readwrite */
+    uint32_t adr1;                           /* 0x010 readwrite */
+    uint32_t am1;                            /* 0x014 readwrite */
+    uint32_t desc;                           /* 0x018 readwrite */
+    uint32_t swptr;                          /* 0x01c readwrite */
+};
+PSSC_STATIC_ASSERT(sizeof(wb_dma_ch_regs_c) == 0x20u, wb_dma_ch_regs_c_size);
+PSSC_STATIC_ASSERT(offsetof(wb_dma_ch_regs_c, csr) == 0x0u, wb_dma_ch_regs_c_csr_offset);
+PSSC_STATIC_ASSERT(offsetof(wb_dma_ch_regs_c, sz) == 0x4u, wb_dma_ch_regs_c_sz_offset);
+PSSC_STATIC_ASSERT(offsetof(wb_dma_ch_regs_c, adr0) == 0x8u, wb_dma_ch_regs_c_adr0_offset);
+PSSC_STATIC_ASSERT(offsetof(wb_dma_ch_regs_c, am0) == 0xcu, wb_dma_ch_regs_c_am0_offset);
+PSSC_STATIC_ASSERT(offsetof(wb_dma_ch_regs_c, adr1) == 0x10u, wb_dma_ch_regs_c_adr1_offset);
+PSSC_STATIC_ASSERT(offsetof(wb_dma_ch_regs_c, am1) == 0x14u, wb_dma_ch_regs_c_am1_offset);
+PSSC_STATIC_ASSERT(offsetof(wb_dma_ch_regs_c, desc) == 0x18u, wb_dma_ch_regs_c_desc_offset);
+PSSC_STATIC_ASSERT(offsetof(wb_dma_ch_regs_c, swptr) == 0x1cu, wb_dma_ch_regs_c_swptr_offset);
+struct wb_dma_regs_c {
+    uint32_t csr;                            /* 0x000 readwrite */
+    uint32_t int_msk_a;                      /* 0x004 readwrite */
+    uint32_t int_msk_b;                      /* 0x008 readwrite */
+    const uint32_t int_src_a;                /* 0x00c readonly */
+    const uint32_t int_src_b;                /* 0x010 readonly */
+    uint32_t _rsvd_14[3];                    /* 0x014 reserved */
+    wb_dma_ch_regs_c bank[4];                /* 0x020 */
+};
+PSSC_STATIC_ASSERT(sizeof(wb_dma_regs_c) == 0xa0u, wb_dma_regs_c_size);
+PSSC_STATIC_ASSERT(offsetof(wb_dma_regs_c, csr) == 0x0u, wb_dma_regs_c_csr_offset);
+PSSC_STATIC_ASSERT(offsetof(wb_dma_regs_c, int_msk_a) == 0x4u, wb_dma_regs_c_int_msk_a_offset);
+PSSC_STATIC_ASSERT(offsetof(wb_dma_regs_c, int_msk_b) == 0x8u, wb_dma_regs_c_int_msk_b_offset);
+PSSC_STATIC_ASSERT(offsetof(wb_dma_regs_c, int_src_a) == 0xcu, wb_dma_regs_c_int_src_a_offset);
+PSSC_STATIC_ASSERT(offsetof(wb_dma_regs_c, int_src_b) == 0x10u, wb_dma_regs_c_int_src_b_offset);
+PSSC_STATIC_ASSERT(offsetof(wb_dma_regs_c, bank) == 0x20u, wb_dma_regs_c_bank_offset);
 
 #endif /* WB_DMA_REGS_H */

@@ -1460,9 +1460,11 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
                         base_is_ptr: bool = True) -> str:
         """One register access, addressed through the layout struct.
 
-        The primitives take a pointer and nothing else -- there is no bus
-        handle on this seam and no address to pass, so the whole access is the
-        member expression and a width. ``acc`` is looked up by the caller
+        The primitives take a pointer and nothing else -- no seam that uses the
+        layout struct has a bus handle, and the address is the member's, so the
+        whole access is the member expression and a width. What the access
+        then does (a `volatile` store, a call to the platform) is the seam's,
+        decided in pssc_mem_reg.h. ``acc`` is looked up by the caller
         (which already has the right component's prefix in hand for a
         sub-component access) rather than re-derived here.
 
@@ -1759,13 +1761,16 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         driver.
 
         So the descriptor goes through `write32`/`read32` exactly as a register
-        does, and picks up the same `volatile` access and the same
-        PSSC_MEM_BARRIER. The only difference left is where the pointer comes
-        from: a register's is a member of the layout struct, a descriptor's is
-        an address the model computed, so it is cast here.
+        does, and picks up whatever the seam does with a register: the same
+        `volatile` access and PSSC_MEM_BARRIER under the pointer seam, the same
+        call to the platform's function under the functions seam. The only
+        difference left is where the pointer comes from: a register's is a
+        member of the layout struct, a descriptor's is an address the model
+        computed, so it is cast here (losslessly -- pssc_mem_reg.h asserts
+        that `pssc_addr_t` fits in a pointer).
 
-        Under the address seams (`vtable`, `direct`) this stays on the funnel:
-        those route an address somewhere and have no pointer to dereference.
+        Under `vtable` this stays on the funnel: its primitives need the bus
+        handle, which `pssc_write32` has no argument for.
         """
         direction, width = _MEM_PRIMS[name]
         want = 1 if direction == "read" else 2

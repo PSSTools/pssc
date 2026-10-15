@@ -180,3 +180,60 @@ def test_maps_come_back_innermost_first():
     order = reg_maps_for([_top(bank)])
     names = [m.dtype.name for m in order]
     assert names.index("ch_regs_c") < names.index("regs_c")
+
+
+# -- one struct per type, sized for every use --------------------------------
+
+def _timer():
+    """A 0x10 bank used as `ch[2]` at stride 0x100 -- and, through the list
+    handed to `reg_maps_for`, standalone as well."""
+    ch = _Group("ch_c", [_Field(n, _Reg()) for n in ("ctrl", "load",
+                                                     "status", "count")],
+                {"ctrl": 0x0, "load": 0x4, "status": 0x8, "count": 0xc})
+    glb = _Group("glb_c", [_Field("id", _Reg())], {"id": 0x0})
+    top = _Group("timer_c", [_Field("glb", glb), _Field("ch", _Array(ch, 2))],
+                 {"glb": 0x0}, {"ch": (0x100, 0x100)})
+    return ch, glb, top
+
+
+@pytest.mark.parametrize("order", ["element_first", "holder_first"])
+def test_an_array_element_is_padded_whatever_order_it_is_reached_in(order):
+    """`collect_reg_groups` lists the element BEFORE the group that holds the
+    array, and laying it out on first sight gave it no padding: `ch[1]` at
+    0x110 in C, 0x200 on the device. The padded struct is still right where
+    the type is used alone -- tail padding moves no member."""
+    ch, glb, top = _timer()
+    groups = [ch, glb, top] if order == "element_first" else [top, glb, ch]
+    maps = reg_maps_for(groups)
+    chs = [m for m in maps if m.dtype is ch]
+    assert len(chs) == 1
+    assert chs[0].size == 0x100
+    assert [(x.name, x.offset) for x in chs[0].registers] == [
+        ("ctrl", 0x0), ("load", 0x4), ("status", 0x8), ("count", 0xc)]
+    tm = next(m for m in maps if m.dtype is top)
+    arr = next(x for x in tm.members if x.name == "ch")
+    assert (arr.offset, arr.stride, arr.elem_size) == (0x100, 0x100, 0x100)
+    assert tm.size == 0x300
+    names = [m.dtype.name for m in maps]
+    assert names.index("ch_c") < names.index("timer_c")
+
+
+def test_one_type_at_two_strides_is_refused():
+    """One struct cannot be both sizes; the smaller stride would overlap."""
+    ch, _, _ = _timer()
+    top = _Group("two_c", [_Field("a", _Array(ch, 2)),
+                           _Field("b", _Array(ch, 2))], {},
+                 {"a": (0x0, 0x100), "b": (0x200, 0x200)})
+    with pytest.raises(RegMapError, match="stride"):
+        reg_maps_for([top])
+
+
+def test_a_scalar_use_too_small_for_the_padded_struct_is_refused():
+    """Padded for its array use, the struct no longer fits where another group
+    embeds it by value with a register right after."""
+    ch, _, _ = _timer()
+    top = _Group("tight_c", [_Field("one", ch), _Field("after", _Reg()),
+                             _Field("arr", _Array(ch, 2))],
+                 {"one": 0x0, "after": 0x10}, {"arr": (0x1000, 0x100)})
+    with pytest.raises(RegMapError, match="overlaps"):
+        reg_maps_for([top])

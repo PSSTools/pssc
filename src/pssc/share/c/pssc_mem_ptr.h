@@ -27,6 +27,11 @@
 #define PSSC_MEM_SEAM_CHOSEN 1
 #include "pssc_mem.h"
 
+/* Every primitive below ignores its context argument, so pssc_mem_reg.h may
+ * call it with NULL (layout-struct register access). The vtable seam does not
+ * set this, and pssc_mem_reg.h refuses to build without it. */
+#define PSSC_MEM_SEAM_CONTEXT_FREE 1
+
 /* THE ASSUMPTION THIS SEAM IS BUILT ON, checked rather than documented.
  *
  * `pssc_addr_t` is 64 bits because PSS `addr_handle_t` is, and this seam turns
@@ -35,12 +40,15 @@
  * a device that is not there. This is the one place the width matters, so it is
  * the one place that says so.
  *
- * If you hit this: the address space is wider than the machine's pointers, and
- * the fix is a different link style (vtable or direct), whose primitives take
- * the address by value and never form a pointer from it.
+ * If you hit this: the address space is wider than the machine's pointers.
+ * `--addr-bits 32` is the fix when the device map fits in 32 bits. Otherwise
+ * use `--link-style vtable`, whose primitives and folded register accessors
+ * take the address by value and never form a pointer from it. (The functions
+ * seam takes it by value too, but its register access goes through the
+ * layout struct -- pssc_mem_reg.h -- which needs the same width.)
  */
 PSSC_STATIC_ASSERT(sizeof(pssc_addr_t) <= sizeof(uintptr_t),
-                   pssc_addr_t_wider_than_a_pointer__use_vtable_or_direct);
+                   pssc_addr_t_wider_than_a_pointer__use_addr_bits_32_or_vtable);
 
 static inline void     pssc_w8 (const void *s, pssc_addr_t a, uint8_t  d) { (void)s; *(volatile uint8_t  *)(uintptr_t)a = d; PSSC_MEM_BARRIER(); }
 static inline uint8_t  pssc_r8 (const void *s, pssc_addr_t a)             { (void)s; PSSC_MEM_BARRIER(); return *(volatile uint8_t  *)(uintptr_t)a; }

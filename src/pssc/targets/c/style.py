@@ -349,10 +349,9 @@ class CStylePolicy(StylePolicy):
             out.append("#include <stdlib.h>")
         out.append(f'#include "{s.seam_include}"')
         if s.reg_map:
-            # The pointer-in primitives (write32/read32). Alongside the address
-            # seam, not instead of it: `_mem_call` still lowers the model's own
-            # `write32(addr, ...)` into system RAM, which is an address and not
-            # a register.
+            # The pointer-in primitives (write32/read32). AFTER the address
+            # seam, which they are built on (pssc_mem_reg.h calls its
+            # `pssc_w<N>`/`pssc_r<N>` and refuses to build without one).
             out.append('#include "pssc_mem_reg.h"')
         # The environment seam: `message`, and PSSC_UNREACHABLE. Separate from
         # the memory seam because it is optional, and it is what an integrator
