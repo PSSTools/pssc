@@ -70,9 +70,10 @@ module by module.
 | zuspec-rt-core | 6df14aa | 0.1.0 | first release: version file, CI pair |
 | zuspec-rt-eng | 5581152 | 0.1.0 | first release; test fixture fixed for dv-solve's `lib/` |
 | zuspec-be-bc | 6c6f001 | 0.1.0 | first release: deps, README, CI pair |
-| zuspec-solver | — | 0.1.0 | **waiting:** the pure-Python cleanup (section 5, item 5) |
-| synth, be-fv | — | 0.1.0 | not started |
-| pssc | — | 0.2.0 | last: floors on everything, bc stack as dependencies |
+| zuspec-solver | 0e3d8ab | 0.1.0 | pure Python: `translate` only; old tree on local branch `archive/pre-pure-python` |
+| zuspec-synth | 469ebc4 | 0.1.0 | first release; `templates/*.v` shipped, `sv` extra |
+| zuspec-be-fv | 698f31b | 0.1.0 | first release; dataclasses and ir-core declared, `synth` extra |
+| pssc | b3cf306 | 0.2.0 | floors, be-bc; clean install verified end to end; 3644 / 858 compliance |
 
 Tag order: ir-core, then be-py, be-sv and be-sw, then rt-core, rt-eng and
 zuspec-solver, then be-bc, synth and be-fv, then pssc.
