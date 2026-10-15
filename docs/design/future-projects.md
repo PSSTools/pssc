@@ -53,7 +53,9 @@ priority now.
 ### `>>` on a signed operand: the copies disagree
 
 be-bc's and pssc's tables send `BinOp.RShift` to `BIN_RSHIFT` (logical).
-be-sw's sends it to `BIN_ASHR`, which is arithmetic in a signed context. Settle
+be-sw's sends it to `BIN_ASHR`, which is arithmetic in a signed context. That
+was a deliberate change (be-sw dd10526, "Map `>>` in constraints to dv-solve's
+arithmetic shift"), so be-sw is probably the side that is right. Settle
 it from the LRM (8.7 operators) and fix the shared walk's `_BINOP`. Procedural
 code on every target must agree with constraints.
 
@@ -71,15 +73,42 @@ Mapping an unsat core or solver explanation to the IR constraints and their
 source locations would be shared work. be-bc's `provenance.py` is ZBC-specific
 and does not do it.
 
+## bc stack
+
+- **rt-eng's engine cannot load without a dv-solve link.** The engine C
+  references `dvs_solver_*` unconditionally, but `build.build_shared_lib`
+  links dv-solve only when its caller passes `extra_link_args`. It does not
+  find the library itself, for example through the installed `dv_solve`
+  package (be-sw's `scenario/solver_paths.py` does that). Before pssc runs
+  the native engine for users, rt-eng should locate dv-solve on its own, or
+  build a solver-less engine that refuses SOLVE.
+
 ## pssc
 
 - **Dead SV activity solver path:** `targets/sv/analyze_activity.py` imports
   `zuspec.solver.chain_problem_builder`, which no longer exists. A blanket
   `except Exception` turns that into an empty plan. Fix it or delete it.
+- **Dead DPI solver path in the SV target:** `ctx.uses_dpi_solver` is never
+  set, so `emit_files` never copies `zsp_dpi_pkg.sv`. Its default path is
+  also a source-tree path into zuspec-solver (`src/sv/`), which the
+  pure-Python zuspec-solver no longer has. Delete it together with
+  `analyze_activity`'s solver path.
 - **Unreachable symbol refusals in `ast2ir.py`:** since pssparser 3.3, the
   parser reports PSS006/PSS018/PSS064 first, so pssc's own refusals never fire.
   They are kept as backstops. Decide whether to keep them, and add a test if
   they stay.
+
+## Test rot found during the 0.2.0 wave
+
+These fail the same way before and after the release changes, so they are
+not release blockers.
+
+- **be-sv:** 14 `tests/performance/` simulator tests fail with
+  `TaskSetRunner.mkDataItem() requires a builder`, a dv-flow-mgr API change.
+- **be-sw:** 6 failures (`tests/integration/rtl/test_debug_build.py`, among
+  others) and 47 collection errors. The RTL benchmark and correctness tests
+  import sibling modules (`from pipeline import ...`) that are not on the
+  path. The PSS end-to-end tests skip on `zuspec.fe.pss` (see above).
 
 ## Release hygiene
 

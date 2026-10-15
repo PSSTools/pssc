@@ -53,6 +53,30 @@ Order, since each step needs the previous one on PyPI:
    (0.2.3 is on PyPI now). Verify with a clean `uvx --refresh pssc` and the
    wheel-completeness audit before tagging.
 
+### Wave status (2026-10-15)
+
+Release commits are made locally; none are pushed or tagged yet. Each wheel was
+built from a clean export and audited (`.py` and data counts against `src/`),
+installed into a fresh venv next to the other local wheels, and imported
+module by module.
+
+| package | commit | version | notes |
+|---|---|---|---|
+| zuspec-ir-core | 5daeb91 | 0.2.0 | 40/40 `.py`; 39 modules import |
+| zuspec-be-py | 5d63987 | 0.2.0 | `ir-core>=0.2.0`; `rt/pipeline_rt` needs the `zdc` extra (shares @zdc ContextVars) |
+| zuspec-be-sv | 2965b12 | 0.2.0 | lazy `passes`, `synth` extra, packages discovered, `share/sv` shipped |
+| zuspec-be-sw | b00ee7f | 0.2.0 | dataclasses -> `zdc` extra, `solver` extra, `cbridge` shipped |
+| zuspec-dataclasses | — | stays 0.1.0 | no commits since 0.1.0 and no version pins, so 0.1.0 already accepts the new set |
+| zuspec-rt-core | 6df14aa | 0.1.0 | first release: version file, CI pair |
+| zuspec-rt-eng | 5581152 | 0.1.0 | first release; test fixture fixed for dv-solve's `lib/` |
+| zuspec-be-bc | 6c6f001 | 0.1.0 | first release: deps, README, CI pair |
+| zuspec-solver | — | 0.1.0 | **waiting:** the pure-Python cleanup (section 5, item 5) |
+| synth, be-fv | — | 0.1.0 | not started |
+| pssc | — | 0.2.0 | last: floors on everything, bc stack as dependencies |
+
+Tag order: ir-core, then be-py, be-sv and be-sw, then rt-core, rt-eng and
+zuspec-solver, then be-bc, synth and be-fv, then pssc.
+
 Fix the two shipping gaps on the way:
 
 - be-sv's `pyproject.toml` still uses a hard-coded `packages = [...]` list and
