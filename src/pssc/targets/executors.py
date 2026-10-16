@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 
+from ..diag import at
 from .progseq_model import _dt_name, resolve_ref
 
 #: `name: (direction, width)` for every primitive an executor may override and
@@ -170,21 +171,24 @@ def check(components, type_map, *, delegating: bool) -> List[str]:
         name = getattr(comp, "name", "?")
         for fn in getattr(comp, "functions", None) or []:
             if fn.name in UNSUPPORTED_OVERRIDES:
-                msgs.append(
+                msgs.append(at(
+                    (fn, comp),
                     f"{name}::{fn.name}: overriding '{fn.name}' in an executor "
                     f"is not supported. The default primitives resolve their "
                     f"address through it (LRM 21.13.9.5), and this target "
-                    f"lowers it as the identity on a handle.")
+                    f"lowers it as the identity on a handle."))
         ovr = overrides(comp)
         if ovr and not delegating:
-            msgs.append(
+            msgs.append(at(
+                (*ovr.values(), comp),
                 f"{name}: overrides {', '.join(sorted(ovr))}, and this target "
                 f"does not delegate memory primitives to executors (LRM "
-                f"21.13.9.5). Accesses would bypass the override.")
+                f"21.13.9.5). Accesses would bypass the override."))
             continue
         for fn in ovr.values():
             why = check_prototype(fn, type_map)
             if why is not None:
-                msgs.append(f"{name}::{fn.name}: overrides a memory "
-                            f"primitive, but {why} (LRM Syntax 159)")
+                msgs.append(at((fn, comp), f"{name}::{fn.name}: overrides a "
+                                   f"memory primitive, but {why} (LRM "
+                                   f"Syntax 159)"))
     return msgs

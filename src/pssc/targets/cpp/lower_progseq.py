@@ -36,6 +36,7 @@ from ..body_walker import (match_values, foreach_parts, assigns_local,
                            in_as_compare, match_needs_chain,
                            match_arm_test)
 
+from ...diag import Refusal
 from ..comments import LINE, append_trailing, blank_line, comment_lines, doc_block
 from ..array_literal import is_literal
 from ..progseq_model import (
@@ -47,7 +48,7 @@ from ..c.lower_progseq import (
     Prefixes, regular_nodes, post_order, c_string_literal, _array_size,
     _builtin_name, _str_const, func_kind_name, parse_prefix_map,
     c_select_read, c_select_write, select_type, CIntSemantics, _c_carrier,
-    handle_from_handle,
+    handle_from_handle, checked_index,
     _c_unbracket, _has_call, by_handle_params, _prefixed, with_defaults,
 )
 from ..expr_types import (CONTEXT_BINARY, CONTEXT_UNARY, LEFT_TYPED,
@@ -321,6 +322,19 @@ _UNOP = {
 class _BodyEmitter(CIntSemantics):
     #: The seam's integer power (`pssc_env.hpp`).
     POW_FN = "pssc::ipow"
+
+    #: The node kinds `expr` and `_stmt_lines` render: what the gate's
+    #: pre-screen (`body_kinds`) asks, since this emitter dispatches by a
+    #: cascade rather than `BodyWalker` hooks.
+    #: `test_emitter_kind_registry.py` holds it to the two cascades.
+    KINDS = frozenset({
+        "ExprAttribute", "ExprBin", "ExprCall", "ExprCast", "ExprConstant",
+        "ExprIfExp", "ExprIn", "ExprNull", "ExprRefBottomUp", "ExprRefLocal",
+        "ExprRefUnresolved", "ExprSubscript", "ExprUnary",
+        "StmtAnnAssign", "StmtAssign", "StmtAugAssign", "StmtBreak",
+        "StmtContinue", "StmtExpr", "StmtFor", "StmtForeach", "StmtIf",
+        "StmtMatch", "StmtRepeatWhile", "StmtReturn", "StmtWhile",
+        "StmtYield"})
 
     """Translate one operation body to C++ lines.
 
@@ -827,10 +841,10 @@ class _BodyEmitter(CIntSemantics):
             fmt_e = ir.ExprConstant(value=fmt_e.value[:-1])
         fmt = getattr(fmt_e, "value", None)
         if _dt_name(fmt_e) != "ExprConstant" or not isinstance(fmt, str):
-            raise ValueError(
+            raise Refusal(
                 f"'{name}' needs a string literal as its format, so the "
                 f"format can be checked when the model is generated; got "
-                f"{_dt_name(fmt_e)}")
+                f"{_dt_name(fmt_e)}", fmt_e)
         # Formatted here, not by the platform's printf (`message_format`).
         from ..c.message_format import CppFormat, lower_format
         parts = lower_format(name, fmt, vals, self.types, self.expr,
@@ -1027,7 +1041,8 @@ class _BodyEmitter(CIntSemantics):
             sel = bit_select(e, self.types)
             if sel is not None:
                 return c_select_read(sel, self.expr)
-            return f"{self.expr(e.value)}[{self.expr(e.slice)}]"
+            return (checked_index(self, e)
+                    or f"{self.expr(e.value)}[{self.expr(e.slice)}]")
         if cn == "ExprBin":
             if e.op.name in RELATIONAL:
                 text = self._int_compare(e)     # None if an operand is an enum
@@ -1089,7 +1104,10 @@ class _BodyEmitter(CIntSemantics):
 
         One site for the whole tree, mirroring the SV and C emitters' hook.
         """
-        lines = self._stmt_lines(s, ind)
+        try:
+            lines = self._stmt_lines(s, ind)
+        except Refusal as e:
+            raise e.at_least(s)
         if not lines:
             return lines
         pad = "    " * ind
@@ -1273,7 +1291,7 @@ class _BodyEmitter(CIntSemantics):
         elem = getattr(dtype, "element_type", None)
         if elem is None or self.types.of_datatype(elem) is None or \
                 assigns_local(s.body, it.name):
-            raise ValueError(
+            raise Refusal(
                 f"cannot lower `foreach ({it.name} : {coll})`: "
                 + ("its body assigns the iterator, which aliases the element "
                    "(LRM 20.7.8 c); assign the element by index"
@@ -1612,10 +1630,10 @@ def _chan_member(f) -> str:
     dt = channel_dtype(f)
     depth = int(getattr(dt, "depth", 1) or 1)
     if depth != 1:
-        raise ValueError(
+        raise Refusal(
             f"channel '{f.name}' has depth {depth}; the C++ target implements "
             f"only depth-1 channels (share/cpp/pssc_chan.hpp). A deeper channel "
-            f"is a ring buffer, which nothing in scope declares.")
+            f"is a ring buffer, which nothing in scope declares.", f)
     elem = getattr(dt, "element_type", None)
     if elem is None:
         raise ValueError(f"channel '{f.name}' has no element type")

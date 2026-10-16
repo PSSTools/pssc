@@ -203,3 +203,42 @@ component pss_top {
     with pytest.raises(Exception) as ei:
         _compile(tmp_path, text, ["pss_top::C"])
     assert "neither is nor inherits from" in str(ei.value)
+
+
+# Example 285 (20.1.4.3, IP-61): an extension's body runs after the initial
+# definition's, `super;` included -- with `super;` first and with it last.
+# (An entry runs only `exec body` and takes no attributes, so the example's
+# `a` is left out.)
+_EXTENDED = """
+import std_pkg::*;
+component pss_top {
+  action A {
+    exec body { message(LOW, "Hello from A"); }
+  }
+  action A1 : A {
+    exec body { super; message(LOW, "Hello from A1"); }
+  }
+  action A1r : A {
+    exec body { message(LOW, "Hello from A1r"); super; }
+  }
+}
+extend action pss_top::A1 {
+  exec body { message(LOW, "Hello from A1 extension"); }
+}
+extend action pss_top::A1r {
+  exec body { message(LOW, "Hello from A1r extension"); }
+}
+"""
+
+
+def test_an_extensions_body_follows_super_and_the_initial_body(tmp_path):
+    out = _compile(tmp_path, _EXTENDED, ["pss_top::A1", "pss_top::A1r"])
+    mod, rt = _load(out, "pssc_rt")
+    bus = rt.MemoryBus()
+    top = mod.PssTop(bus)
+    top.A1()
+    assert _messages(bus) == ["Hello from A", "Hello from A1",
+                              "Hello from A1 extension"]
+    top.A1r()
+    assert _messages(bus) == ["Hello from A1r", "Hello from A",
+                              "Hello from A1r extension"]

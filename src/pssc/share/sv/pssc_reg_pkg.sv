@@ -11,6 +11,7 @@
 //   * channel_c       -- PSS `sync_pkg::channel_c<Te, DEPTH>` (§21.9.1)
 //   * pssc_str_find, pssc_str_find_last -- PSS string `find`/`find_last`
 //                        (§7.6.3), which SV's `string` has no method for
+//   * pssc_index      -- an array index checked against its size (§8.6.2)
 //
 // Design: docs/design/pss-programming-seq-gen-design.md (§5).
 
@@ -249,6 +250,16 @@ package pssc_reg_pkg;
   endclass
 
   // ----- PSS string methods SV's `string` lacks (§7.6.3). -----
+  // An array index checked against the array's size (PSS 8.6.2): out of
+  // range is the model's run-time error, and element 0 is used instead.
+  function automatic longint pssc_index(longint i, longint n);
+    if (i < 0 || i >= n) begin
+      $error("array index out of bounds");
+      return 0;
+    end
+    return i;
+  endfunction
+
   // Where `sub` first starts at or after `first`, or -1; an empty `sub` is
   // at 0.
   function automatic int pssc_str_find(string s, string sub, int first = 0);

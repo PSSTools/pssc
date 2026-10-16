@@ -230,6 +230,9 @@ class PyProgSeqTarget(OpModelTarget):
         from .py.backend import PyOpModelBackend
         return cls.backend_cls or PyOpModelBackend
 
+    def body_emitter_class(self):
+        return self.backend_class().body_emitter_cls
+
     def backend_for(self, opts: argparse.Namespace):
         """The backend instance this run generates through."""
         return self.backend_class()(getattr(opts, "py_module", None) or "",

@@ -40,6 +40,7 @@ from .lower_reg_model import (accessor_base, c_struct_name, _prim_bits,
 from .c_names import BUS, HANDLE, RESERVED
 from .mem_access import DEFAULT as DEFAULT_MEM, MemAccess
 from .style import coerce as _style
+from ...diag import Refusal
 from ..body_walker import (BodyWalker, CallDispatch, match_values,
                            foreach_parts, assigns_local, in_as_compare,
                            match_needs_chain, match_arm_test,
@@ -773,11 +774,11 @@ def _chan_member(f) -> str:
     dt = channel_dtype(f)
     depth = int(getattr(dt, "depth", 1) or 1)
     if depth != 1:
-        raise ValueError(
+        raise Refusal(
             f"channel '{f.name}' has depth {depth}; the C target implements "
             f"only depth-1 channels (share/c/pssc_chan.h). A deeper channel is "
             f"a ring buffer, which is a different type per capacity and which "
-            f"nothing in scope declares.")
+            f"nothing in scope declares.", f)
     elem = getattr(dt, "element_type", None)
     if elem is not None and _dt_name(elem) not in (_DT_INT, _DT_BOOL, _DT_ENUM):
         raise ValueError(
@@ -1855,7 +1856,8 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
     def expr_subscript(self, e) -> str:
         sel = bit_select(e, self.types)
         if sel is None:
-            return f"{self.expr(e.value)}[{self.expr(e.slice)}]"
+            return (checked_index(self, e)
+                    or f"{self.expr(e.value)}[{self.expr(e.slice)}]")
         return c_select_read(sel, self.expr)
 
     def _select_assign_value(self, sel, value) -> str:
@@ -2177,10 +2179,10 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             fmt_e = ir.ExprConstant(value=fmt_e.value[:-1])
         fmt = getattr(fmt_e, "value", None)
         if _dt_name(fmt_e) != "ExprConstant" or not isinstance(fmt, str):
-            raise ValueError(
+            raise Refusal(
                 f"'{name}' needs a string literal as its format, so the "
                 f"format can be checked when the model is generated; got "
-                f"{_dt_name(fmt_e)}")
+                f"{_dt_name(fmt_e)}", fmt_e)
         # Formatted here, not by the platform's printf (`message_format`).
         from ..c.message_format import CFormat, lower_format
         parts = lower_format(name, fmt, vals, self.types, self.expr,
@@ -2507,7 +2509,7 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         elem = getattr(dtype, "element_type", None)
         if elem is None or self.types.of_datatype(elem) is None or \
                 assigns_local(s.body, it.name):
-            raise ValueError(
+            raise Refusal(
                 f"cannot lower `foreach ({it.name} : {coll})`: "
                 + ("its body assigns the iterator, which aliases the element "
                    "(LRM 20.7.8 c); assign the element by index"
@@ -3067,14 +3069,18 @@ def _solve_impl(comp, prefix, prefixes, emitter_cls, qual, be_kw,
     """The component's solve functions (`_solve_operations`), file-local.
 
     Not on the API: PSS lets only solve context call one (22.2.3), and the
-    platform calls the generated code in target context. So each is `static`,
+    platform calls the generated code in target context. So each is
+    `static inline`,
     declared first -- they may call each other, and the constructor below calls
     them -- and its body is rendered as a constructor's is, in solve context.
     """
     fns = _solve_operations(comp, be_kw.get("ctor_names"))
     if not fns:
         return []
-    helper = "static inline " if qual else "static "
+    # `inline` as well: a component that inherits a solve function nothing
+    # of its own calls still renders it (the flattened view), and an unused
+    # `static` function fails `-Werror=unused-function` (W45).
+    helper = "static inline "
     ctx = OpCtx(comp=comp, prefix=prefix, qual=helper,
                 type_name=prefixes.type_name(comp),
                 emitter_cls=ctor_emitter_cls(emitter_cls), be_kw=be_kw)
@@ -3133,3 +3139,20 @@ def lower_impl(model, prefixes, *, link_style: str = "vtable",
             lines += emit_operation(fn, ctx)
             lines.append("")
     return "\n".join(lines).rstrip()
+
+
+def checked_index(emitter, e) -> Optional[str]:
+    """``a[i]`` with ``i`` checked against ``a``'s size (`index_bounds`), in
+    C or C++: an index out of range reports the model's run-time error and
+    reads element 0 instead (`error()` may continue, 21.3). None when the
+    index needs no check."""
+    from ..index_bounds import index_bound, MESSAGE
+    n = index_bound(e)
+    if n is None:
+        return None
+    idx = emitter.expr(e.slice)
+    err = emitter.expr(ir.ExprCall(
+        func=ir.ExprAttribute(value=ir.TypeExprRefSelf(), attr="error"),
+        args=[ir.ExprConstant(value=MESSAGE)], keywords=[]))
+    return (f"{emitter.expr(e.value)}[((unsigned long long)({idx}) < {n}u "
+            f"? ({idx}) : ({err}, 0))]")

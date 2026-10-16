@@ -17,6 +17,7 @@ from __future__ import annotations
 import dataclasses as dc
 from typing import Any, Dict, List
 
+from ..diag import at
 from .progseq_model import _dt_name
 
 #: Datatypes the walk never enters (rendered, or not, as themselves).
@@ -46,15 +47,17 @@ def find(model, refused: Dict[str, str]) -> List[str]:
     out: List[str] = []
     seen_structs = set()
 
-    def hit(dtype, where: str) -> bool:
+    def hit(dtype, where: str, node) -> bool:
         cn = _dt_name(dtype)
         if cn in refused:
-            out.append(f"{where}: a {_PSS_NAME.get(cn, cn)} ({refused[cn]})")
+            out.append(at(node, f"{where}: a {_PSS_NAME.get(cn, cn)} "
+                                f"({refused[cn]})"))
             return True
         return False
 
-    def datatype(dtype, where: str) -> None:
-        if dtype is None or hit(dtype, where):
+    def datatype(dtype, where: str, node) -> None:
+        """``node``: the declaration a refusal is located at."""
+        if dtype is None or hit(dtype, where, node):
             return
         cn = _dt_name(dtype)
         if cn == "DataTypeStruct":
@@ -63,9 +66,9 @@ def find(model, refused: Dict[str, str]) -> List[str]:
             seen_structs.add(id(dtype))
             for f in getattr(dtype, "fields", None) or []:
                 datatype(getattr(f, "datatype", None),
-                         f"{_name(dtype)}.{f.name}")
+                         f"{_name(dtype)}.{f.name}", (f, dtype))
         elif cn == "DataTypeArray":
-            datatype(getattr(dtype, "element_type", None), where)
+            datatype(getattr(dtype, "element_type", None), where, node)
 
     def body(stmts, where: str) -> None:
         seen = set()
@@ -85,7 +88,7 @@ def find(model, refused: Dict[str, str]) -> List[str]:
                 return
             if cn == "StmtAnnAssign":
                 local = getattr(getattr(n, "target", None), "name", "?")
-                datatype(n.annotation, f"{where}: local '{local}'")
+                datatype(n.annotation, f"{where}: local '{local}'", n)
             for f in dc.fields(n):
                 if not (cn == "StmtAnnAssign" and f.name == "annotation"):
                     walk(getattr(n, f.name, None))
@@ -96,14 +99,15 @@ def find(model, refused: Dict[str, str]) -> List[str]:
     for comp in model.comp_dtypes_root_first:
         cname = _name(comp)
         for f in getattr(comp, "fields", None) or []:
-            datatype(getattr(f, "datatype", None), f"{cname}.{f.name}")
+            datatype(getattr(f, "datatype", None), f"{cname}.{f.name}",
+                     (f, comp))
         funcs += [(cname, fn) for fn in getattr(comp, "functions", None) or []]
     funcs += [(None, fn) for fn in getattr(model, "functions", ()) or ()]
     for owner, fn in funcs:
         where = f"{owner}::{fn.name}" if owner else str(fn.name)
         for a in getattr(getattr(fn, "args", None), "args", None) or []:
-            datatype(a.annotation, f"{where}: parameter '{a.arg}'")
-        datatype(getattr(fn, "returns", None), f"{where}: result")
+            datatype(a.annotation, f"{where}: parameter '{a.arg}'", (a, fn))
+        datatype(getattr(fn, "returns", None), f"{where}: result", fn)
         body(getattr(fn, "body", None), where)
     return list(dict.fromkeys(out))
 

@@ -10,7 +10,8 @@ A matrix case names what it exercises in ``covers``. A construct is covered
 on a target by a case that is not an xfail there: either executed with its
 trace checked, or refused with its diagnostic checked. What no case can say
 -- a construct proved elsewhere (bc, the corpus), or meaningless on a target
--- is a disposition in ``coverage.yaml`` beside the inventory.
+-- is a disposition in ``coverage.yaml`` beside the inventory, as is a
+construct still open on a target (its defect or ruling named).
 
 ``python -m progseq.matrix.coverage`` (from ``tests/``) prints the table.
 """
@@ -84,9 +85,30 @@ def covered():
                     cov[tag][tgt].append(name)
     for cid, d in dispositions().items():
         for tgt, entry in d.items():
+            if entry.get("status") not in COVERING:
+                continue
             for t in (_matrix.ALL if tgt == "all" else (tgt,)):
                 cov[cid][t].append(entry.get("status", "?"))
     return cov
+
+
+#: Disposition statuses that count as coverage; ``open`` records why a
+#: construct is NOT proved on a target yet (a defect or a ruling).
+COVERING = ("elsewhere", "n-a")
+STATUSES = COVERING + ("open",)
+
+
+def mapped():
+    """{id: {target, ...}}: the targets on which a case or ANY disposition
+    (``open`` included) accounts for the construct."""
+    out = defaultdict(set)
+    for _mod, _name, case in cases():
+        for tag in case.covers:
+            out[tag].update(_matrix.ALL)
+    for cid, d in dispositions().items():
+        for tgt in d:
+            out[cid].update(_matrix.ALL if tgt == "all" else (tgt,))
+    return out
 
 
 def report():

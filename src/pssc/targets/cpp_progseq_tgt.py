@@ -33,6 +33,10 @@ class CppProgSeqTarget(OpModelTarget):
     #: A derived component is a derived class: `: public base`, `base::f`.
     native_inheritance = True
 
+    def body_emitter_class(self):
+        from .cpp.lower_progseq import _BodyEmitter
+        return _BodyEmitter
+
     # Same reasoning as op-model-c: plain functions, no coroutine runtime, no
     # solver in the image.
     target_cfg = {

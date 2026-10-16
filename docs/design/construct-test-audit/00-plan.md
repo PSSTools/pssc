@@ -1,7 +1,7 @@
 # Construct test audit and plan: data types, expressions, functions, procedural statements
 
 Status: **in progress** (started 2026-10-16, tree `394f75d`). Rulings R1–R3,
-R4, R5, R9 decided (§7). Progress is logged in §8.
+R4, R5, R9, R12, R13 decided (§7); R6-R8, R10, R14-R16 open. Progress is logged in §8.
 
 **Where it stands (2026-10-16):** P0.2, P0.3 done; P1 done but for two
 items carried forward -- string METHODS on py/sv (E1, to P3 strings: the
@@ -13,7 +13,19 @@ and six new IR defects found and fixed (I6-I11). **P3 done** (§8): the
 expression grid (194 rows, pairwise, against an independent 8.7 oracle),
 ~70 hand-written cases, the WB DMA operations traced on all four targets,
 string methods on py/sv (E1 closed), and 16 new defects, 14 fixed (W25-W33,
-E13-E16, E18) and two pinned as strict xfails (W31, E17). Next: P4.
+E13-E16, E18) and two pinned as strict xfails (W31, E17). **P4 done**
+(§8): all 100 interaction patterns mapped on every target (93-94 covered,
+the rest `open` with a defect or ruling), enforced by `test_coverage.py`;
+W34-W36, W41, I12 fixed; W37, W38, W40, W43, E19 pinned; new rulings R12,
+R13 needed. **P5.1 and P5.2 done** (§8): every refusal is located
+(`file:line:col`, also as markers), the gate pre-screens IR kinds per target
+against an emitter-kind registry, E20/E22/E23 fixed, E21 pinned. **P5.3
+done** (§8): coverage is enforcing -- all 596 sub-constructs mapped on every
+target (530-539 proved per target), 239 -> 442 matrix cases, a new
+`test_m_neg.py` for LRM errors, and ~75 new defects pinned (I13-I18,
+W46-W66, E24-E42, M1-M6, F1-F32, H1); rulings R14-R16 needed. Next: fix the
+silently-wrong ones (I13, I14, I15, W46-W50, W53, W55, W63), file F1-F32
+with pssparser, then P6.
 
 ## 0. What is in this directory
 
@@ -94,6 +106,9 @@ snippets into checked-in tests is phase P1 below.
 "W" = compiles to wrong code or fails to compile with no diagnostic.
 "E" = internal error where a located refusal belongs.
 "I" = IR loss (ast2ir).
+"M" = a located refusal giving the wrong reason.
+"F" = the front end accepts what the LRM makes an error (table below).
+"H" = a gap in the test harness, not in pssc.
 Sources are in brackets.
 
 | ID | Target | Construct | Symptom | Src |
@@ -160,6 +175,119 @@ Sources are in brackets.
 | I9 | ast2ir | array sized by a component `static const` or by a constant expression (`N + 1`) | `size=-1`, no error | P2 |
 | I10 | ast2ir | an import prototype's float parameter, variadic parameter, default | parameter dropped (I1 for imports); `int ... args` became an ordinary parameter; default dropped | P2 |
 | I11 | ast2ir | `u_c::sf(2)` (static function by its type); a method of a literal (`"a".size()`) | None: `int x = u_c::sf(2);` lost its initializer silently | P2 |
+| W34 | c, cpp, py, sv | a `match` whose choices overlap (constant, or a range bound known at run time) | **silently wrong**: the first matching choice ran; 20.7.10 d makes more than one match an error. Fixed: `targets/match_overlap.py` puts an `error()` before such a match (IP-36) | P4 |
+| W35 | c, cpp, py, **bc** | `%d`/`%u`/`%x` of a `bool` | printed -1: formatted as a one-bit value, which `%d` reads as signed (7.12 b: true is 1). Fixed in pssc's two formatters and in zuspec-be-bc's `interp/fmt.py` (which `_pss_fmt` is held equal to) | P4 |
+| W36 | c, cpp, py, sv | `foreach (c : comps[i])`, an iterator over an array of components | c/cpp/sv: internal error ("unsupported type for DataTypeComponent"); py: refused. Fixed: `targets/comp_foreach.py` rewrites it to the index form | P4 |
+| W37 | py, sv | a sub-string past the end (`s[4..3]` of `"abcd"`) | empty string, no error (8.6.3 makes the positions a "shall"). **Open** (strict xfail), waiting on R12 | P4 (IP-70) |
+| W38 | py, sv | `s + "c"` on strings | accepted (8.4 Table 10 has no string `+`): Python concatenates, SV emits a `+` Verilator rejects. pssparser does not check operand types. **Open** (strict xfail), for pssparser | P4 (IP-71) |
+| W39 | c, cpp | a call argument with side effects (`message("%d %d", ch.try_put(1), ch.try_put(2))`) | evaluated right to left (C leaves the order unspecified); Python and SV go left to right. Waiting on R10; no case pins it yet | P4 |
+| W40 | all | a `const` struct parameter passed to a non-const formal (20.2.3) | accepted; the callee writes the caller's struct. pssparser does not check it. **Open** (strict xfail), for pssparser | P4 (IP-65) |
+| W41 | c, sv | `%d` of a channel's `try_put`/`try_get` | c: "cannot determine its PSS type"; sv: -1. `ExprTypes` now types them `bool` | P4 (IP-55) |
+| W42 | all | a part select with non-constant bounds (`v[4*i+3:4*i]`) | 8.6.1 requires constant bounds; pssparser accepts it, and pssc refuses it with an unlocated ValueError (an internal error) | P4 |
+| W43 | bc | a solve function reached from `exec body` through an unqualified function | runs; 20.2.1.3 makes it an error (the op-model gate refuses it). **Open** (strict xfail in `test_bc_interaction_patterns.py`) | P4 (IP-97) |
+| W44 | bc | an `exec body` writing a component field | runs; R13 refuses it (20.7.3 b, 9.1.6). **Open** (strict xfail in `test_bc_interaction_patterns.py`); `test_bc_comp_array.py` relies on it | R13 |
+| W45 | c | a private solve function inherited by a component that never calls it | a `static` function, so `-Werror=unused-function` failed the build; now `static inline` | R13 rewrite |
+| E19 | c, cpp, py | a channel deeper than 1 | refused, but with a ValueError (internal error), not a located refusal; SV runs it. **Open** (strict xfail) | P4 (IP-55) |
+| I12 | ast2ir | an index of a call's result, `g(7)[2]` | **silently wrong**: translated as `g[2](7)` (the element's subscripts were applied before its call). Fixed: `_apply_call_and_subscripts` | P4 (IP-74) |
+| E20 | c, cpp, py, sv | an array compared with an array literal (`v == {1, 2}`, 8.5.3) | internal error ("defines no expr_list()"). Fixed: `array_methods` lowers it to element comparisons, row by row; a literal of another length is a located refusal | P5 |
+| E21 | c, cpp, py, sv | struct literals as the arms of `?:` (8.4.3, EX-COND.5) | internal error. Now a located refusal from the gate's pre-screen (`body_kinds`). **Open** (strict xfail) | P5 |
+| E22 | c, cpp, py, sv | `v in {a, b}`, a value-list literal as the set of an `in` (8.5.9.1) | internal error ("`in` over a value is not lowered"). Fixed: `in_as_compare` compares each item | P5 |
+| E23 | py | an array literal passed for an array parameter, or returned as an array result (20.3.2) | internal error. Fixed: `convert_to` renders it as a new list (C, C++, SV refuse array parameters, R8) | P5 |
+| W46 | c, cpp, py, sv | a value of a domain-restricted type (`bit[5] in [1,2,4] x;`, `int in [-10..-5] y;`, an enum domain) left uninitialized (7.2.1 d, 7.5.1) | **silently wrong**: 0 / the first item; the LRM's default is the smallest domain value / the first declared item inside the domain (I6 fixed the bounds, not the default) | P5.3 |
+| W47 | c, cpp, py, sv | a `static` component function redefined in a derived component, called from an inherited body (20.2) | **silently wrong**: dispatched virtually (`d.g()` runs `der_c::f`); a static call is not polymorphic. sv renders a virtual task | P5.3 |
+| W48 | c, cpp, py, sv | a register group whose offsets come from `get_offset_of_path` (21.14.2) | **silently wrong**: ignored, the register lands at offset 0; a group defining all three offset functions (Neg) is accepted | P5.3 |
+| W49 | c, py, sv (cpp not run) | `packed_s<BIG_ENDIAN>` as a register value (21.13.1) | **silently wrong**: laid out little-endian | P5.3 |
+| W50 | c, py | `reg_c<R>` with a packed struct `R` and no `SZ` (21.14.1: `SZ` defaults to `8*nbytes`) | **silently wrong**: accessed with 32-bit primitives (16 expected) | P5.3 |
+| W51 | c, cpp, py, sv | `sizeof_s<T>::nbytes` / `::nbits` (21.13.1) | not folded: rendered as `sizeof_s.nbytes` (py NameError; c/sv will not compile); `%d` of it refused as untyped | P5.3 |
+| W52 | c, cpp, py, sv | `nullhandle` (21.13.3) | not lowered anywhere: an undefined name (py NameError) | P5.3 |
+| W53 | py (c: E40) | a channel of a struct (21.9.1: copied by value) | **silently wrong**: the queued item aliases the local, so a write after `try_put` changes it | P5.3 |
+| W54 | c, cpp, py, sv | a parameterized packed struct as a register value (`std_pkg::float32_s`, a user `t_s<8>`) | py **silently wrong** (only the first field packed); c/cpp/sv: unlocated "65 bits" | P5.3 |
+| W55 | c, cpp, py (sv right) | a `match` subject (8.5.9.1: context-determined with its choices, as `in`) | **silently wrong**: evaluated at its own width; `bit[2] x=2,y=2`: `(x+y) in [4]` is true but `match (x+y)` takes `[0]` | P5.3 |
+| W56 | sv; py, c | a value-returning import | sv: declared a `task`, called as a function, so the package does not compile; py/c: a message argument that is an import's result is refused as untyped | P5.3 |
+| W57 | c, cpp | a non-void function whose end is reachable (20.7.5 leaves the value unspecified) | the build fails with `-Werror=return-type`, no location; emit a default return or refuse with one | P5.3 |
+| W58 | c, cpp, py, sv | division / modulus by zero, a negative shift amount, at run time (8.5.1, 8.5.7) | py: an uncaught `ZeroDivisionError`/`ValueError`, not an `error:` line; C/C++ undefined. Waiting on **R14**; constant forms in F31 | P5.3 |
+| W59 | c, cpp, py, sv | a read of a WRITEONLY / write of a READONLY register (21.14.1) | not refused by the gate: c an unlocated `LegalityError`, cpp/sv render it, py calls an accessor it never defines | P5.3 |
+| W60 | c, cpp, py, sv | a target function whose short name some unrelated component uses for a solve function (Ex 297) | refused from target code: solve-ness is classified by short name across the model | P5.3 |
+| W61 | c, cpp, sv | a write of a `foreach` index (20.7.8 g) | accepted and generated (py refuses it) | P5.3 |
+| W62 | c, cpp | a comparison its operand's range decides (`u == -1`, `u` a `bit[8]` parameter) | folded to a constant (rightly), leaving the parameter unused: `-Werror=unused-parameter` fails the build (W30's sibling) | P5.3 |
+| W63 | sv | a root-scope name, `::G`, with a local `G` in the same task | **silently wrong**: spelled `G`, and the local (hoisted to the top of the task) hides the `localparam` for every read, even before its declaration: `0`, `1 1` instead of `7`, `1 7` | P5.3 |
+| W64 | sv (Verilator) | `%d` of a field of a non-constant packed struct (`$signed(v.x)`, `x` the 7-bit field at bits 7:1) | Verilator 5.052 evaluates it from the wrong bits (0 prints 128); the generated SV is right (a standalone 20-line SV file reproduces it). Workaround as W27: hold the field in a temporary of its PSS type. Pinned by `test_m_channels.py` "channels of a struct, an enum and a bool" (a struct taken from a mailbox: `q.x` prints the whole value 0x43; probably the same bug, not reduced further); "a bool field of a register value" prints with `%x` instead | P5.3 |
+| W65 | cpp | an array index narrower than the array's size needs (`bit[2]` for 4 elements) | R12's bounds check `(unsigned long long)(j) < 4u` fails the build with `-Werror=type-limits` (W30's sibling); c passes | P5.3 |
+| W66 | c, cpp | `in` over a component array (`s[1] in s`) | compares the component structs by value: does not compile | P5.3 |
+| E24 | c, cpp, py; sv | a domain-typed FIELD (integer or enum) | py/c/cpp: internal error (`'NoneType' ... 'args'`); sv renders the domain as an invalid `_range_0` task | P5.3 |
+| E25 | c, cpp, py, sv | a type-parameterized struct (`struct t_s<type T> { T f; }`) | py/c: its field refused as untyped; cpp/sv: "unsupported struct member type DataTypeRef" | P5.3 |
+| E26 | c, cpp; all | a `static const` struct | component scope: c/cpp "unsupported field initializer ExprStructLiteral"; package scope: every target "ExprRefPathStaticRooted, which has no translation" | P5.3 |
+| E27 | c, cpp, py, sv | import signature types (20.4.1 c): `string` (c/cpp, R3), `list<string>`, `bit[65]` | internal errors instead of the located R3/R4/width refusals (py accepts `list<string>`) | P5.3 |
+| E28 | c, cpp, sv; py | a nested packed struct or an array field in a register value (21.13.1, Ex 360) | c/cpp/sv: unlocated "is not a scalar, so it has no width"; py crashes at run time | P5.3 |
+| E29 | sv | `sized_addr_handle_s` in a struct | unlocated "unsupported SV struct member type DataTypeChandle" | P5.3 |
+| E30 | all | a `typedef` inside a struct, used there | refused with a location, plus a second UNLOCATED "unresolved type reference" | P5.3 |
+| E31 | py | `{}` assigned to a fixed-size array | internal error ("defines no expr_list()"); the element-count gate misses an empty literal | P5.3 |
+| E32 | c, cpp, sv | a function returning a component without `ref` (F13), even uncalled | unlocated "unsupported C type for DataTypeComponent" | P5.3 |
+| E33 | c, py | a call on a base instance of a function only a derived type defines (20.2.7) | unlocated ValueError (cpp/sv generate code) | P5.3 |
+| E34 | all | `channel_c` with `DEPTH` 0 | refused, but unlocated | P5.3 |
+| E35 | c, cpp, py; sv | `set_handle` on a sub-group (21.14.3) | internal errors; sv accepts it | P5.3 |
+| E36 | c, cpp, sv | a `mem_access_desc_s` argument to a memory primitive, no executor (21.13.9) | c: unlocated arity error on any descriptor; cpp/sv: "unsupported expr ExprList" on `{}`. py ignores it, as it should | P5.3 |
+| E37 | sv | `%n` of an int | unlocated ValueError (c, cpp, py refuse it with a location) | P5.3 |
+| E38 | sv | an override with a different signature (F15) | unlocated "shadows ... with a different signature" | P5.3 |
+| E39 | py | a `reg_c` in a plain component (F27) | unlocated "no default value for ... DataTypeRegister" | P5.3 |
+| E40 | c | a channel of a struct | unlocated ValueError | P5.3 |
+| E41 | c, sv | a `foreach` value iterator over a two-dimensional array (a row) | internal error, "unsupported type for DataTypeArray"; cpp and py work | P5.3 |
+| E42 | all (ast2ir) | a template string initializing a `static const` (`static const string S = """c={{K}}""";`) | refused with the template-string message, but with no line | P5.3 |
+| I13 | ast2ir | an integer width that is not a literal: a `static const` (package, component, struct), a constant expression (`bit[2+3]`), an enum item, a template value parameter, a pure call (`bit[sq(2)]`) | **silently wrong**: `bit[32]` (`ast2ir.py` reads only a literal width and defaults to 32). Array sizes fold correctly | P5.3 |
+| I14 | ast2ir | a select of a `static const` | **silently wrong**: a bit select is dropped (`C[0]` is `C`), and any select of a package-qualified one (`k::C[7:4]` is `C`; elsewhere "no translation"); an array sized by it, a `compile if` and a `match` choice go wrong with it | P5.3 |
+| I15 | ast2ir / linker | template struct specializations (`s_s<4>`, `s_s<8>` of `struct s_s<int N> { bit[N] f; }`) | **silently wrong**: one type with a 32-bit `f` | P5.3 |
+| I16 | ast2ir | a package-scope `import class` | dropped silently; a field of its type gives an unlocated "unresolved type reference" | P5.3 |
+| I17 | ast2ir | a package-scope target-template function | dropped silently; a call to it is refused as "declare it as an `import`" | P5.3 |
+| I18 | ast2ir | an array size given by an enum item (`(int)sz_e::FOUR`) or a pure call (8.2 constant expressions) | refused as "does not fold" (located, but wrong: they are constant) | P5.3 |
+| M1 | all | `%p` of a chandle | refused, "this model has no ... chandle values", though it has one | P5.3 |
+| M2 | all | `get_handle()` (21.14.4), `executor()`, `get_context()` | "no function named X is declared by PSS": the core library declares all three | P5.3 |
+| M3 | py, sv | array `join` / `str_from_chars` (7.9.2.2) | refused as unknown names, like E15 was | P5.3 |
+| M4 | py, c | a constant out-of-range select as a `message` argument | "cannot determine its PSS type" instead of the out-of-range text | P5.3 |
+| M5 | all | exec placements the LRM forbids (F22) | refused as "not lowered" / "not supported yet", not as illegal | P5.3 |
+| M6 | all | `size()` of an array-typed `foreach` iterator (a row) | refused as an unknown function; `m[0].size()` works | P5.3 |
+| H1 | harness | user import functions | the trace harness supplies none (py `MemoryBus`, C/C++/SV mains implement the core seam only), so no case can call an import: DT-CHND.3, DT-INT.8 (sv), FN-IMPORT executed | P5.3 |
+
+**Front-end checks missing (F).** The LRM makes each of these an error;
+pssparser accepts it, and pssc then runs it, generates it, or refuses it for
+an unrelated reason. Per the fix-at-source rule these go to pssparser (a
+request list like `pssc-requests-2026-10-01.md`); a pssc gate check is a
+stopgap only where a target would otherwise miscompile. W38 and W40 are
+members of this class.
+
+| ID | Construct (LRM) | Today |
+|---|---|---|
+| F1 | operand and condition types (8.4 Table 10, 8.5.2, 20.7.7 a, 20.7.9): relational on bool/string, chained `a < b < c`, bitwise on bool, chandle arithmetic and `c == 1`, a non-bool `if`/`while`/`?:` condition, `int x = null`, `%` on a float | accepted and run (W38's root) |
+| F2 | enum values (7.5.1 c/e/j): duplicates, outside the base type, negative with an unsigned base, implicit past the base's max, a base with a domain, a variable of an itemless enum | accepted; a duplicate makes `%n` print the other name |
+| F3 | an unqualified enum item where the expected type is not the enum: `(int)BLUE` (Ex 37), `M1 == e`, `M1 in [...]` | accepted |
+| F4 | casts (7.12.1 a): from a chandle, struct or string; to a struct | accepted; `(p_s)3` crashes py at run time |
+| F5 | `rand chandle`, `rand float64` (7.1, 7.7); `randomize` of a chandle | accepted (float later refused by R5) |
+| F6 | access protection (17.4, 20.4): a private/protected field written or read from outside | accepted |
+| F7 | `bit[0]` (7.2.1 c) | accepted |
+| F8 | assignment to a `static const` (scalar, element, member) (7.1, 7.9 a) | accepted; py renders `5 = 2` in a target function and really modifies it in a constructor |
+| F9 | assignment to a sub-string, `s[0] = "x"` (7.6.2) | accepted; py raises TypeError at run time, sv emits it |
+| F10 | assignment to a `const` scalar parameter (20.2.3) | accepted and run (W40 is the struct case) |
+| F11 | a varargs or generic (`type`, `struct`, `numeric`) parameter of a PSS-bodied function (20.2.5) | varargs accepted (py TypeError at run time); generic refused only as "not supported" |
+| F12 | an array argument of another size than the formal (8.3) | accepted; py runs it |
+| F13 | a function returning a component without `ref` (20.2.2) | accepted (then E32) |
+| F14 | a `target` declaration with a `solve` definition (20.2.1.3) | accepted |
+| F15 | declaration/definition and override consistency: `const` and default mismatches, a non-pure function made `pure`, an override with another signature, an instance function shadowed by a static one (20.2.3 c, 20.2.4 c, 20.2.6) | accepted (PSS009 checks defaults on a redeclaration only); sv E38 |
+| F16 | `break`/`continue` outside a loop (20.7.11 b) | accepted; py writes a module that does not import |
+| F17 | modifying the collection a `foreach` iterates (20.7.8 g) | accepted and run |
+| F18 | two `default` arms in a `match` (20.7.10 f) | accepted; py runs the second |
+| F19 | a type-scope constant in a `compile if` condition (19.1.3 b) | accepted |
+| F20 | `yield` in a solve function (20.7.14 a) | accepted |
+| F21 | `return expr;` in an exec block (20.7.5) | accepted silently |
+| F22 | exec placements: `pre_solve`/`body` in a component (20.1.2), a target-template exec of a solve kind (20.5), solve-only `file_*` from target code (21.2), memory/channel calls from solve code, a target-template function called from an init exec (20.1.2) | accepted; pssc refuses them as unsupported (M5) |
+| F23 | collection Negs: `k in m` on a map, a subscript or slice of a set, `rand map`/`set`, a modifying collection method in a constraint, a `ref` field in a struct, `const ref`, a cast to a typedef of a struct, `instance` on a non-ref | accepted (all refused on op-model under R4 / `ref`) |
+| F24 | a method of a string-array element, `s[1].size()` | PSS002 "the enclosing scope is unknown" (a resolution bug, not a check) |
+| F25 | `addr_value` called from solve context (21.13.5) | accepted |
+| F26 | import/export parameter types (20.4.1 c, 20.4.2.1): `bit[65]`, `list<string>`, a non-const struct to an export | accepted (then E27) |
+| F27 | a `reg_c` outside a `reg_group_c`; `extend component reg_group_c` (21.14.1) | accepted (py E39) |
+| F28 | `channel_c<string>` (21.9.1) | accepted (py) |
+| F29 | a struct on the left of `in` with a range list (8.5.9.1) | accepted; py evaluates false |
+| F30 | `==` / assignment of component arrays (7.9.2) | accepted; py runs it |
+| F31 | a constant zero divisor, a constant negative shift amount (8.5.1, 8.5.7) | accepted |
+| F32 | `error()`/`fatal()` with a string not known at solve time, in target code (21.3) | accepted on py/sv; waiting on **R15** |
 
 P1 found I1 to be **silently wrong in the matrix**: `g(int x, float32 y)`
 called as `g(1, 2.0)` compiles and runs on all four targets, the parameter
@@ -565,8 +693,20 @@ for completeness. "Ref" = located-refusal case.
 * **R9** — sv-native / sv-oo / sv-pure / c-host refuse what they cannot
   render, with tested located refusals. Deprecation is a separate decision.
 
-R6, R7, R8 and R10 are still open; work proceeds on the suggested defaults
-only where a case does not depend on them.
+* **R12** (2026-10-16) — an out-of-bounds array index is a run-time error
+  on every target. Sub-strings are **not decided**: 8.6.3 says the
+  positions "shall be between 0 and the size of the string less than 1"
+  and start ≤ end, but, unlike 8.6.2 for arrays ("it shall be illegal to
+  access an out-of-bounds index"), it states no consequence; an empty
+  string has no legal sub-string at all. W37 stays pinned; PSWG question.
+* **R13** (2026-10-16) — refused: an operation model must be legal PSS, so
+  target code does not write component fields (20.7.3 b, 9.1.6). Run-time
+  state goes in a local, a parameter, or a channel (each read a
+  `try_get`/`get`, each update a `try_put`/`put`); tests may use the
+  channel form, production models should not need it.
+
+R6, R7, R8, R10 and R14-R16 (P5.3) are still open; work proceeds on the
+suggested defaults only where a case does not depend on them.
 
 | R | Question | Why it blocks | Suggested default |
 |---|---|---|---|
@@ -580,7 +720,12 @@ only where a case does not depend on them.
 | R8 | Array params on SV/C/C++ (20.3.2) | M53 refusal | keep refusing on c/cpp; implement on SV (`ref` arrays) |
 | R9 | sv-native / sv-oo / sv-pure / c-host: hold to the matrix, or refuse procedural code | P8 | refuse what they cannot render, with tests; decide on deprecation separately |
 | R11 | `print`/`format` in a TARGET function. LRM 21.1.2 declares both `solve`; c/cpp/py accept `print` at target time, sv refuses `format` there | the P1 `print` case uses a constructor (solve context) | refuse at target time (LRM), or keep as a documented extension |
-| R10 | Argument evaluation order and compound-assign LHS evaluation count | IP-44 and side-effect cases | left-to-right, LHS once; test only where pssc commits to it |
+| R10 | Argument evaluation order and compound-assign LHS evaluation count | IP-44 and side-effect cases; **P4 found C/C++ evaluate call arguments right to left (W39)** | left-to-right, LHS once; test only where pssc commits to it |
+| R12 | Out-of-range positions: a sub-string past the end (8.6.3), and likewise an array index or bit select out of bounds (8.6.1 "illegal") | W37, IP-70 | a run-time error on every target, as R2 for `match` |
+| R13 | A target function writing a component field. 20.7.3 b allows it only from `init_down`/`init_up`; 9.1.6 says even a `mutable` field "shall not be modified ... from target exec blocks". Every op-model target and bc accept it, and many matrix cases keep counters in component fields | IP-85 | keep it as a documented op-model extension (a programming-sequence driver keeps state in its component), or refuse it and move the matrix's counters to locals and parameters |
+| R14 | A run-time zero divisor (8.5.1 "illegal") or a negative shift amount (8.5.7 "shall be non-negative") | W58; EX-ARITH.4, EX-SHIFT.3 `open`. Today py raises an uncaught Python exception, C/C++ are undefined | a run-time error on every target, as R12 does for an index (an `error:` line, not a crash); constant forms refused by the front end (F31) |
+| R15 | `error()`/`fatal()` in target code with a string not known at solve time (21.3: "shall be solve-time known" on the target) | F32; LIB-ERR.3 `open`. py/sv accept it | enforce: refuse with a location in the gate (the restriction exists for platforms with no string formatting at run time) -- or keep as a documented extension |
+| R16 | Unary `+` (Table 22 lists it, 8.1's `unary_operator` does not) | EX-ARITH.9: pssparser accepts it and every target runs it as the identity | keep accepting (identity); PSWG question |
 
 The remaining LRM gaps in 01 §7 (unary `+`, duplicate enum values, repeat
 index type, missing return, break in `while`, foreach-contents writes, nested
@@ -605,6 +750,12 @@ construct is implemented and its refusal test becomes an executed case.
 | a triple-quoted string with mustache expressions or directives, in a body | all (refused in ast2ir) | (I7) | `test_ir_expressions.py::test_a_template_string_is_refused_not_taken_as_text` | 4.7.1 expansion at evaluation |
 | `comp::sf(...)`: a static component function by its type | all (refused in ast2ir) | (I11) | `test_ir_functions.py::test_a_static_function_by_its_type_is_refused_with_its_line` | the unqualified call works |
 | `pyobj` (zuspec extension) | all (refused in ast2ir) | – | `test_ir_kind_registry.py` | |
+| a register (`reg_c`) | bc | – | – | `'reg_c<None>' is not a component type`; found writing IP-49, whose register half is a matrix case |
+| `super;` in an action's exec block | bc | – | – | "unsupported statement StmtSuper"; op-model-py runs it (IP-61) |
+| `executor()` | all (bc refuses; op-model untested) | – | `test_bc_interaction_patterns.py::test_ip98_executor_is_refused` | IP-98 |
+| `write_struct` / `read_struct` | all | – | `test_m_refusals.py` "write_struct of a packed struct"; `test_ip51_...` (bc) | IP-51 |
+| `extend action` inside a component body | all (ast2ir) | – | – | "an 'extend' in component ... is not supported yet", with its line; at package scope it works |
+| a channel deeper than 1 | op-model-c, -cpp, -py | – | `test_m_channels.py` "a channel of depth 3" (E19) | SV and bc run it |
 
 ## 8. Progress log
 
@@ -930,3 +1081,174 @@ Newest last. Each entry names what changed and the test that proves it.
     relational, `urandom` beyond a one-value range, argument evaluation
     order); `test_m_refusals.py` patterns still name `comp::function`, not
     `file:line`, for gate refusals (the P1 location finding, P5).
+* 2026-10-16 — **P4 done.** Every one of the 100 interaction patterns is
+  accounted for on every op-model target, and
+  `test_coverage.py::test_every_interaction_pattern_is_mapped_on_every_target`
+  enforces it (calibrated: dropping one mapping fails it). Covered: 93-94 of
+  100 per target (`python -m progseq.matrix.coverage` from `tests/`); the
+  rest are `open` dispositions naming a defect or a ruling.
+  - **Matrix cases** (~30 new): the plan's "matrix now" patterns still
+    missing (IP-28, 35, 36, 46, 48, 49, 53, 55, 60, 64, 65, 74, 75, 88, 89,
+    95, 97), and the "after a decision" patterns pinned as refusals on the
+    targets that refuse them (IP-7, 26, 27, 34, 37, 43, 44, 51, 56-58, 63,
+    72, 73, 92-94, 96, 100; R4 collections, randomize, `ref`), or executed
+    where a target runs them (IP-69 strings on py and sv; IP-74 array
+    results on py).
+  - **`coverage.yaml`** now holds dispositions: `elsewhere` names a test as
+    `path::function` (checked to exist), `n-a` a reason, and a new status
+    `open` the defect or ruling a construct waits on; `open` does not count
+    as coverage.
+  - **bc** (`tests/unit/integration/test_bc_interaction_patterns.py`): the
+    activity-side patterns IP-49 (parallel half), 60, 86, 87, 90, 97, and
+    refusals of `executor()` (IP-98) and `write_struct` (IP-51).
+    `test_op_model_py_super.py` gained Example 285 (IP-61: `super;` first
+    and last, plus an `extend action` body).
+  - **Fixed** (§2): W34 overlapping `match` choices (new shared pass
+    `targets/match_overlap.py`: an `error()` before a match whose choices
+    may overlap; a match with constant disjoint choices is untouched, so no
+    golden moved), W35 `%d` of a bool (also in zuspec-be-bc,
+    uncommitted on its `main`), W36 an iterator over a component
+    array (new shared pass `targets/comp_foreach.py`), W41 `try_put`/
+    `try_get` typed `bool`, I12 `g(7)[2]` read as `g[2](7)`; `ExprTypes`
+    types `in` as `bool`.
+  - **Open, pinned:** W37 (R12), W38 and W40 (for pssparser), W43 (bc), E19,
+    plus W31 and E17 from P3. W39 (C/C++ argument order) waits on R10 and
+    is not pinned by a case; W42 (non-constant part-select bounds) is a
+    pssparser gap with an internal-error refusal in pssc.
+  - **New open rulings:** R12 (out-of-range sub-string / index), R13
+    (target functions writing component fields: 20.7.3 b and 9.1.6 forbid
+    it, every target and bc accept it, and the matrix relies on it).
+    Both ruled the same day; see the next entry.
+  - Not done: IP-68 is `n-a` (21.1.3 leaves the count unspecified); IP-61 on
+    SV has no test yet; C/C++ entries (P6) block IP-61 there.
+* 2026-10-16 — **R12 and R13 implemented** (rulings in §7).
+  - **R12** (arrays): `targets/index_bounds.py` marks every index of a
+    fixed-size data array not known to be in range (a constant in range,
+    or a `foreach`/`repeat (i : K)` index bounded by the array, needs no
+    check); C/C++ render `a[(unsigned long long)(i) < N ? (i) : (error,
+    0)]`, Python `a[i if 0 <= i < N else _pss_error(...)]`, SV
+    `a[pssc_index(i, N)]` (new in `pssc_reg_pkg.sv`). An index containing a
+    call is refused (it is read twice). Matrix: "an array index past the
+    end", "a negative array index". No golden moved. Sub-strings stay
+    pinned (W37): the LRM states the rule but not the consequence.
+  - **R13**: `targets/field_writes.py`, run by the gate on every op-model
+    target, refuses a function that writes a component field (its own, a
+    sub-component's, an element or member of one, or `try_get` into one)
+    when target code reaches it -- a `target` function, an entry, or a
+    function either calls. The constructor, solve functions and init
+    blocks may. Matrix: two refusals, "fields written while the component
+    is constructed", and "run-time state kept in a channel" (the
+    workaround). IP-85 is now covered by these cases.
+  - 11 matrix cases and ~35 progseq tests wrote component fields from
+    target code; each was rewritten to keep its point with locals,
+    results, by-handle struct parameters, or writes moved into the
+    constructor (`test_op_model_entry.py`'s model now reports through
+    messages). Found on the way: W45. bc still accepts such writes (W44).
+  - Full unit/progseq/compliance: 5316 passed, 87 xfailed.
+* 2026-10-16 -- **P5.1 and P5.2 done** (P5.3, coverage enforcing, not
+  started; see the end of this entry).
+  - **Locations.** ast2ir now stamps `loc` (file, line, column) on every
+    procedural statement, expression (the statement's when the parser left
+    the expression unlocated), function, parameter, field, component and
+    struct. `pssc.diag.at(nodes, text)` prefixes a diagnostic with the first
+    location among `nodes` as `file:line:col: `, as a `Located` string;
+    `CompileError.markers` reports them in pssparser's marker shape, so the
+    corpus adapters read them. Every gate pass uses it: the call gate,
+    `exec_blocks`, `array_signatures`, `unsupported_types`, `field_writes`,
+    `array_literal`, `int_width` (which also now lists its places as errors,
+    not inside its message), `group_binding`, `executors`, the register
+    offset check (`OffsetFoldError.node`, set by `reg_layout`) and the
+    register width check, and `reg_rmw`. Before, every gate refusal named
+    `comp::fn` only; `validate_calls._where` had waited for ast2ir to fill
+    `loc` since it was written.
+  - **Refusals from inside a pass.** `diag.Refusal(text, node...)` is a
+    `ValueError` that `OpModelTarget.run` reports as a located `CompileError`;
+    the body emitters' `stmt` (C, Python, SV through `BodyWalker`, and C++)
+    adds the statement being rendered as the fallback location. Converted:
+    `in_as_compare`, `index_bounds`, `bit_select` (W42 is now a located
+    refusal), `match_overlap`, `IntSemantics` (division by zero, negative
+    shift, `**`, unknown member), `scan_output_locals` (E17 is located; still
+    open), channel depth on C, C++ and Python (E19 is located; still open),
+    the `foreach`/`repeat` index and iterator writes, and format checks
+    (`message`/`print`/`format`) on all four. Twelve tests that expected a
+    `ValueError` from a compile now expect a located `CompileError`
+    (`conftest.assert_refused_at`).
+  - **The matrix enforces it**: every line of every `Refused` case's
+    diagnostic must begin with a location (`_matrix.LOCATED`). All 208
+    refusal cells did once the passes above were converted.
+  - **Gate pre-screen** (P5.1, §4.4): `targets/body_kinds.py` walks every
+    body the target renders (`validate_calls.rendered_bodies`, now the one
+    list the call gate also walks) and refuses, located, each node whose kind
+    the target's body emitter does not render
+    (`OpModelTarget.body_emitter_class`: its `BodyWalker` hooks, or C++'s
+    `KINDS`), and each aggregate literal standing where nothing gives it a
+    type. `tests/progseq/test_emitter_kind_registry.py` holds every
+    `Stmt*`/`Expr*`/`TypeExpr*` class of the IR to a row per target
+    (rendered, part, aggregate, refused, or never produced and why), checks
+    the rows against the emitters, and holds C++'s `KINDS` to its cascades
+    (calibrated: flipping a row fails it).
+  - **Found and fixed by probing positions** (§2): E20 (array `==` an array
+    literal: `array_methods` lowers it), E22 (`v in {a, b}`), E23 (Python:
+    array literal as an argument or result). E21 (struct literals as `?:`
+    arms) is now located and pinned as a strict xfail. Matrix cases: "in over
+    a value-list literal", "an array literal as an argument and as a result",
+    "an array compared with an array literal" (and "... of another length"),
+    "struct literals as the arms of a conditional".
+  - `test_m_refusals.py` has a located case for every construct in the P3
+    list but two that do not apply: `exec pre_body` (an action's exec kind,
+    which an op-model renders only through an entry) and entries on C/C++
+    (refused for the `--export-action` option, not at a place in the model).
+  - **Not done in P5.2:** ast2ir's own refusals still say `line N:` with no
+    file (about 40 sites; the matrix accepts that form); the emitters still
+    carry ~150 `raise ValueError` sites, some of them model refusals no test
+    reaches yet -- the pre-screen and the matrix will find them one case at a
+    time.
+  - **P5.3 (coverage enforcing) is the remaining work**: 504 of the 596
+    sub-constructs are mapped on no target (cases mostly tag the coarse ID),
+    so enforcing needs a disposition or a sub-construct tag for each.
+* 2026-10-16 -- **P5.3 done: coverage is enforcing.**
+  `test_coverage.py::test_every_sub_construct_is_mapped_on_every_target`
+  requires each of the inventory's 596 sub-constructs to be accounted for on
+  every op-model target: a matrix case naming it in `covers=` (executed,
+  refused, or a strict xfail naming its defect), or a `coverage.yaml`
+  disposition (`elsewhere`, `n-a`, `open` with its defect or ruling). A
+  coarse tag maps none of its rows. Calibrated: dropping one tag or one
+  disposition fails it.
+  - **How.** Eight read-only agents mapped the 504 unmapped rows by area
+    (tag an existing case only where its PSS exercises the row's rule;
+    probe pssc on op-model-py where unsure), then eight more wrote the
+    proposed cases, each owning its files. Result: ~420 tags on existing
+    cases, 67 dispositions (19 `elsewhere`, 24 `n-a`, 24 `open`), and
+    ~200 new cases: 239 -> 442 matrix cases. The grid's extra tags
+    (mixed-sign arithmetic, shift amounts of another width, each compound
+    operator, `message` arguments) are computed from its rows
+    (`grid.row_tags`), so a new seed keeps them true.
+  - **New file `test_m_neg.py`**: models the LRM makes ILLEGAL, each
+    expecting the error at its place; `test_m_refusals.py` keeps legal PSS a
+    target refuses. Where pssc refuses an illegal model only as
+    "unsupported" (M5, R4), the case expects the LRM's reason and is a strict
+    xfail, so the missing check stays visible.
+  - **Proved** (a case passing, or `elsewhere`/`n-a`): c 530, cpp 531,
+    py 539, sv 534 of 596. The rest are strict xfails or `open`.
+  - **Found** (§2, 70+ new rows): silently wrong on every target -- I13
+    (any non-literal integer width is 32 bits), I14 (a select of a `static
+    const` dropped), I15 (template struct specializations collapse), W46
+    (domain defaults), W47 (static functions dispatched virtually), W48
+    (`get_offset_of_path` ignored), W49 (`BIG_ENDIAN` ignored), W50, W53
+    (py channel aliasing), W55 (`match` subject width, c/cpp/py), W63 (sv
+    `::G` hidden by a local); E24-E42 internal errors; M1-M6 wrong-reason
+    refusals; F1-F32 front-end checks pssparser does not make (for a
+    pssparser request list); W64 a Verilator bug; H1 the harness cannot run
+    imports. No defect was fixed in P5.3: each is pinned, not worked around.
+  - **Corrected on the way:** inventory row ST-MATCH.2 (a match choice has
+    no open bound); the refusal case "a map iterated into a set and a sum"
+    used a `foreach` iterator as a map key.
+  - **New rulings needed:** R14 (run-time zero divisor / negative shift),
+    R15 (`error()` strings not known at solve time), R16 (unary `+`).
+  - **Judgement calls to review:** F14 reads 20.2.1.3 / Ex 297 as making a
+    `target` declaration with a `solve` definition illegal even uncalled;
+    `%p` of a null chandle expects `p=0x0` (21.1.1 "including the preceding
+    0x"); a `return;` in a base init block reached by `super;` ends only the
+    base's part (LRM silent); `elsewhere` for EX-REF.3, DT-REF.11 and
+    EXEC-KIND.4 on sv points at the parametrized corpus run, not a test aimed
+    at the construct; ST-YIELD.3 counts a bc test, as IP-90 did.

@@ -17,7 +17,10 @@ import sys
 import pytest
 
 from pssc import driver
+from pssc.driver import CompileError
 from pssc.targets.py import pss_int
+
+from .conftest import assert_refused_at
 
 
 def _compile(tmp_path, pss, target="op-model-py", **kw):
@@ -82,20 +85,19 @@ def test_unsigned_division_is_the_python_operator(tmp_path):
     """Both operands are non-negative, where `//` and `%` ARE PSS's."""
     text = _text(tmp_path, """
 component pss_top {
-  bit[32] q;
-  target function void g(bit[32] a, bit[32] b) { q = a / b + a % b; }
+  target function bit[32] g(bit[32] a, bit[32] b) { return a / b + a % b; }
 }""")
     assert "a // b" in text and "a % b" in text
     assert "_pss_div" not in text
 
 
 def test_a_constant_division_by_zero_is_a_build_error(tmp_path):
-    with pytest.raises(ValueError, match="division by zero"):
+    with pytest.raises(CompileError) as ei:
         _compile(tmp_path, """
 component pss_top {
-  int q;
-  target function void g() { q = 1 / 0; }
+  target function int g() { return 1 / 0; }
 }""")
+    assert_refused_at(ei, "division by zero")
 
 
 # --- comparison (8.5.2) ------------------------------------------------------
@@ -205,8 +207,7 @@ def test_power(tmp_path):
 def test_power_by_zero_to_a_negative_exponent_raises(tmp_path):
     mod, rt = _load(_compile(tmp_path, """
 component pss_top {
-  int r;
-  target function void g(int a, int b) { r = a ** b; }
+  target function int g(int a, int b) { return a ** b; }
 }"""))
     with pytest.raises(ZeroDivisionError):
         mod.PssTop(rt.MemoryBus()).g(0, -1)
@@ -234,10 +235,13 @@ def test_compound_assignment_that_cannot_overflow_keeps_its_form(tmp_path):
     source does rather than as `x = (x | ...) & 0xffffffff`."""
     text = _text(tmp_path, """
 component pss_top {
-  bit[32] w;
-  target function void g(bit[1] f) { w |= ((bit[32])f) << 16; }
+  target function bit[32] g(bit[1] f) {
+    bit[32] w = 0;
+    w |= ((bit[32])f) << 16;
+    return w;
+  }
 }""")
-    assert "self.w |= f << 16" in text
+    assert "w |= f << 16" in text
 
 
 def test_a_return_converts_to_the_return_type(tmp_path):
@@ -307,19 +311,17 @@ pure component regs_c : reg_group_c {
 }
 component pss_top {
   regs_c regs;
-  bit[8] seen;
   solve function void initialize(addr_handle_t base) { regs.set_handle(base); }
-  target function void g() { seen = regs.R.read_val(); }
+  target function bit[8] g() { bit[8] seen = regs.R.read_val(); return seen; }
 }""", py_await="async")
     text = (out / "pss_top.py").read_text()
-    assert "self.seen = _v0 & 0xff" in text
+    assert "seen = _v0 & 0xff" in text
     assert "await self.regs_R_read_val() &" not in text
     mod, rt = _load(out, "pssc_rt_async")
     bus = rt.AsyncMemoryBus()
     dut = mod.PssTop(bus, 0x100)
     bus.mem[0x100] = 0x1234
-    asyncio.run(dut.g())
-    assert dut.seen == 0x34
+    assert asyncio.run(dut.g()) == 0x34
 
 
 # --- what is not emitted -----------------------------------------------------
@@ -329,9 +331,9 @@ def test_a_value_that_fits_is_not_wrapped(tmp_path):
     output is the source's arithmetic, with no mask and no helper."""
     text = _text(tmp_path, """
 component pss_top {
-  bit[32] w;
-  bit[8]  n;
   target function void g(bit[8] a, bit[8] b, int i) {
+    bit[32] w;
+    bit[8]  n;
     w = a + b;
     w = a * b;
     n = a & 0x0f;
@@ -347,8 +349,7 @@ component pss_top {
 def test_the_helpers_a_model_calls_are_the_ones_it_carries(tmp_path):
     text = _text(tmp_path, """
 component pss_top {
-  int q;
-  target function void g(int a, int b) { q = a % b; }
+  target function int g(int a, int b) { return a % b; }
 }""")
     assert "def _pss_mod(" in text and "def _pss_div(" in text
     assert "def _pss_pow(" not in text
@@ -396,18 +397,17 @@ def test_foreach_binds_the_iterator_to_each_element(tmp_path):
     mod, rt = _load(_compile(tmp_path, """
 component pss_top {
   int arr[3];
-  int t;
-  int u;
-  target function void g() {
+  target function int g() {
+    int t = 0;
+    int u = 0;
     foreach (v : arr) { t = t + v; }
     foreach (v : arr[k]) { u = u + v * k; }
+    return t * 1000 + u;
   }
 }"""))
     dut = mod.PssTop(rt.MemoryBus())
     dut.arr = [5, 6, 7]
-    dut.g()
-    assert dut.t == 18
-    assert dut.u == 0 * 5 + 1 * 6 + 2 * 7
+    assert dut.g() == 18 * 1000 + (0 * 5 + 1 * 6 + 2 * 7)
 
 
 def test_foreach_index_is_an_int(tmp_path):
@@ -420,28 +420,31 @@ def test_foreach_index_is_an_int(tmp_path):
     ("v = 1;", "iterator 'v'"),
 ])
 def test_foreach_refuses_a_write_to_its_iterator(tmp_path, body, what):
-    with pytest.raises(ValueError, match=f"body assigns the {what}"):
+    with pytest.raises(CompileError) as ei:
         _compile(tmp_path, f"""
 component pss_top {{
   int arr[3];
   target function void g() {{ foreach (v : arr) {{ {body} }} }}
 }}""")
+    assert_refused_at(ei, f"body assigns the {what}")
 
 
 def test_foreach_refuses_a_write_to_its_index(tmp_path):
-    with pytest.raises(ValueError, match="body assigns the index 'i'"):
+    with pytest.raises(CompileError) as ei:
         _compile(tmp_path, """
 component pss_top {
   int arr[3];
   target function void g() { foreach (arr[i]) { i = 2; } }
 }""")
+    assert_refused_at(ei, "body assigns the index 'i'")
 
 
-def test_foreach_refuses_an_iterator_over_components(tmp_path):
-    with pytest.raises(ValueError, match="array of components"):
-        _compile(tmp_path, """
-component ch_c { int x; }
-component pss_top {
-  ch_c ch[2];
-  target function void g() { foreach (c : ch) { } }
-}""")
+def test_foreach_iterates_an_array_of_components_by_reference(tmp_path):
+    """The iterator over an array of components IS the element (20.7.8):
+    `targets/comp_foreach.py` rewrites the loop into its index form (W36;
+    it was refused here). The matrix holds it on all four targets."""
+    assert _run(tmp_path, """
+    foreach (c : ch) { message(NONE, "%d", c.x); }""",
+                extra="""ch_c ch[2];
+  solve function void initialize() { foreach (c : ch[i]) { c.x = i + 5; } }""",
+                top_extra="component ch_c { int x; }") == ["5", "6"]

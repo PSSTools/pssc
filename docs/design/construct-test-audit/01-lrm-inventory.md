@@ -815,7 +815,7 @@ is presumed covered.
 | ID | Construct | LRM | Rule to exercise | Edge cases | Ctx |
 |----|-----------|-----|------------------|------------|-----|
 | ST-MATCH.1 | value / list choices | 20.7.10 | `[1]:`, `[1, 3, 5]:` | | T S C(activity) |
-| ST-MATCH.2 | range choices | 20.7.10, 8.5.9.1 | `[0..3]`, `[..3]`, `[8..]` | empty range never matches | T S |
+| ST-MATCH.2 | range choices | 20.7.10, 8.5.9.1 | `[0..3]`, `[2..2]` (`open_range_value ::= expression [.. expression]`: no open bound; pssparser refuses `[..3]`, PSS026) | empty range (`[3..1]`) never matches | T S |
 | ST-MATCH.3 | default | 20.7.10 e/f | at most one `default` | two defaults Neg | T S |
 | ST-MATCH.4 | multiple matches (procedural) | 20.7.10 d | more than one matching choice is an ERROR | activity match instead picks one at random (11.4.6 d) | T S |
 | ST-MATCH.5 | no match, no default | 20.7.10 g | error | | T S |

@@ -5,7 +5,18 @@ See `_matrix` for what a case is and how it is run.
 """
 from __future__ import annotations
 
-from ._matrix import Case, define_tests, on, ONE, Refused
+from ._matrix import ALL, Case, define_tests, on, ONE, Refused
+
+I13 = ("I13: an integer width that is not a literal (a static const, a "
+       "constant expression, an enum item, a template parameter, a pure "
+       "call) becomes 32 bits")
+I14 = ("I14: a select of a static const is dropped, or a package-qualified "
+       "one has no translation")
+W46 = ("W46: a domain-restricted value defaults to 0, not the smallest "
+       "value of its domain")
+W62 = ("W62: c/cpp fold `u == -1` (u a bit[8] parameter) to false and "
+      "leave u unused: -Werror=unused-parameter fails the build")
+E24 = "E24: a domain-typed field is an internal error (py/c/cpp), invalid SV"
 
 
 CASES = {
@@ -20,7 +31,7 @@ component pss_top {
     c.base_lo = x[31:12];
     a.CTL.write(c);
   }
-}""", ["write 32 0x1000 0xabcde000"], covers=("EX-SEL",)),
+}""", ["write 32 0x1000 0xabcde000"], covers=("EX-SEL", "EX-SEL.2")),
 
     "a bit select and the high half of 64 bits": Case("""
 component pss_top {""" + ONE + """
@@ -31,7 +42,7 @@ component pss_top {""" + ONE + """
     a.STS.write_val(x[63:32]);
   }
 }""", ["write 32 0x1004 0x1", "write 32 0x1004 0x0",
-       "write 32 0x1004 0x12345678"], covers=("EX-SEL",)),
+       "write 32 0x1004 0x12345678"], covers=("EX-SEL", "EX-SEL.2")),
 
     "a bit select with a run-time index": Case("""
 component pss_top {""" + ONE + """
@@ -42,7 +53,7 @@ component pss_top {""" + ONE + """
   }
 }""", ["write 32 0x1004 0x0", "write 32 0x1004 0x1",
        "write 32 0x1004 0x0", "write 32 0x1004 0x1"],
-        covers=("EX-SEL", "ST-WHILE")),
+        covers=("EX-SEL", "ST-WHILE", "EX-SEL.1")),
 
     "a part and a bit select assigned": Case("""
 component pss_top {""" + ONE + """
@@ -53,14 +64,16 @@ component pss_top {""" + ONE + """
     v[31:28] = 0x5;
     a.STS.write_val(v);
   }
-}""", ["write 32 0x1004 0x5fffff0e"], covers=("EX-SEL", "EX-ASSIGN")),
+}""", ["write 32 0x1004 0x5fffff0e"], covers=("EX-SEL", "EX-ASSIGN",
+                                              "EX-SEL.4")),
 
     # --- D7: the conditional operator ------------------------------------------
     "a conditional expression": Case("""
 component pss_top {""" + ONE + """
   target function void go(bit x) { a.STS.write_val((x == 1) ? 0 : 1); }
   target function void run() { go(0); go(1); }
-}""", ["write 32 0x1004 0x1", "write 32 0x1004 0x0"], covers=("EX-COND",)),
+}""", ["write 32 0x1004 0x1", "write 32 0x1004 0x0"], covers=("EX-COND",
+                                                              "EX-COND.1")),
 
     "a nested conditional whose arm reads a register": Case("""
 component pss_top {""" + ONE + """
@@ -83,7 +96,7 @@ component pss_top {""" + ONE + """
   }
   target function void run() { go(15, 0); go(0, 15); go(1, 1); }
 }""", ["write 32 0x1004 0x1", "write 32 0x1004 0x1", "write 32 0x1004 0x2"],
-        covers=("EX-BIT", "EX-WIDTH", "EX-EQ")),
+        covers=("EX-BIT", "EX-WIDTH", "EX-EQ", "EX-WIDTH.14")),
 
     # The 64-bit parameter width propagates to x BEFORE the inversion.
     "~ in a context wider than its operand": Case("""
@@ -92,7 +105,8 @@ component pss_top {
   solve function void initialize(addr_handle_t base) { a.set_handle(base); }
   target function void go(bit[32] x) { a.W.write_val(~x); }
   target function void run() { go(1); }
-}""", ["write 64 0x1000 0xfffffffffffffffe"], covers=("EX-BIT", "EX-WIDTH")),
+}""", ["write 64 0x1000 0xfffffffffffffffe"], covers=("EX-BIT", "EX-WIDTH",
+                                                      "LIB-REG.10")),
 
     # The case as originally reported: 0xFFFFFFFE is RIGHT (8.7.2, Table 23),
     # not 0. Pinned so nobody "fixes" it to the operand's width.
@@ -101,7 +115,7 @@ component pss_top {""" + ONE + """
   target function void go(bit x) { a.STS.write_val(~x); }
   target function void run() { go(1); go(0); }
 }""", ["write 32 0x1004 0xfffffffe", "write 32 0x1004 0xffffffff"],
-        covers=("EX-BIT", "EX-WIDTH")),
+        covers=("EX-BIT", "EX-WIDTH", "LIB-REG", "IP-48", "FN-PARAM.12")),
 
     # A `bit[4]` holds 0..15: 15 + 1 is 0, whatever C type stores it.
     "a narrow local wraps at its own width": Case("""
@@ -114,7 +128,7 @@ component pss_top {""" + ONE + """
     a.STS.write_val(n);
   }
 }""", ["write 32 0x1004 0x0", "write 32 0x1004 0xf"],
-        covers=("DT-INT", "EX-WIDTH", "EX-ASSIGN")),
+        covers=("DT-INT", "EX-WIDTH", "EX-ASSIGN", "DT-INT.3")),
 
     # `int[8]` 127 + 1 is -128, sign-extended into the 32-bit parameter.
     "a narrow signed value overflows to negative": Case("""
@@ -124,7 +138,8 @@ component pss_top {""" + ONE + """
     v = v + 1;
     a.STS.write_val(v);
   }
-}""", ["write 32 0x1004 0xffffff80"], covers=("DT-INT", "EX-WIDTH")),
+}""", ["write 32 0x1004 0xffffff80"], covers=("DT-INT", "EX-WIDTH",
+                                              "DT-INT.3")),
 
     # PSS `/` and `%` truncate toward zero (8.5.1): -7 / 2 is -3, -7 % 2 is -1.
     "signed division truncates toward zero": Case("""
@@ -157,8 +172,8 @@ component pss_top {""" + ONE + """
     "a struct field wider than 64 bits": Case("""
 struct key_s { bit[256] k; bit[8] n; }
 component pss_top {""" + ONE + """
-  key_s key;
   target function void run() {
+    key_s key;
     key.k = 5;
     key.k = key.k << 200;
     a.STS.write_val(key.k[231:200]);
@@ -166,7 +181,7 @@ component pss_top {""" + ONE + """
 }""", ["write 32 0x1004 0x5"],
         refused=on(("c", "cpp"), Refused([r"key_s\.k", r"bit\[256\]",
                                             r"wider than 64"])),
-        covers=("DT-INT", "EX-SHIFT")),
+        covers=("DT-INT", "EX-SHIFT", "DT-INT.4", "EX-WIDTH.16")),
 
     "a local, parameter and result wider than 64 bits": Case("""
 component pss_top {""" + ONE + """
@@ -179,7 +194,7 @@ component pss_top {""" + ONE + """
         refused=on(("c", "cpp"), Refused([r"pss_top::widen: bit\[72\]",
                                             r"pss_top::widen: bit\[96\]",
                                             r"pss_top::run: bit\[128\]"])),
-        covers=("DT-INT", "FN-PARAM", "DT-CAST")),
+        covers=("DT-INT", "FN-PARAM", "DT-CAST", "DT-INT.4")),
 
     # --- P1: compound assignment at the target's width (8.7.2) -----------------
     # `x op= y` is `x = x op y`: the result is converted to x's type, so a
@@ -187,7 +202,6 @@ component pss_top {""" + ONE + """
     # host type and kept the carry (W1).
     "compound assignment wraps at the target's width": Case("""
 component pss_top {""" + ONE + """
-  bit[4] f = 15;
   target function void run() {
     bit[4] n = 15;
     bit[12] m = 0xFFF;
@@ -204,13 +218,12 @@ component pss_top {""" + ONE + """
     a.STS.write_val(b);
     c <<= 1;
     a.STS.write_val(c);
-    f += 1;
-    a.STS.write_val(f);
   }
 }""", ["write 32 0x1004 0x0", "write 32 0x1004 0x1",
        "write 32 0x1004 0xffff8000", "write 32 0x1004 0xff",
-       "write 32 0x1004 0x2", "write 32 0x1004 0x0"],
-        covers=("EX-ASSIGN", "EX-WIDTH", "DT-INT")),
+       "write 32 0x1004 0x2"],
+        covers=("EX-ASSIGN", "EX-WIDTH", "DT-INT", "EX-ASSIGN.2",
+                "EX-ASSIGN.4", "ST-ASSIGN.5")),
 
     # A signed target shifts arithmetically under `>>=` as under `>>` (8.5.7):
     # -16 >> 2 is -4; an int[8] -128 >> 7 is -1. SV wrote `>>=`, which is
@@ -226,7 +239,7 @@ component pss_top {""" + ONE + """
     a.STS.write_val(y);
   }
 }""", ["write 32 0x1004 0xfffffffc", "write 32 0x1004 0xffffffff"],
-        covers=("EX-ASSIGN", "EX-SHIFT")),
+        covers=("EX-ASSIGN", "EX-SHIFT", "EX-ASSIGN.4", "ST-ASSIGN.5")),
 
     # A shift by the operand's width or more (R1): `<<` and an unsigned `>>`
     # give 0, a signed `>>` its sign. C's shift by >= the width of the type is
@@ -300,7 +313,7 @@ component pss_top {""" + ONE + """
        "write 32 0x1004 0x80000000", "write 32 0x1004 0x0",
        "write 32 0x1004 0xffffffff", "write 32 0x1004 0xffffffff",
        "write 32 0x1004 0x40"],
-        covers=("EX-ARITH", "EX-ARITH.5", "EX-PREC.2")),
+        covers=("EX-ARITH", "EX-ARITH.5", "EX-PREC.2", "IP-75")),
 
     # `in` in procedural code (8.5.9): values and ranges. A range here has
     # both bounds (`open_range_value`); `[6..]` is a domain's form (7.2.1),
@@ -345,7 +358,7 @@ component pss_top {""" + ONE + """
   }
 }""", ["ff f -8 15 3e8", "-4 1431655761 -4 1", "le", "100000000 700000000"],
         covers=("EX-LIT.1", "EX-LIT.2", "EX-LIT.3", "EX-LIT.4", "EX-LIT.5",
-                "EX-LIT.6", "EX-LIT.7", "EX-REL.2")),
+                "EX-LIT.6", "EX-LIT.7", "EX-REL.2", "EX-WIDTH.1")),
 
     # A shift of the literal 1 is carried out at the literal's 32 bits when
     # nothing wider is around it (EX-SHIFT.5), and at 64 in a 64-bit target;
@@ -409,7 +422,8 @@ component pss_top {""" + ONE + """
   target function void run() { go(2, 3, 4, 2, false, true, 18); }
 }""", ["4 8 -5 12", "7 2 4", "17 1 17"],
         covers=("EX-PREC.1", "EX-PREC.2", "EX-PREC.3", "EX-PREC.4",
-                "EX-PREC.5", "DT-CAST", "IP-81")),
+                "EX-PREC.5", "DT-CAST", "IP-81", "DT-CAST.5", "EX-BIT.3",
+                "EX-COND.6")),
 
     # --- P3: sign and width interactions -----------------------------------------
     # Unary minus keeps an unsigned operand unsigned (Table 22): -x < 0 is
@@ -438,7 +452,7 @@ component pss_top {""" + ONE + """
     message(LOW, "%d %d", s, u);
   }
 }""", ["-1073741824 3221225472"],
-        covers=("EX-ARITH.1", "EX-WIDTH", "ST-REPEAT", "IP-78")),
+        covers=("EX-ARITH.1", "EX-WIDTH", "ST-REPEAT", "IP-78", "DT-INT.1")),
 
     # The arms of `?:` meet at the larger width, unsigned unless both are
     # signed, and a wider target propagates into the chosen arm (IP-80):
@@ -469,7 +483,8 @@ component pss_top {""" + ONE + """
     message(LOW, "%d %x %d", z, w, v);
   }
   target function void run() { go(15, -1); }
-}""", ["15 ffffffff -1"], covers=("EX-WIDTH.3", "DT-CAST", "IP-20")),
+}""", ["15 ffffffff -1"], covers=("EX-WIDTH.3", "DT-CAST", "IP-20",
+                                  "DT-CAST.1", "DT-CAST.8")),
 
     # bit[32] 1 < int i compares unsigned (Ex 43): true for every negative i
     # (IP-21), while the loop's own `i >= -2` is signed.
@@ -507,7 +522,8 @@ component pss_top {""" + ONE + """
   target function void run() { go(0xF0, 0x20, 0x1F0, 0x20); }
 }""", ["f01 10", "110", "10 110"],
         covers=("EX-WIDTH.3", "EX-WIDTH.4", "EX-WIDTH.5", "EX-WIDTH.6",
-                "EX-ASSIGN.6", "IP-16", "IP-17", "IP-18", "IP-19")),
+                "EX-ASSIGN.6", "IP-16", "IP-17", "IP-18", "IP-19",
+                "DT-CAST.8", "EX-WIDTH.1", "ST-VAR.8")),
 
     # --- P3: selects as lvalues -------------------------------------------------
     # A bit select written with a run-time index, in a loop (IP-45): the bits
@@ -520,7 +536,7 @@ component pss_top {""" + ONE + """
     message(LOW, "%x", x);
   }
   target function void run() { go(0x1E); }
-}""", ["78"], covers=("EX-SEL", "ST-REPEAT", "IP-45")),
+}""", ["78"], covers=("EX-SEL", "ST-REPEAT", "IP-45", "EX-SEL.4")),
 
     # `a[i].f[7:4] += 1` (IP-6): a part select of a struct field of an array
     # element, compound-assigned, wraps in its 4 bits and keeps the others.
@@ -535,7 +551,8 @@ component pss_top {""" + ONE + """
     message(LOW, "%x %x %x", a[0].f, a[1].f, a[2].f);
   }
   target function void run() { go(1); }
-}""", ["0 1204 3"], covers=("EX-SEL", "EX-ASSIGN.6", "DT-STRUCT", "IP-6")),
+}""", ["0 1204 3"], covers=("EX-SEL", "EX-ASSIGN.6", "DT-STRUCT", "IP-6",
+                            "EX-IDX.3", "EX-SEL.6", "EX-REF.1")),
 
     # --- P3: a typedef (7.11) ---------------------------------------------------------
     # A package typedef names its type: 300 into a bit[8] is 0x2C.
@@ -547,7 +564,257 @@ component pss_top {""" + ONE + """
     tp::byte_t x = 300;
     message(LOW, "%x %x", x, inc(0xFF));
   }
-}""", ["2c 0"], covers=("DT-TYPEDEF", "EX-WIDTH.4")),
+}""", ["2c 0"], covers=("DT-TYPEDEF", "EX-WIDTH.4", "DT-TYPEDEF.1",
+                        "ST-VAR.5", "ST-VAR.8")),
+
+    # --- P4: interaction patterns ---------------------------------------------------
+    # A range whose bounds cross is empty (8.5.9.1, IP-35): with `lo = 3 - i`
+    # and `hi = i`, the range holds nothing until i = 2.
+    "in with run-time range bounds that cross": Case("""
+component pss_top {""" + ONE + """
+  target function void run() {
+    repeat (i : 4) {
+      int lo = 3 - i;
+      int hi = i;
+      bit[8] v = 1;
+      if (v in [lo..hi]) { message(LOW, "%d in", i); }
+      else { message(LOW, "%d out", i); }
+      if (2 in [lo..hi, 7]) { message(LOW, "%d 2in", i); }
+    }
+  }
+}""", ["0 out", "1 out", "2 in", "2 2in", "3 in", "3 2in"],
+        covers=("EX-IN", "ST-REPEAT", "IP-35", "EX-IN.2")),
+
+    # --- P5.3: integer defaults, widths and conversions (7.2, 8.5.1.1) -------
+    # `int` and `bit` default to 0; `bit` is one unsigned bit, so 2 and 3
+    # truncate to 0 and 1 (8.7.2), while `d + 1` in a 32-bit context is 2.
+    # INT_MAX + 1 wraps to INT_MIN (8.5.1.1). A bit is printed with %u: %d
+    # reads a value signed at its own width.
+    "int and bit defaults, truncation and wrap": Case("""
+component pss_top {""" + ONE + """
+  target function void run() {
+    int a;
+    bit b;
+    bit c = 2;
+    bit d = 1;
+    int m = 0x7FFFFFFF;
+    m = m + 1;
+    message(LOW, "%d %u %u %d %d", a, b, c, d + 1, m);
+    b = 3;
+    message(LOW, "%u", b);
+  }
+}""", ["0 0 0 2 -2147483648", "1"],
+        covers=("DT-INT.1", "DT-INT.2")),
+
+    # `int[5]` holds -16..15, so 15 + 1 is -16. Converting between signed and
+    # unsigned keeps the bit pattern (8.5.1.1): int[8] -1 into a bit[8] is
+    # 255; extension follows the SOURCE's sign (8.7.2): into a bit[16] it is
+    # 0xFFFF.
+    "a sized int wraps; signed to unsigned keeps the pattern": Case("""
+component pss_top {""" + ONE + """
+  target function void run() {
+    int[5] v = 15;
+    v = v + 1;
+    int[8] x = -1;
+    bit[8] y = x;
+    bit[16] z = x;
+    message(LOW, "%d %u %x", v, y, z);
+    a.STS.write_val(y);
+  }
+}""", ["-16 255 ffff", "write 32 0x1004 0xff"],
+        covers=("DT-INT.3", "DT-INT.7")),
+
+    # A width is any constant expression (7.2.1 c, 8.2): a static const of a
+    # package, a component and a struct, an arithmetic expression, an enum
+    # item, a template value parameter (and a default naming an earlier
+    # one, 10.3.1), a pure call with constant arguments. Each value below is
+    # truncated to its width. An array size and a static const's declared
+    # type (OFF is bit[64], so OFF - 13 is unsigned 64 bits) are already
+    # honoured; the widths are not.
+    "integer widths from constant expressions": Case("""
+package k {
+  static const int W = 4;
+  static const bit[64] OFF = 12;
+  static const int M = 2;
+  pure function int sq(int x) { return x * x; }
+}
+struct s_s { static const int N = 3; bit[8] f; }
+struct w_s<int W = 8, int V = W * 2> { bit[W] x; bit[V] y; }
+enum e_e { A = 3, B }
+component pss_top {""" + ONE + """
+  static const int CW = 6;
+  target function void run() {
+    bit[k::W] v = 0x1F;
+    bit[s_s::N] t = 9;
+    bit[2 + 3] u = 0x3F;
+    bit[B] e = 0x1F;
+    bit[CW] c = 63;
+    w_s<4> ws;
+    bit[k::sq(2)] p = 0xFF;
+    array<bit[8], k::M + 1> arr;
+    c = c + 1;
+    ws.x = 0x1F;
+    ws.y = 0x1FF;
+    message(LOW, "%u %u %u %u %u", v, t, u, e, c);
+    message(LOW, "%u %u %u %d %x", ws.x, ws.y, p, arr.size(), k::OFF - 13);
+  }
+}""", ["15 1 31 15 0", "15 255 15 3 ffffffffffffffff"],
+        xfail=on(ALL, I13),
+        covers=("DT-INT.3", "DT-CONST.1", "DT-CONST.3", "DT-CONST.4",
+                "FN-PURE.4")),
+
+    # Without an initializer, a value of a type whose domain excludes 0 takes
+    # the domain's smallest value (7.2.1 d); the domain is intersected with
+    # the width (`bit[5] in [10..]` is 10..31). Where 0 is in the domain,
+    # the default is 0; an initializer wins.
+    "domain-typed locals default to the smallest domain value": Case("""
+component pss_top {""" + ONE + """
+  target function void run() {
+    bit[5] in [1, 2, 4] x;
+    bit[5] in [10..] z;
+    int in [-10..5] y0;
+    int in [-10..-5] y;
+    int[5] in [-16..-5] w;
+    bit[4] in [2..5] d;
+    int in [1..9] f = 3;
+    message(LOW, "%u %u %d %d %d %u %d", x, z, y0, y, w, d, f);
+  }
+}""", ["1 10 0 -10 -16 2 3"],
+        xfail=on(ALL, W46),
+        covers=("DT-INT.5", "ST-VAR.1", "ST-VAR.5")),
+
+    # The same default for a component field.
+    "a domain-typed field": Case("""
+component pss_top {""" + ONE + """
+  bit[5] in [1, 2, 4] f;
+  int in [-10..-5] g;
+  target function void run() { message(LOW, "%u %d", f, g); }
+}""", ["1 -10"],
+        xfail=on(ALL, E24),
+        covers=("DT-INT.5", "ST-VAR.1")),
+
+    # --- P5.3: relational and equality operators (8.5.2, 8.5.3) --------------
+    # Operands meet at the larger width, signed only if both are: int[4] -1
+    # < int[8] 0 sign-extends; bit[8] 255 == -1 compares at 32 unsigned
+    # bits (255 vs 0xFFFFFFFF); bit[4] 15 > int[4] -1 compares 15 with 15.
+    "relational and equality operators across widths and signs": Case("""
+component pss_top {""" + ONE + """
+  target function void r(int a, int b) {
+    message(LOW, "%n %n %n %n", a < b, a <= b, a > b, a >= b);
+  }
+  target function void go(int[4] s4, int[8] s8, bit[8] u, int[8] m,
+                          bit[4] u4) {
+    message(LOW, "%n %n %n %n %n", s4 < s8, u == -1, m == -1, u4 > s4,
+            s4 == m);
+  }
+  target function void run() {
+    r(1, 2);
+    r(2, 2);
+    r(3, 2);
+    go(-1, 0, 255, -1, 15);
+  }
+}""", ["true true false false", "false true false true",
+       "false false true true", "true false true false true"],
+        xfail=on(("c", "cpp"), W62),
+        covers=("EX-REL.1", "EX-REL.3", "EX-EQ.1")),
+
+    # Unary `+` is listed in Table 22 though the 8.1 grammar's unary_operator
+    # omits it (ruling R16 pending); pssparser accepts it, and it is the
+    # identity, keeping its operand's type.
+    "unary plus": Case("""
+component pss_top {""" + ONE + """
+  target function void go(int x, bit[8] y) {
+    message(LOW, "%d %d %d", +x, +y, -(+x));
+  }
+  target function void run() { go(-5, 3); }
+}""", ["-5 3 5"], covers=("EX-ARITH.9",)),
+
+    # --- P5.3: selects (8.6.1, Table 21) --------------------------------------
+    # A select outside its value is illegal (8.6.1); with constant bounds it
+    # is a compile-time error. A part select's first bound may not be below
+    # its second. One select per case: the gate reports the first only.
+    "a bit select past the width": Case("""
+component pss_top {""" + ONE + """
+  target function void run() { bit[8] x = 3; bit[8] y = x[8]; }
+}""", Refused([r"bit select \[8\] is outside a 8-bit value"]),
+        covers=("EX-SEL.3",)),
+
+    "a part select with reversed bounds": Case("""
+component pss_top {""" + ONE + """
+  target function void run() { bit[8] x = 3; bit[8] z = x[3:4]; }
+}""", Refused([r"part select \[3:4\]"]), covers=("EX-SEL.3",)),
+
+    "a part select past the width": Case("""
+component pss_top {""" + ONE + """
+  target function void run() { bit[8] x = 3; bit[8] w = x[9:4]; }
+}""", Refused([r"part select \[9:4\] is outside a 8-bit value"]),
+        covers=("EX-SEL.3",)),
+
+    "a bit select past the width, assigned": Case("""
+component pss_top {""" + ONE + """
+  target function void run() { bit[8] x = 3; x[8] = 1; }
+}""", Refused([r"bit select \[8\] is outside a 8-bit value"]),
+        covers=("EX-SEL.3",)),
+
+    # A select of a named constant is a constant expression (8.2): it may
+    # size an array, decide a `compile if` and be a `match` choice.
+    "selects of a static constant": Case("""
+component pss_top {""" + ONE + """
+  static const bit[8] D = 0xA5;
+  target function void go(int v) {
+    array<bit[8], D[3:0]> arr;
+    message(LOW, "%x %u %u %d", D[7:4], D[0], D[1], arr.size());
+    compile if (D[7:4] == 0xA) { message(LOW, "ten"); }
+    else { message(LOW, "other"); }
+    match (v) {
+      [D[3:0]]: message(LOW, "m");
+      default: message(LOW, "d");
+    }
+  }
+  target function void run() { go(5); }
+}""", ["a 1 0 5", "ten", "m"],
+        xfail=on(ALL, I14),
+        covers=("EX-SEL.5", "DT-CONST.6", "DT-CONST.3")),
+
+    # The same, of a package's constant named by its qualified path.
+    "selects of a package static constant": Case("""
+package k_pkg { static const bit[8] C = 0xA5; }
+component pss_top {""" + ONE + """
+  target function void go(int v) {
+    array<bit[8], k_pkg::C[3:0]> arr;
+    bit[4] h = k_pkg::C[7:4];
+    message(LOW, "%x %u %u %x %d", k_pkg::C[7:4], k_pkg::C[0], k_pkg::C[1],
+            h, arr.size());
+    compile if (k_pkg::C[7:4] == 0xA) { message(LOW, "ten"); }
+    else { message(LOW, "other"); }
+    match (v) {
+      [k_pkg::C[3:0]]: message(LOW, "m");
+      default: message(LOW, "d");
+    }
+  }
+  target function void run() { go(5); }
+}""", ["a 1 0 a 5", "ten", "m"],
+        xfail=on(ALL, I14),
+        covers=("EX-SEL.5", "DT-CONST.6", "DT-CONST.3")),
+
+    # A part select is unsigned, of width hi-lo+1, and a bit select a `bit`
+    # (Table 21): both zero-extend into a wider target, whatever the sign of
+    # what they select from. Self-determined, x[7:0] + 1 is computed in 32
+    # unsigned bits: 0x100.
+    "selects are unsigned in a wider context": Case("""
+component pss_top {""" + ONE + """
+  target function void go(int x, int[8] s) {
+    int y = x[7:0];
+    bit[64] z = x[31:16];
+    int b = x[3];
+    int t = s[7:4];
+    message(LOW, "%x %x %x %x", y, z, b, t);
+    message(LOW, "%x %x %x", x[7:0], x[3], x[7:0] + 1);
+    if (x[7:0] > 0) { message(LOW, "pos"); } else { message(LOW, "neg"); }
+  }
+  target function void run() { go(-1, -128); }
+}""", ["ff ffff 1 8", "ff 1 100", "pos"],
+        covers=("EX-SEL.7", "EX-WIDTH.1")),
 }
 
 test_construct = define_tests(CASES)

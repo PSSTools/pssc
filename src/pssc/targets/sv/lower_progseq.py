@@ -21,6 +21,7 @@ import zuspec.ir.core as ir
 from .. import pkg_functions as pf
 from ..bit_select import bit_select
 from ..expr_types import is_integral
+from ...diag import Refusal
 from ..body_walker import (BodyWalker, assigns_local, foreach_parts,
                            in_as_compare, match_values)
 from ..string_methods import method_of as string_method, substring
@@ -579,17 +580,17 @@ class _BodyEmitter(BodyWalker):
         fmt_e, vals = rest[0], rest[1:]
         fmt = getattr(fmt_e, "value", None)
         if _dt_name(fmt_e) != "ExprConstant" or not isinstance(fmt, str):
-            raise ValueError(
+            raise Refusal(
                 f"'{name}' needs a string literal as its format; got "
-                f"{_dt_name(fmt_e)}")
+                f"{_dt_name(fmt_e)}", fmt_e)
         try:
             specs = parse_format(fmt)
         except ValueError as e:
-            raise ValueError(f"{name}({fmt!r}): {e} (LRM 21.1.1 a)") from None
+            raise Refusal(f"{name}({fmt!r}): {e} (LRM 21.1.1 a)", fmt_e) from None
         if len(specs) != len(vals):
-            raise ValueError(
+            raise Refusal(
                 f"{name}({fmt!r}): {len(specs)} format specifier(s) for "
-                f"{len(vals)} argument(s) (LRM 21.1.1 b)")
+                f"{len(vals)} argument(s) (LRM 21.1.1 b)", fmt_e)
 
         def lit(text):
             return (text.replace("\\", "\\\\").replace('"', '\\"')
@@ -602,10 +603,10 @@ class _BodyEmitter(BodyWalker):
             out.append(lit(fmt[pos:start]))
             pos = end
             if flags or width is not None or prec is not None or conv == "X":
-                raise ValueError(
+                raise Refusal(
                     f"{name}({fmt!r}): '{fmt[start:end]}' has no "
                     f"SystemVerilog rendering yet (only unpadded %d %u %x %o "
-                    f"%b %n %s)")
+                    f"%b %n %s)", fmt_e)
             spec, arg = self._fmt_arg(conv, v)
             out.append(spec)
             sv_args.append(arg)
@@ -841,6 +842,13 @@ class _BodyEmitter(BodyWalker):
             return f"{st}.substr({lo_t}, {hi_t})"
         sel = bit_select(e, self.types)
         if sel is None:
+            from ..index_bounds import index_bound
+            n = index_bound(e)
+            if n is not None:
+                # Out of range is a run-time error (8.6.2, R12): SV would
+                # read a default and drop a write. `pssc_index` reports it.
+                return (f"{self.expr(e.value)}"
+                        f"[pssc_index({self.expr(e.slice)}, {n})]")
             return f"{self.expr(e.value)}[{self.expr(e.slice)}]"
         # A bit or part select (`bit_select`). SV has them natively, on
         # anything with a name -- a variable, a member, a packed struct
@@ -1659,7 +1667,7 @@ class _BodyEmitter(BodyWalker):
             t = self.types.type_of(s.iter)
             elem = getattr(getattr(t, "dtype", None), "element_type", None)
             if elem is None or assigns_local(s.body, it.name):
-                raise ValueError(
+                raise Refusal(
                     f"cannot lower `foreach ({it.name} : {coll})`: "
                     + ("its body assigns the iterator, which aliases the "
                        "element (LRM 20.7.8 c); assign the element by index"

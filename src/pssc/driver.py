@@ -48,6 +48,14 @@ class CompileError(Exception):
         self.errors = list(errors or [])
         super().__init__(message)
 
+    @property
+    def markers(self) -> List[dict]:
+        """The located errors (`pssc.diag.Located`), as pssparser's
+        markers are shaped -- what a consumer of locations reads. Empty when
+        none is located, so a ``ParseException`` this re-raises is found on
+        the context chain instead."""
+        return [e.marker() for e in self.errors if hasattr(e, "marker")]
+
 
 def _normalize_opts(opts: Optional[argparse.Namespace],
                     output_dir: Optional[PathLike],

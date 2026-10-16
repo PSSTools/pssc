@@ -38,14 +38,13 @@ package util {
 }
 
 component pss_top {
-  int last;
-
   // Shadows the package `twice` inside this component (LRM 22.2).
   target function int twice(int x) { return 100 + x; }
 
-  target function void run(int v) {
-    last = fact(v) + add1(v) + scaled(v) + scaled(v, 10) + util::neg(v);
+  target function int run(int v) {
+    int last = fact(v) + add1(v) + scaled(v) + scaled(v, 10) + util::neg(v);
     say(twice(v));
+    return last;
   }
 }
 """
@@ -89,9 +88,8 @@ def test_package_functions_run_as_the_pss_says(gen):
     mod, rt, _ = gen
     bus = rt.MemoryBus()
     dut = mod.PssTop(bus)
-    dut.run(4)
     # fact(4) + add1(4) + scaled(4) + scaled(4, 10) + util::neg(4)
-    assert dut.last == 24 + 5 + 12 + 40 - 4
+    assert dut.run(4) == 24 + 5 + 12 + 40 - 4
     # `twice` in the component body is the component's own function.
     assert [t for k, _, _, t in bus.log if k == "message"] == ["say 104"]
 
@@ -125,14 +123,12 @@ def test_a_package_function_calls_the_package_function_not_the_components(
 function int twice(int x) { return 2 * x; }
 function int quad(int x) { return twice(twice(x)); }
 component pss_top {
-  int r;
   target function int twice(int x) { return 100 + x; }
-  target function void g() { r = quad(1); }
+  target function int g() { return quad(1); }
 }""")
     mod, rt = _load(out, "pss_top")
     dut = mod.PssTop(rt.MemoryBus())
-    dut.g()
-    assert dut.r == 4
+    assert dut.g() == 4
 
 
 # --- contexts (LRM 22.2.3) ---------------------------------------------------
@@ -176,8 +172,7 @@ def test_a_backend_that_does_not_lower_them_names_the_function(tmp_path):
     msg = _gate_errors(tmp_path, """
 function int f(int x) { return x; }
 component pss_top {
-  int r;
-  target function void g() { r = f(1); }
+  target function int g() { return f(1); }
 }""", target="op-model-c")
     assert "'f' is a package-scope function, which 'op-model-c' does not " \
            "lower yet" in msg
@@ -191,10 +186,9 @@ function bit[32] peek(addr_handle_t h) { return read32(h); }
 function bit[32] peek2(addr_handle_t h) { return peek(h) + inc(0); }
 target function void tick() { }
 component pss_top {
-  bit[32] r;
-  target function void g(addr_handle_t h) {
+  target function bit[32] g(addr_handle_t h) {
     tick();
-    r = peek2(h) + inc(1);
+    return peek2(h) + inc(1);
   }
 }"""
 
@@ -226,6 +220,5 @@ def test_the_async_form_runs(tmp_path):
 
     async def go():
         await bus.write32(0x100, 41)
-        await dut.g(0x100)
-    asyncio.run(go())
-    assert dut.r == 41 + 1 + 2
+        return await dut.g(0x100)
+    assert asyncio.run(go()) == 41 + 1 + 2

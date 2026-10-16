@@ -332,6 +332,12 @@ def elaborate(ctx, root, out_dir, *, ctor_names: Optional[FrozenSet[str]] = None
     pm.flatten_struct_bases(ctx)
     from .array_methods import lower as lower_array_methods
     lower_array_methods(ctx)
+    from .match_overlap import lower as guard_match_overlap
+    guard_match_overlap(ctx)
+    from .comp_foreach import lower as lower_comp_foreach
+    lower_comp_foreach(ctx)
+    from .index_bounds import lower as mark_index_bounds
+    mark_index_bounds(ctx)
     tree = pm.walk_tree(root, resolver(ctx))
     post = _post_order(tree)
     pre = _pre_order(tree)
@@ -665,10 +671,17 @@ class OpModelTarget(Target):
         # outside these emitters -- a plugin target, a tool, a test calling
         # `func_kind(fn)` on one function -- for which the ambient value is
         # still the fallback. Nothing in a generated file depends on it.
+        from ..diag import Refusal
+        from ..driver import CompileError
         with pm.ctor_names_scope(getattr(opts, "progseq_ctor_name", None)):
-            model = self.build_model(ctx, opts)
-            self.check(model)
-            outputs = list(self.emit(model, opts))
+            try:
+                model = self.build_model(ctx, opts)
+                self.check(model)
+                outputs = list(self.emit(model, opts))
+            except Refusal as e:
+                raise CompileError(
+                    f"a construct cannot be lowered to "
+                    f"{self.language or self.name}", [e.located()]) from e
             return outputs + self.emit_manifest(model, opts, outputs)
 
     def emit_manifest(self, model: OpModel, opts: argparse.Namespace,
@@ -788,6 +801,7 @@ class OpModelTarget(Target):
         from .unsupported_types import refuse
         from .validate_calls import gate
         refuse(model, self.unsupported_types, self.language or self.name)
+        self.check_body_kinds(model)
         gate(model.root, model.ctx, self.legality_target or self.name,
              self.language or self.name, model.ctor_names,
              entries=[(e.comp, fn) for e in model.entries
@@ -803,11 +817,47 @@ class OpModelTarget(Target):
         self.check_register_offsets(model)
         self.assert_api_is_not_empty(model)
 
+    def body_emitter_class(self):
+        """The class that renders this target's operation bodies, or None.
+
+        `check_body_kinds` asks it which IR kinds it renders
+        (`body_kinds.emitter_kinds`). A target that names none is not
+        pre-screened, and an emitter meeting a kind it lacks is an internal
+        error, as before P5."""
+        return None
+
+    def check_body_kinds(self, model: OpModel) -> None:
+        """Refuse, with its location, every node of a rendered body that the
+        body emitter has no rendering for (`body_kinds`): before, the
+        emitter raised an internal error from the middle of emission."""
+        cls = self.body_emitter_class()
+        if cls is None:
+            return
+        from ..driver import CompileError
+        from . import body_kinds
+        from .validate_calls import rendered_bodies
+        bodies = rendered_bodies(
+            model.root, model.ctx, ctor_names=model.ctor_names,
+            entries=[(e.comp, fn) for e in model.entries
+                     for fn in e.functions],
+            pkg_functions=self.supports_package_functions,
+            init_blocks=self.supports_init_blocks,
+            extra_components=model.base_classes,
+            native=self.native_inheritance)
+        language = self.language or self.name
+        bad = body_kinds.refusals(bodies, body_kinds.emitter_kinds(cls),
+                                  language)
+        if bad:
+            raise CompileError(
+                f"{len(bad)} construct(s) cannot be lowered to {language}",
+                bad)
+
     def check_register_offsets(self, model: OpModel) -> None:
         """Evaluate every register's offset (`reg_layout.collect_accessors`)
         before any file is opened. An offset function the build cannot run,
         or one that answers the -1 sentinel for a declared register, is the
         model's error and is reported as one, one line per component."""
+        from ..diag import at
         from ..driver import CompileError
         from .reg_layout import collect_accessors
 
@@ -817,7 +867,8 @@ class OpModelTarget(Target):
                 collect_accessors(comp)
             except pm.OffsetFoldError as e:
                 name = (getattr(comp, "name", "") or "?").split("::")[-1]
-                bad.append(f"{name}: {e}")
+                bad.append(at((getattr(e, "node", None), comp),
+                              f"{name}: {e}"))
         if bad:
             raise CompileError(
                 f"{len(bad)} register offset(s) cannot be evaluated", bad)

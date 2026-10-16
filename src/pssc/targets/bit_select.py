@@ -8,7 +8,7 @@ index, which is a C/C++ compile error on a bit select, a `TypeError` in
 Python, and -- where the front end also dropped the select -- a silent read
 of the whole value.
 
-LRM 8.5.x / Table 21: a part select `x[hi:lo]` is unsigned and `hi-lo+1` bits
+LRM 8.6.1 / Table 21: a part select `x[hi:lo]` is unsigned and `hi-lo+1` bits
 wide, a bit select is one bit; the bounds of a part select are constant. A
 write to a select changes those bits only (it is a read-modify-write of the
 whole value in a language without native bit ranges).
@@ -18,6 +18,7 @@ from __future__ import annotations
 import dataclasses as dc
 from typing import Any, Optional
 
+from ..diag import Refusal
 from .progseq_model import _dt_name
 
 __all__ = ["BitSelect", "bit_select", "const_value"]
@@ -82,14 +83,15 @@ def bit_select(e, types) -> Optional[BitSelect]:
     if _dt_name(sl) == "ExprSlice":
         hi, lo = const_value(sl.upper), const_value(sl.lower)
         if hi is None or lo is None:
-            raise ValueError(
+            raise Refusal(
                 "a part select's bounds must be constant expressions "
-                "(LRM 8.5.x)")
+                "(LRM 8.6.1)", sl, e)
         if hi < lo or lo < 0 or hi >= bt.width:
-            raise ValueError(
-                f"part select [{hi}:{lo}] is outside a {bt.width}-bit value")
+            raise Refusal(f"part select [{hi}:{lo}] is outside a "
+                          f"{bt.width}-bit value", sl, e)
         return BitSelect(e.value, sl.lower, lo, hi - lo + 1, bt.width)
     lo = const_value(sl)
     if lo is not None and not 0 <= lo < bt.width:
-        raise ValueError(f"bit select [{lo}] is outside a {bt.width}-bit value")
+        raise Refusal(f"bit select [{lo}] is outside a {bt.width}-bit "
+                      f"value", sl, e)
     return BitSelect(e.value, sl, lo, 1, bt.width)

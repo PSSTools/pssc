@@ -312,6 +312,10 @@ class ExprTypes:
     def _ExprCompare(self, e):
         return BOOL
 
+    def _ExprIn(self, e):
+        """`v in [...]` (8.5.9) is a bool."""
+        return BOOL
+
     def _ExprIfExp(self, e):
         a, b = self.type_of(e.body), self.type_of(e.orelse)
         if a is None or b is None:
@@ -327,6 +331,9 @@ class ExprTypes:
         name = getattr(func, "attr", None) or getattr(func, "name", None)
         if name in _BUILTIN_RESULT:
             return _BUILTIN_RESULT[name]
+        if name in ("try_put", "try_get") and _dt_name(func) == "ExprAttribute" \
+                and self._is_channel(func.value):
+            return BOOL                     # 21.9.1.3
         if _dt_name(func) == "ExprAttribute":
             recv = (PssType("comp", dtype=self.comp)
                     if _dt_name(func.value) == "TypeExprRefSelf"
@@ -343,6 +350,21 @@ class ExprTypes:
         if fn is not None:
             return self._returns(fn)
         return None
+
+    def _is_channel(self, e) -> bool:
+        """Whether *e* names a channel field (or an element of an array of
+        them) of this body's component."""
+        from .progseq_model import field_is_channel
+        if _dt_name(e) == "ExprSubscript":
+            e = e.value
+        if _dt_name(e) != "ExprAttribute":
+            return False
+        owner = (self.comp if _dt_name(e.value) == "TypeExprRefSelf"
+                 else getattr(self.type_of(e.value), "dtype", None))
+        for f in getattr(self.resolve(owner), "fields", None) or []:
+            if f.name == e.attr:
+                return field_is_channel(f)
+        return False
 
     def _method_result(self, dtype, name) -> Optional[PssType]:
         dt = self.resolve(dtype)

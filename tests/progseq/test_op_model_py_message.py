@@ -20,8 +20,11 @@ import sys
 
 import pytest
 
+from pssc.driver import CompileError
 from pssc.targets.py import pss_format as pf
 from pssc.testing import compile_op_model
+
+from .conftest import assert_refused_at
 
 # --- the formatter against bc's --------------------------------------------
 
@@ -177,9 +180,10 @@ component pss_top {
     ('message(NONE, "%d", s)', r"%d cannot format a string"),
 ])
 def test_a_bad_format_is_a_build_error(tmp_path, call, match):
-    with pytest.raises(ValueError, match=match):
+    with pytest.raises(CompileError) as ei:
         with _compile(tmp_path, f"""
 component pss_top {{
   target function void f(int a) {{ string s = "x"; {call}; }}
 }}"""):
             pass
+    assert_refused_at(ei, match)

@@ -1,13 +1,200 @@
-# Construct coverage dispositions: what a construct-matrix case cannot say.
+# What a matrix case cannot say about a construct on an op-model target
+# (plan §4.4, P0.3; read by tests/progseq/matrix/coverage.py).
 #
-# Read by tests/progseq/matrix/test_coverage.py (see matrix/coverage.py). The
-# construct list itself is 01-lrm-inventory.md; a matrix case states what it
-# covers with `covers=`. An entry here records, per target (c, cpp, py, sv,
-# or `all`), one of:
+#   dispositions:
+#     <ID>:
+#       <target> | all:
+#         status: elsewhere   # proved by another test; `test` names it as
+#                             # path::function (checked to exist)
+#         status: n-a         # nothing to check on this target; `why`
+#         status: open        # not proved yet; `defect` or `ruling` says why
 #
-#   status: elsewhere   -- proved by another test; `test:` names it
-#   status: n-a         -- meaningless on that target; `why:` says so
+# `elsewhere` and `n-a` count as covered; `open` does not. A target named
+# both here and by a matrix case takes the case.
 #
 # A REFUSAL is never recorded here: it is a matrix case whose expectation is
 # `Refused(...)`, so the refusal itself is checked.
-dispositions: {}
+
+dispositions:
+
+  # --- patterns pinned by a strict xfail on some targets -----------------------
+  IP-39:
+    all: {status: open, defect: W31}
+  IP-40:
+    c: {status: open, defect: W31}
+    cpp: {status: open, defect: W31}
+    sv: {status: open, defect: W31}
+  IP-54:
+    c: {status: open, defect: E17}
+    py: {status: open, defect: E17}
+  IP-55:
+    c: {status: open, defect: E19}
+    cpp: {status: open, defect: E19}
+    py: {status: open, defect: E19}
+  IP-70:
+    py: {status: open, defect: W37, ruling: R12}
+    sv: {status: open, defect: W37, ruling: R12}
+  IP-71:
+    py: {status: open, defect: W38}
+    sv: {status: open, defect: W38}
+
+  # --- action-level patterns: proved on bc or through --export-action ----------
+  IP-61:
+    py:
+      status: elsewhere
+      test: tests/progseq/test_op_model_py_super.py::test_an_extensions_body_follows_super_and_the_initial_body
+    c: {status: open, defect: "P6: C entries (--export-action) not implemented"}
+    cpp: {status: open, defect: "P6: C++ entries (--export-action) not implemented"}
+    sv: {status: open, defect: "no op-model-sv test of super; in an exported action"}
+  IP-86:
+    all:
+      status: elsewhere
+      test: tests/unit/integration/test_bc_interaction_patterns.py::test_ip86_a_mutable_field_accumulates_across_traversals
+  IP-87:
+    all:
+      status: elsewhere
+      test: tests/unit/integration/test_bc_interaction_patterns.py::test_ip87_exec_blocks_of_one_kind_then_an_extensions
+  IP-90:
+    all:
+      status: elsewhere
+      test: tests/unit/integration/test_bc_interaction_patterns.py::test_ip90_yield_in_a_function_two_parallel_bodies_call
+  IP-98:
+    all: {status: open, defect: "executor() is not lowered on any backend (bc refuses it: test_bc_interaction_patterns.py::test_ip98_executor_is_refused)"}
+
+  # --- nothing to check, or waiting on a ruling -----------------------------------
+  IP-68:
+    all:
+      status: n-a
+      why: "21.1.3 leaves the number of calls under verbosity filtering unspecified; there is no expectation to hold a target to"
+
+  # ================= P5.3: sub-constructs no matrix case can map =================
+  # Defect IDs are 00-plan §2 (W/E/I/M/F/H); rulings §7.
+
+  # --- scalar data types -----------------------------------------------------
+  DT-INT.8:
+    c: {"status": "n-a", "why": "C has no 4-state values: nothing a foreign function returns can be X/Z (7.2)"}
+    cpp: {"status": "n-a", "why": "C++ has no 4-state values: nothing a foreign function returns can be X/Z (7.2)"}
+    py: {"status": "n-a", "why": "Python has no 4-state values: nothing a foreign function returns can be X/Z (7.2)"}
+    sv: {"status": "open", "defect": "H1"}
+  DT-INT.9:
+    all: {"status": "n-a", "why": "rand is solve-time only (Ctx C); op-model targets have no solver. The Neg edge (a `rand` local) is rejected by pssparser with a location (PSS026)"}
+  DT-FP.8:
+    all: {"status": "n-a", "why": "7.3.2 permits solve-time and target-time FP results to differ; an op-model target has no solve platform and refuses floating point anyway (R5)"}
+  DT-STR.2:
+    all: {"status": "n-a", "why": "a string domain (7.6.1) only constrains randomization, which op-model targets never do; the default of a domain-restricted string is not stated. String ranges are refused by pssparser (PSS024)"}
+  DT-STR.14:
+    all: {"status": "n-a", "why": "7.6.1 only PERMITS a target platform to limit string operations; it states no behaviour to hold a target to (c/cpp refusing strings, R3, is checked in test_m_strings)"}
+  DT-STR.15:
+    all: {"status": "n-a", "why": "rand string is solve-time only (Ctx C); op-model targets have no solver (randomize is refused: test_m_refusals 'randomize')"}
+  DT-CHND.3:
+    all: {"status": "open", "defect": "H1"}
+
+  # --- collections, refs, registers, addresses, constants --------------------
+  DT-ARR.17:
+    all: {"status": "n-a", "why": "rand arrays and foreach constraints are solve-time only (Ctx C); op-model targets have no solver, and randomize is refused (test_m_refusals.py 'randomize')"}
+  DT-LIST.13:
+    all: {"status": "n-a", "why": "list randomization is solve-time only (Ctx C); op-model targets have no solver, and lists are refused (R4)"}
+  DT-LIST.12:
+    all: {"status": "open", "defect": "F23"}
+  DT-MAP.5:
+    all: {"status": "open", "defect": "F23"}
+  DT-MAP.10:
+    all: {"status": "open", "defect": "F23"}
+  DT-SET.6:
+    all: {"status": "open", "defect": "F23"}
+  DT-SET.7:
+    all: {"status": "open", "defect": "F23"}
+  DT-REF.11:
+    py: {"status": "elsewhere", "test": "tests/progseq/test_op_model_entry.py::test_an_operation_is_called_through_sub_components"}
+    sv: {"status": "elsewhere", "test": "tests/compliance/test_compliance_op_model_sv.py::test_op_model_sv"}
+    c: {"status": "open", "defect": "P6: C entries (--export-action) not implemented"}
+    cpp: {"status": "open", "defect": "P6: C++ entries (--export-action) not implemented"}
+
+  # --- operators -------------------------------------------------------------
+  EX-IN.11:
+    all: {"status": "n-a", "why": "8.5.9.1 leaves the evaluation order of range-list expressions nondeterministic; the row only forbids tests from depending on it, so there is no expectation to hold a target to"}
+  EX-ARITH.4:
+    all: {"status": "open", "defect": "W58", "ruling": "R14"}
+  EX-SHIFT.3:
+    all: {"status": "open", "defect": "W58", "ruling": "R14"}
+
+  # --- references, selects, widths -------------------------------------------
+  EX-SUBSTR.5:
+    all: {"status": "n-a", "why": "sub-strings in constraints (7.6.2) are solve-time only; op-model targets have no solver"}
+  EX-METH.4:
+    all: {"status": "n-a", "why": "pure built-ins in constraints (7.9) are solve-time only; op-model targets have no solver"}
+  EX-REF.3:
+    py: {"status": "elsewhere", "test": "tests/progseq/test_op_model_entry.py::test_the_entry_runs_its_exec_body_against_the_component"}
+    sv: {"status": "elsewhere", "test": "tests/compliance/test_compliance_op_model_sv.py::test_op_model_sv"}
+    c: {"status": "open", "defect": "P6: C entries (--export-action) not implemented"}
+    cpp: {"status": "open", "defect": "P6: C++ entries (--export-action) not implemented"}
+  EX-REF.5:
+    py: {"status": "elsewhere", "test": "tests/progseq/test_op_model_inherit_native.py::test_python"}
+    c: {"status": "elsewhere", "test": "tests/progseq/test_op_model_inherit_native.py::test_c"}
+    cpp: {"status": "elsewhere", "test": "tests/progseq/test_op_model_inherit_native.py::test_cpp"}
+    sv: {"status": "elsewhere", "test": "tests/progseq/test_op_model_inherit_native.py::test_sv"}
+
+  # --- functions -------------------------------------------------------------
+  FN-PURE.3:
+    all: {"status": "n-a", "why": "20.2.6 licenses reuse of a pure call's result for equal arguments but does not require it; calling every time and memoizing are both conforming, so there is no observable expectation (a test must not count calls)"}
+  FN-CALL.10:
+    all: {"status": "n-a", "why": "calls in constraints (Ctx C) are solve-time only; op-model targets have no solver and render no constraints"}
+  FN-IMPORT.6:
+    all: {"status": "n-a", "why": "the language identifier (C/CPP/SV, 20.4.1.2) names the foreign implementation's language; an op-model target renders every import on its own platform seam whatever the identifier (probe: all four accept `import target C`/`SV` alike), so there is nothing behavioural to hold a target to"}
+  FN-IMPORT.1:
+    all: {"status": "elsewhere", "test": "tests/unit/ir/test_ir_functions.py::test_an_import_by_prototype_is_recorded"}
+  FN-IMPORT.5:
+    all: {"status": "elsewhere", "test": "tests/progseq/test_c_imports.py::test_a_component_scope_import_is_refused_rather_than_mislowered"}
+
+  # --- library and exec blocks -----------------------------------------------
+  EXEC-KIND.2:
+    all: {"status": "elsewhere", "test": "tests/progseq/test_op_model_entry.py::test_a_solve_exec_is_refused"}
+  EXEC-KIND.4:
+    py: {"status": "elsewhere", "test": "tests/progseq/test_op_model_entry.py::test_the_entry_runs_its_exec_body_against_the_component"}
+    sv: {"status": "elsewhere", "test": "tests/compliance/test_compliance_op_model_sv.py::test_op_model_sv"}
+    c: {"status": "open", "defect": "P6: C entries (--export-action) not implemented"}
+    cpp: {"status": "open", "defect": "P6: C++ entries (--export-action) not implemented"}
+  EXEC-KIND.10:
+    all: {"status": "n-a", "why": "op-model targets run solve execs (constructor, init_down/init_up) sequentially on one thread before any operation; nothing can interleave with them, so atomicity has no observable alternative"}
+  EXEC-KIND.12:
+    all: {"status": "open", "defect": "activities are not built on op-model targets (docs/design/compound-actions-design.md); test_op_model_entry.py::test_an_action_with_an_activity_is_refused"}
+  LIB-RAND.4:
+    all: {"status": "open", "ruling": "R7"}
+  LIB-FP.2:
+    all: {"status": "n-a", "why": "a rule about constraints; op-model targets solve no constraint"}
+  LIB-CHAN.7:
+    all: {"status": "n-a", "why": "op-model targets run one operation at a time: there is no activity or parallel (entries with an activity are refused), so no second exec exists to run while a get() blocks"}
+
+  # --- statements I ----------------------------------------------------------
+  ST-ASSIGN.8:
+    py: {"status": "open", "defect": "op-model entries (--export-action) refuse an action with an activity and a read of an action attribute (test_op_model_entry.py::test_an_action_with_an_activity_is_refused, ::test_reading_an_action_attribute_is_refused); reactive activities await docs/design/compound-actions-design.md"}
+    c: {"status": "open", "defect": "P6: C entries (--export-action) not implemented"}
+    cpp: {"status": "open", "defect": "P6: C++ entries (--export-action) not implemented"}
+    sv: {"status": "open", "defect": "activities are not built on op-model targets (docs/design/compound-actions-design.md)"}
+
+  # --- statements II ---------------------------------------------------------
+  ST-RAND.8:
+    all: {"status": "n-a", "why": "random stability (13.4.6.2) is a property of the values a solver draws; op-model targets have no solver and refuse every randomize statement at the front end (test_m_refusals 'randomize'), so no randomized value exists to be stable or not"}
+  ST-RET.5:
+    c: {"status": "open", "defect": "W57"}
+    cpp: {"status": "open", "defect": "W57"}
+    py: {"status": "n-a", "why": "20.7.5 says a non-void function shall return a value but leaves the value of falling off the end unspecified (01 §7 item 11); nothing to hold py to beyond building, which it does"}
+    sv: {"status": "n-a", "why": "20.7.5 leaves falling off the end of a non-void function unspecified (01 §7 item 11); an SV function returns its implicit variable, and there is no expectation to hold it to"}
+  ST-SUPER.1:
+    py: {"status": "elsewhere", "test": "tests/progseq/test_op_model_py_super.py::test_sync"}
+  ST-SUPER.2:
+    py: {"status": "elsewhere", "test": "tests/progseq/test_op_model_py_init_blocks.py::test_an_inherited_block_runs_and_a_declared_kind_shadows"}
+  ST-SUPER.3:
+    py: {"status": "elsewhere", "test": "tests/progseq/test_op_model_py_super.py::test_sync"}
+  ST-SUPER.4:
+    py: {"status": "elsewhere", "test": "tests/progseq/test_op_model_py_init_blocks.py::test_every_base_block_of_the_kind_runs_and_a_missing_one_is_nothing"}
+  ST-SUPER.5:
+    all: {"status": "n-a", "why": "a target-template exec body is a string (20.6.1); `super;` written in it is template text, never a statement, so there is no super statement for a front end or target to accept or reject; op-model refuses target-template exec blocks outright (\"a target-template exec block ... is not supported yet\", line-located)"}
+  ST-SUPER.7:
+    py: {"status": "elsewhere", "test": "tests/progseq/test_op_model_py_super.py::test_sync"}
+  ST-WHILE.6:
+    all: {"status": "n-a", "why": "a property of activity syntax (11.4.2: activities have repeat-while, no while); op-model targets lower no activities, and a procedural while is unaffected"}
+  ST-YIELD.3:
+    all: {"status": "elsewhere", "test": "tests/unit/integration/test_bc_interaction_patterns.py::test_ip90_yield_in_a_function_two_parallel_bodies_call"}
+  LIB-ERR.3:
+    all: {"status": "open", "defect": "F32", "ruling": "R15"}

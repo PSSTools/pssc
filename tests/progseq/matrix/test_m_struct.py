@@ -4,13 +4,19 @@ See `_matrix` for what a case is and how it is run.
 """
 from __future__ import annotations
 
-from ._matrix import ALL, Case, define_tests, on, ONE
+from ._matrix import ALL, Case, define_tests, on, ONE, Refused
 
 
 #: A derived struct used where its base is expected (8.3, 20.3.2): C, C++
 #: and SV declare a derived struct flattened, with no relation to its base,
 #: and Python copies a derived struct's members into a base one.
 W31 = "W31: a derived struct is not usable as its base (8.3, 20.3.2)"
+I15 = ("I15: template struct specializations collapse into one type with a "
+       "32-bit member")
+E26 = ("E26: a static const struct is an internal error on c/cpp, and not "
+       "translated at package scope")
+F6 = ("F6: a private member written from outside is accepted (17.4): "
+      "pssparser does not check access")
 
 CASES = {
     # --- A struct's defaults, wherever a value of it is -------------------------
@@ -29,7 +35,7 @@ component pss_top {""" + ONE + """
     a.STS.write_val(f.q.z + f.m);
   }
 }""", ["write 32 0x1004 0xc", "write 32 0x1004 0x7"],
-        covers=("DT-STRUCT", "DT-ENUM")),
+        covers=("DT-STRUCT", "DT-ENUM", "EX-REF.1", "ST-VAR.5")),
 
     "struct defaults in array elements": Case("""
 struct p_s { bit[8] x; bit[8] y = 7; }
@@ -37,14 +43,18 @@ component sub_c {
   array<p_s, 2> ps;
   function bit[8] g() { return ps[1].y; }
 }
-component pss_top {""" + ONE + """
+component pss_top {
+  ga_c a;
   sub_c s;
   array<p_s, 3> qs;
-  target function void run() {
+  solve function void initialize(addr_handle_t base) {
+    a.set_handle(base);
     qs[0].x = 4;
+  }
+  target function void run() {
     a.STS.write_val(qs[0].x + qs[2].y + s.g());
   }
-}""", ["write 32 0x1004 0x12"], covers=("DT-STRUCT", "DT-ARR")),
+}""", ["write 32 0x1004 0x12"], covers=("DT-STRUCT", "DT-ARR", "DT-ARR.14")),
 
     # A value with no initializer has its type's default (LRM 7.5): 0 for a
     # number, an enum's FIRST item -- M_A, 3 here, neither 0 nor the smallest.
@@ -64,7 +74,8 @@ component pss_top {""" + ONE + """
     bit[32] n;
     a.STS.write_val(f + l + ps.m + lp.m + ae[1] + s.g() + n);
   }
-}""", ["write 32 0x1004 0x12"], covers=("DT-ENUM", "ST-VAR", "DT-STRUCT")),
+}""", ["write 32 0x1004 0x12"], covers=("DT-ENUM", "ST-VAR", "DT-STRUCT",
+                                        "ST-VAR.1")),
 
     # --- P1: a struct is passed by handle (20.3.2; user ruling) ---------------
     # The callee's write is the caller's struct. C and C++ copied it, so the
@@ -85,7 +96,8 @@ component pss_top {""" + ONE + """
     a.STS.write_val(q.y);
   }
 }""", ["write 32 0x1004 0x7", "write 32 0x1004 0x3", "write 32 0x1004 0x3"],
-        covers=("DT-STRUCT", "FN-PARAM")),
+        covers=("DT-STRUCT", "FN-PARAM", "FN-PARAM.2", "FN-NATIVE.4",
+                "ST-ASSIGN.3")),
 
     # A derived struct has its base's members, first, with their defaults
     # (7.8, 17.1). C and C++ declared only the derived members (W4).
@@ -170,7 +182,8 @@ component pss_top {""" + ONE + """
     a.STS.write_val(sum({.x = 3}));
   }
 }""", ["write 32 0x1004 0x2", "write 32 0x1004 0x8"],
-        covers=("DT-STRUCT", "EX-LIT", "FN-PARAM")),
+        covers=("DT-STRUCT", "EX-LIT", "FN-PARAM", "FN-PARAM.5",
+                "FN-PARAM.11")),
 
     # --- P3: a struct is a value (8.3) -----------------------------------------
     # Assignment copies every member, nested ones too; changing the source
@@ -195,7 +208,7 @@ component pss_top {""" + ONE + """
     message(LOW, "%d %d", bx.hi.x, c.hi.x);
   }
 }""", ["1 2 9", "2 7", "9 3"],
-        covers=("DT-STRUCT.2", "DT-STRUCT.4", "EX-ASSIGN.8")),
+        covers=("DT-STRUCT.2", "DT-STRUCT.4", "EX-ASSIGN.8", "ST-ASSIGN.4")),
 
     # A struct result is returned by value (DT-STRUCT.11), and a call's
     # member is read directly (IP-74).
@@ -207,7 +220,8 @@ component pss_top {""" + ONE + """
     pt_s q = mk(4);
     message(LOW, "%d %d %d", q.x, q.y, mk(7).y);
   }
-}""", ["4 5 8"], covers=("DT-STRUCT.11", "FN-CALL", "IP-74")),
+}""", ["4 5 8"], covers=("DT-STRUCT.11", "FN-CALL", "IP-74", "EX-REF.9",
+                         "FN-DECL.4", "FN-NATIVE.6", "ST-RET.6")),
 
     # Struct parameters are handles (20.3.2): a callee's whole-struct
     # assignments swap the caller's structs (IP-38, Example 291).
@@ -224,7 +238,7 @@ component pss_top {""" + ONE + """
     swap(p, q);
     message(LOW, "%d %d %d %d", p.x, p.y, q.x, q.y);
   }
-}""", ["2 3 1 0"], covers=("DT-STRUCT.10", "FN-PARAM", "IP-38")),
+}""", ["2 3 1 0"], covers=("DT-STRUCT.10", "FN-PARAM", "IP-38", "FN-PARAM.3")),
 
     # Every level of a recursion holds the caller's struct, so its writes
     # accumulate, while each frame's local is its own (IP-10).
@@ -262,7 +276,8 @@ component pss_top {""" + ONE + """
     else { message(LOW, "ne"); }
   }
 }""", ["eq 5"], xfail=on(("c", "cpp", "sv"), W31),
-        covers=("DT-STRUCT.3", "DT-STRUCT.5", "EX-EQ.6", "IP-40")),
+        covers=("DT-STRUCT.3", "DT-STRUCT.5", "EX-EQ.6", "IP-40",
+                "ST-ASSIGN.4")),
 
     # Passed for a base parameter, it is the caller's struct: the callee's
     # assignment copies base members only (20.3.2, IP-39).
@@ -279,7 +294,7 @@ component pss_top {""" + ONE + """
     message(LOW, "%d %d", d.a, d.e);
   }
 }""", ["5 2"], xfail=on(ALL, W31),
-        covers=("DT-STRUCT.10", "FN-PARAM", "IP-39")),
+        covers=("DT-STRUCT.10", "FN-PARAM", "IP-39", "FN-PARAM.4")),
 
     # `==` against a literal compares what the literal leaves out with its
     # default (8.4.2, Example 33; IP-91).
@@ -336,6 +351,160 @@ component pss_top {""" + ONE + """
   }
   target function void run() { go(true); go(false); }
 }""", ["1", "2"], covers=("EX-COND.3", "DT-STRUCT", "IP-31")),
+
+    # Struct literals as the arms of `?:` (8.4.3, EX-COND.5): each arm takes
+    # the type the conditional is assigned to. No target lowers it yet; the
+    # gate refuses it with its line, where it was an internal error (E21).
+    "struct literals as the arms of a conditional": Case("""
+struct pt_s { bit[8] x; bit[8] y; }
+component pss_top {""" + ONE + """
+  target function void go(bool c) {
+    pt_s r = c ? {.x = 1, .y = 2} : {.x = 3, .y = 4};
+    message(LOW, "%d %d", r.x, r.y);
+  }
+  target function void run() { go(true); go(false); }
+}""", ["1 2", "3 4"],
+        xfail=on(ALL, "E21: a struct literal as an arm of ?: is refused "
+                      "(located) by every target"),
+        covers=("EX-COND.5", "DT-STRUCT.7")),
+
+    # --- P5.3: exec blocks, templates, constants, extensions, typedefs -----------
+    # A struct's solve exec blocks run when a value of it is solved (7.8,
+    # 20.1.2); a local is never solved, so its member keeps its default.
+    "a struct's solve exec blocks do not run on a local": Case("""
+struct p_s { int a; exec pre_solve { a = 5; } exec post_solve { a = 6; } }
+component pss_top {""" + ONE + """
+  target function void run() {
+    p_s v;
+    message(LOW, "%d", v.a);
+  }
+}""", ["0"], covers=("DT-STRUCT.9",)),
+
+    # `exec body` is not one of a struct's exec kinds (20.1.2). pssc refuses it
+    # as unsupported rather than illegal (M5); pssparser does not check it.
+    "exec body in a struct": Case("""
+struct p_s { int a; exec body { a = 5; } }
+component pss_top {""" + ONE + """
+  target function void run() {
+    p_s v;
+    message(LOW, "%d", v.a);
+  }
+}""", Refused([r"'exec body' in struct 'p_s'"]), covers=("DT-STRUCT.9",)),
+
+    # Each specialization of a template struct is its own type (7.8.1, 10):
+    # `f` is 4 bits wide in `s_s<4>`, so 15 + 1 wraps to 0, and 8 in `s_s<8>`.
+    "template struct specializations": Case("""
+struct s_s<int N = 2> { bit[N] f; }
+component pss_top {""" + ONE + """
+  target function void run() {
+    s_s<4> v;
+    s_s<8> w;
+    v.f = 15;
+    v.f = v.f + 1;
+    w.f = 15;
+    w.f = w.f + 1;
+    message(LOW, "%d %d", v.f, w.f);
+  }
+}""", ["0 16"], xfail=on(ALL, I15), covers=("DT-STRUCT.12",)),
+
+    # A `static const` struct is read like any struct, and passed to a
+    # `const` parameter (7.1, 20.2.3).
+    "a static const struct in a component": Case("""
+struct p_s { int a; int b; }
+component pss_top {""" + ONE + """
+  static const p_s MY = {.a = 3, .b = 4};
+  function int sum(const p_s v) { return v.a + v.b; }
+  target function void run() {
+    message(LOW, "%d %d %d", MY.a, MY.b, sum(MY));
+  }
+}""", ["3 4 7"], xfail=on(("c", "cpp"), E26),
+        covers=("DT-STRUCT.13", "DT-CONST", "FN-PARAM.5")),
+
+    "a static const struct in a package": Case("""
+struct p_s { int a; int b; }
+package pk { static const p_s MY = {.a = 3, .b = 4}; }
+component pss_top {""" + ONE + """
+  target function void run() {
+    message(LOW, "%d %d", pk::MY.a, pk::MY.b);
+  }
+}""", ["3 4"], xfail=on(ALL, E26), covers=("DT-STRUCT.13", "DT-CONST")),
+
+    # `extend struct` adds a member (17.2.3), defaulted like any other.
+    "an extended struct": Case("""
+struct p_s { int a; }
+extend struct p_s { int x; }
+component pss_top {""" + ONE + """
+  target function void run() {
+    p_s v;
+    v.x = 7;
+    message(LOW, "%d %d", v.a, v.x);
+  }
+}""", ["0 7"], covers=("DT-STRUCT.14",)),
+
+    # An extension of a packed struct may not add a member (21.13.1).
+    "an extension adding a member to a packed struct": Case("""
+struct q_s : packed_s<> { bit[4] a; }
+extend struct q_s { bit[4] x; }
+component pss_top {""" + ONE + """
+  target function void run() { a.STS.write_val(1); }
+}""", Refused([r"PSS013|packed"]), covers=("DT-STRUCT.14",)),
+
+    # A struct member is plain data; a `ref` member is illegal (7.10.1 a).
+    # pssparser does not check it (F23); pssc refuses it as unsupported.
+    "a ref member of a struct": Case("""
+component k_c { }
+struct p_s { int a; ref k_c r; }
+component pss_top {""" + ONE + """
+  target function void run() {
+    p_s v;
+    message(LOW, "%d", v.a);
+  }
+}""", Refused([r"field 'r' is a reference"]), covers=("DT-STRUCT.15",)),
+
+    # Access modifiers on struct members (7.1.1, 17.4): a public member is
+    # read and written from outside the struct.
+    "access modifiers on struct members": Case("""
+struct p_s { public int a; protected int b; int c = 4; }
+component pss_top {""" + ONE + """
+  target function void run() {
+    p_s v;
+    v.a = 2;
+    message(LOW, "%d %d", v.a, v.c);
+  }
+}""", ["2 4"], covers=("DT-STRUCT.16",)),
+
+    # A private member is not visible outside its struct (17.4).
+    "a private struct member written from outside": Case("""
+struct p_s { public int a; private int b; }
+component pss_top {""" + ONE + """
+  target function void run() {
+    p_s v;
+    v.b = 2;
+    message(LOW, "%d", v.b);
+  }
+}""", Refused([r"private|'b'"]), xfail=on(ALL, F6), covers=("DT-STRUCT.16",)),
+
+    # A typedef of a struct or an array names the same type (7.1): as a
+    # parameter, a result and a local.
+    "typedefs of a struct and an array": Case("""
+struct p_s { bit[8] x; bit[8] y; }
+package tp { typedef p_s pt; typedef array<bit[8], 2> a2; }
+component pss_top {""" + ONE + """
+  target function tp::pt mk(tp::pt v) {
+    tp::pt r;
+    r.x = v.y;
+    r.y = v.x;
+    return r;
+  }
+  target function void run() {
+    p_s p;
+    p.x = 1;
+    p.y = 2;
+    p_s q = mk(p);
+    tp::a2 w = {3, 4};
+    message(LOW, "%d %d %d", q.x, q.y, w[1]);
+  }
+}""", ["2 1 4"], covers=("DT-TYPEDEF.2", "DT-TYPEDEF", "DT-STRUCT.11")),
 }
 
 test_construct = define_tests(CASES)

@@ -253,6 +253,11 @@ class CProgSeqTarget(OpModelTarget):
 
     # -- entry point --------------------------------------------------------
 
+    def body_emitter_class(self):
+        from .c.lower_progseq import _BodyEmitter
+        return (getattr(self.backend_class(), "body_emitter_cls", None)
+                or _BodyEmitter)
+
     #: The backend class that assembles the files. `None` means pssc's own
     #: (`COpModelBackend`), resolved late so importing this module does not drag
     #: the whole lowering in. THE seam a tier-B extension uses: a derived target

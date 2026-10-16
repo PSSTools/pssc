@@ -12,6 +12,11 @@ own spelling of both (E15).
 refused rather than called N times. Any other method, and either method of a
 receiver this pass cannot type, is left to the call gate, which refuses it
 by name.
+
+An array compared with an array literal (`v == {1, 2}`, 8.5.3; the literal
+stands on the right, 8.4.2) is lowered here too, for the same reason: it
+means `v[0] == 1 && v[1] == 2`, which every target renders (E20). A literal
+of another length is refused, as `array_literal` refuses one assigned.
 """
 from __future__ import annotations
 
@@ -19,6 +24,7 @@ import dataclasses as dc
 
 import zuspec.ir.core as ir
 
+from ..diag import Refusal
 from .expr_types import ExprTypes
 from .progseq_model import _dt_name
 
@@ -35,7 +41,48 @@ def lower(ctx) -> None:
         for fn in list(getattr(dtype, "functions", None) or ()):
             if getattr(fn, "body", None):
                 types = ExprTypes(fn, dtype, ctx)
-                _rewrite(fn.body, lambda e: _method(e, types, fn))
+                _rewrite(fn.body, lambda e: _method(e, types, fn)
+                         or _literal_compare(e, types, fn))
+
+
+def _literal_compare(e, types, fn):
+    """`v == {a, b}` / `v != {a, b}` as element comparisons; else None."""
+    if _dt_name(e) != "ExprBin" or _dt_name(e.rhs) != "ExprList" \
+            or e.op not in (ir.BinOp.Eq, ir.BinOp.NotEq):
+        return None
+    out = _elements_equal(e.lhs, e.rhs, types, fn, e)
+    if out is None:
+        return None
+    return out if e.op is ir.BinOp.Eq else ir.ExprUnary(op=ir.UnaryOp.Not,
+                                                        operand=out)
+
+
+def _elements_equal(v, lst, types, fn, at):
+    """`v[0] == lst[0] && ...`, nested literals compared row by row."""
+    t = types.type_of(v)
+    dt = types.resolve(getattr(t, "dtype", None)) if t is not None else None
+    if t is None or t.kind != "array" or _dt_name(dt) != "DataTypeArray":
+        return None
+    if len(lst.elts) != dt.size:
+        raise Refusal(
+            f"in '{getattr(fn, 'name', '?')}': an array of {dt.size} "
+            f"element(s) compared with an aggregate literal of "
+            f"{len(lst.elts)}", lst, at)
+    if any(_dt_name(x) in ("ExprCall", "ExprMemberCall") for x in _nodes(v)):
+        raise Refusal(
+            f"in '{getattr(fn, 'name', '?')}': an array compared with an "
+            f"aggregate literal is read once per element, and its expression "
+            f"contains a call; read it into a local first", v, at)
+    out = None
+    for i, x in enumerate(lst.elts):
+        elem = ir.ExprSubscript(value=v, slice=ir.ExprConstant(value=i))
+        term = (_elements_equal(elem, x, types, fn, at)
+                if _dt_name(x) == "ExprList" else None)
+        if term is None:
+            term = ir.ExprBin(lhs=elem, op=ir.BinOp.Eq, rhs=x)
+        out = term if out is None else ir.ExprBin(lhs=out, op=ir.BinOp.And,
+                                                  rhs=term)
+    return out if out is not None else ir.ExprConstant(value=True)
 
 
 def _method(e, types, fn):

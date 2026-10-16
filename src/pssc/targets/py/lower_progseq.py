@@ -46,6 +46,7 @@ import zuspec.ir.core as ir
 from .. import pkg_functions as pf
 from ..bit_select import bit_select
 from ..int_semantics import IntSemantics, _Val, _br
+from ...diag import Refusal
 from ..body_walker import (BodyWalker, CallDispatch, match_values,
                            in_as_compare, continues_out,
                            scan_output_locals)
@@ -505,6 +506,15 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
         return self.expr(in_as_compare(e, self.types,
                                        getattr(self.fn, "name", "?")))
 
+    def convert_to(self, e, target) -> str:
+        """`IntSemantics.convert_to`, and an array literal given an array's
+        place -- a call argument, a `return` (E23): a new list, as an
+        initializer makes one."""
+        if _dt_name(e) == "ExprList" and target is not None \
+                and target.kind == "array":
+            return self.array_literal(e, self.types.resolve(target.dtype))
+        return super().convert_to(e, target)
+
     def struct_literal_text(self, e, dtype) -> str:
         """The value class, by keyword: every member starts at its default,
         so one the PSS literal leaves out keeps it (E5)."""
@@ -578,6 +588,19 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
             return f"{self._operand(s)}[{lo_t}:{hi_t}]"
         sel = bit_select(e, self.types)
         if sel is None:
+            from ..index_bounds import index_bound, MESSAGE
+            n = index_bound(e)
+            if n is not None:
+                # Out of range is a run-time error (8.6.2, R12); Python
+                # would wrap a negative index and raise its own error for a
+                # large one.
+                idx = self.expr(e.slice)
+                err = self.expr(ir.ExprCall(
+                    func=ir.ExprAttribute(value=ir.TypeExprRefSelf(),
+                                          attr="error"),
+                    args=[ir.ExprConstant(value=MESSAGE)], keywords=[]))
+                return (f"{self.expr(e.value)}[({idx}) if 0 <= ({idx}) < {n} "
+                        f"else {err}]")
             return f"{self.expr(e.value)}[{self.expr(e.slice)}]"
         # A bit or part select (`bit_select`): shifted down and masked.
         # Python's `>>` of a negative value fills with ones and the mask
@@ -1220,7 +1243,7 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
             chain.append((getattr(dt, "name", "") or "").split("::")[-1])
             dt = struct_base(dt, tm)
         if "transparent_addr_region_s" not in chain:
-            raise ValueError(
+            raise Refusal(
                 f"'{name}' of a region whose address is not stated"
                 f" ({chain[0] if chain else 'an untyped value'}): where such "
                 f"a region goes is the PSS tool's choice, and an operation "
@@ -1338,15 +1361,19 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
             fmt_e = ir.ExprConstant(value=fmt_e.value[:-1])
         fmt = getattr(fmt_e, "value", None)
         if _dt_name(fmt_e) != "ExprConstant" or not isinstance(fmt, str):
-            raise ValueError(
+            raise Refusal(
                 f"'{name}' needs a string literal as its format, so the format "
                 f"can be checked when the model is generated; got "
-                f"{_dt_name(fmt_e)}")
+                f"{_dt_name(fmt_e)}", fmt_e)
         if "%" not in fmt and not vals:
             return self.expr(fmt_e)
         parts = [self.expr(fmt_e)]
-        for (spec, t), v in zip(check_args(name, fmt, vals, self.types.type_of),
-                                vals):
+        try:
+            checked = check_args(name, fmt, vals, self.types.type_of)
+        except ValueError as e:
+            # The format is the model's (21.1.1); located at its statement.
+            raise Refusal(str(e), fmt_e) from None
+        for (spec, t), v in zip(checked, vals):
             parts.append(f"({self.expr(v)}, {self._fmt_type(t)})")
         return "_pss_fmt(" + ", ".join(parts) + ")"
 
@@ -1801,7 +1828,7 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
             return ([f"{pad}for {idx} in range({count}):"]
                     + self.block(s.body, ind + 1))
         if _assigns_local(s.body, name):
-            raise ValueError(
+            raise Refusal(
                 f"cannot lower `repeat ({name} : ...)`: its body assigns the "
                 f"index '{name}', and a Python `for` would not see the write.")
         with self._loop_var(name, INT):
@@ -1856,7 +1883,7 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
         it = None if index is s.target else s.target
         for var, what in ((index, "index"), (it, "iterator")):
             if var is not None and _assigns_local(s.body, var.name):
-                raise ValueError(
+                raise Refusal(
                     f"cannot lower `foreach` over '{self.expr(s.iter)}': its "
                     f"body assigns the {what} '{var.name}'"
                     + (", and a Python `for` would not see the write."

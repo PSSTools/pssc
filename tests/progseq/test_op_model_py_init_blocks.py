@@ -192,15 +192,14 @@ def test_the_async_form_initializes_synchronously(tmp_path):
 component pss_top {
   int v;
   exec init_down { v = 3; }
-  target function void g() { v = v + 1; }
+  target function int g() { return v + 1; }
 }""", py_await="async")
     text = (out / "pss_top.py").read_text()
     assert "    def _pss_init(self):" in text
     mod, rt = _load(out, "pssc_rt_async")
     dut = mod.PssTop(rt.AsyncMemoryBus())
     assert dut.v == 3
-    asyncio.run(dut.g())
-    assert dut.v == 4
+    assert asyncio.run(dut.g()) == 4
 
 
 # --- solve context (20.1.2, 22.2.3) -----------------------------------------

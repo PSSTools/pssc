@@ -25,16 +25,13 @@ _MODEL = """
 import std_pkg::*;
 
 component leaf_c {
-  int hits;
-  target function void poke(int v) { hits += v; }
+  target function void poke(int v) { message(NONE, "poke %d", v); }
 }
 
 component eng_c {
-  int count;
   leaf_c leaf;
   leaf_c lanes[2];
   target function int run(int v) {
-    count += v;
     leaf.poke(v);
     lanes[1].poke(2 * v);
     return v * 10;
@@ -43,17 +40,15 @@ component eng_c {
 
 component pss_top {
   eng_c e;
-  int total;
 
-  target function void add(int v) { total += v; }
+  target function int add(int a, int b) { return a + b; }
 
   action A {
     exec body {
       message(NONE, "@@PSS-TRACE act pss_top::A");
       int r1 = comp.e.run(3);
       int r2 = comp.e.run(4);
-      comp.add(r1 + r2);
-      if (comp.total == 70) {
+      if (comp.add(r1, r2) == 70) {
         message(NONE, "@@PSS-TRACE chk ok");
       }
     }
@@ -61,7 +56,7 @@ component pss_top {
 
   action B {
     exec body {
-      comp.add(1);
+      message(NONE, "B %d", comp.add(1, 0));
     }
   }
 }
@@ -109,25 +104,27 @@ def test_the_entry_runs_its_exec_body_against_the_component(gen):
     bus = rt.MemoryBus()
     dut = mod.PssTop(bus)
     dut.A()
-    assert [t for k, _, _, t in bus.log if k == "message"] == [
+    msgs = [t for k, _, _, t in bus.log if k == "message"]
+    assert [m for m in msgs if m.startswith("@@")] == [
         "@@PSS-TRACE act pss_top::A", "@@PSS-TRACE chk ok"]
-    assert (dut.total, dut.e.count) == (70, 7)
 
 
 def test_an_operation_is_called_through_sub_components(gen):
     """`leaf.poke()` and `lanes[1].poke()` from inside `eng_c.run`."""
     mod, rt, _ = gen
-    dut = mod.PssTop(rt.MemoryBus())
-    dut.A()
-    assert dut.e.leaf.hits == 7
-    assert [lane.hits for lane in dut.e.lanes] == [0, 14]
+    bus = rt.MemoryBus()
+    mod.PssTop(bus).A()
+    assert [t for k, _, _, t in bus.log
+            if k == "message" and t.startswith("poke")] == [
+        "poke 3", "poke 6", "poke 4", "poke 8"]
 
 
 def test_an_entry_takes_no_parameters_and_returns_nothing(gen):
     mod, rt, _ = gen
-    dut = mod.PssTop(rt.MemoryBus())
+    bus = rt.MemoryBus()
+    dut = mod.PssTop(bus)
     assert dut.B() is None
-    assert dut.total == 1
+    assert [t for k, _, _, t in bus.log if k == "message"] == ["B 1"]
     with pytest.raises(TypeError):
         dut.B(1)
 

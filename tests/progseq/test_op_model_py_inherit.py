@@ -223,7 +223,7 @@ component der_c : base_c {
   int a = 100;
   target function int f(int x) { return super.f(x) * 1000 + a + super.a; }
   target function int g() { return 2; }
-  target function void bump() { super.a += 1; a += 10; }
+  solve function void bump() { super.a += 1; a += 10; }
 }
 component third_c : der_c {
   target function int f(int x) { return super.f(x) + 7; }
@@ -231,11 +231,13 @@ component third_c : der_c {
 component pss_top {
   base_c b;
   der_c d;
+  der_c d2;
   third_c t;
+  // Fields are set while the tree is constructed (20.7.3 b, R13).
+  solve function void initialize() { d2.bump(); }
   target function void run() {
     message(NONE, "%d %d %d", b.f(1), d.f(1), t.f(1));
-    d.bump();
-    message(NONE, "%d %d %d", d.a, d.peek(), d.f(0));
+    message(NONE, "%d %d %d", d2.a, d2.peek(), d2.f(0));
   }
 }
 """
@@ -259,7 +261,7 @@ def test_a_shadowed_field_is_two_fields(tmp_path):
     mod, rt = _load(_compile(tmp_path, _SUPER))
     bus = rt.MemoryBus()
     mod.PssTop(bus).run()
-    # after bump: der a = 110, base a = 6; f(0) = (0 + 6 + 2)*1000 + 110 + 6
+    # d2, bumped: der a = 110, base a = 6; f(0) = (0 + 6 + 2)*1000 + 110 + 6
     assert _messages(bus)[1] == "110 6 8116"
 
 

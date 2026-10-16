@@ -24,8 +24,10 @@ import subprocess
 import pytest
 
 from pssc import driver
+from pssc.driver import CompileError
 
-from .conftest import available_cpp_compilers, diagnostic_text
+from .conftest import (assert_refused_at, available_cpp_compilers,
+                       diagnostic_text)
 from zuspec.ir.core import DataTypeChannel
 from .sv_text import sv_package_text
 
@@ -348,8 +350,9 @@ def test_c_refuses_a_deeper_channel_by_depth(tmp_path):
     model = _C_MODEL.replace("channel_c<bit, 1>       wake;",
                              "channel_c<bit, 1>       wake;\n"
                              "    channel_c<bit[8], 4>    deep;")
-    with pytest.raises(ValueError, match="depth 4"):
+    with pytest.raises(CompileError) as ei:
         _gen_c(tmp_path, model)
+    assert_refused_at(ei, "channel 'deep' has depth 4")
 
 
 @pytest.mark.skipif(not shutil.which("verilator"), reason="verilator not on PATH")

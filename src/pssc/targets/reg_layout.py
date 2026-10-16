@@ -27,8 +27,8 @@ import dataclasses as dc
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..reg_field_resolve import field_width
-from .progseq_model import (_dt_name, array_element_type, array_base_stride,
-                            field_is_array, field_is_reg_group,
+from .progseq_model import (OffsetFoldError, _dt_name, array_element_type,
+                            array_base_stride, field_is_array, field_is_reg_group,
                             field_is_register, scalar_offset)
 
 __all__ = ["RegAccessor", "collect_accessors", "is_reserved", "prim_bits",
@@ -145,45 +145,62 @@ def collect_accessors(comp_dtype) -> List[RegAccessor]:
 
     def visit(group_dt, segs: List[str], const_off: int, strides: List[int]):
         for f in group_dt.fields:
-            if is_reserved(f):
-                continue
-            if field_is_register(f):
-                accs.append(_mk(segs, f.name, f.datatype,
-                                const_off + scalar_offset(group_dt, f.name),
-                                strides))
-            elif field_is_reg_group(f):
-                visit(f.datatype, segs + [f.name],
-                      const_off + scalar_offset(group_dt, f.name), strides)
-            elif field_is_array(f):
-                elem = array_element_type(f)
-                base, stride = array_base_stride(group_dt, f.name)
-                if _dt_name(elem) == _DT_REGISTER:
-                    accs.append(_mk(segs, f.name, elem, const_off + base,
-                                    strides + [stride]))
-                elif _dt_name(elem) == _DT_REGISTER_GROUP:
-                    visit(elem, segs + [f.name], const_off + base,
-                          strides + [stride])
+            try:
+                field(group_dt, f, segs, const_off, strides)
+            except OffsetFoldError as e:
+                # The innermost declaration whose offset failed: where a
+                # refusal points (`OpModelTarget.check_register_offsets`).
+                if getattr(e, "node", None) is None:
+                    e.node = f
+                raise
+
+    def field(group_dt, f, segs, const_off, strides):
+        if is_reserved(f):
+            return
+        if field_is_register(f):
+            accs.append(_mk(segs, f.name, f.datatype,
+                            const_off + scalar_offset(group_dt, f.name),
+                            strides, f))
+        elif field_is_reg_group(f):
+            visit(f.datatype, segs + [f.name],
+                  const_off + scalar_offset(group_dt, f.name), strides)
+        elif field_is_array(f):
+            elem = array_element_type(f)
+            base, stride = array_base_stride(group_dt, f.name)
+            if _dt_name(elem) == _DT_REGISTER:
+                accs.append(_mk(segs, f.name, elem, const_off + base,
+                                strides + [stride], f))
+            elif _dt_name(elem) == _DT_REGISTER_GROUP:
+                visit(elem, segs + [f.name], const_off + base,
+                      strides + [stride])
 
     for f in getattr(comp_dtype, "fields", []) or []:
-        if field_is_reg_group(f):
-            visit(f.datatype, [f.name], 0, [])
-        elif (field_is_array(f)
-                and _dt_name(array_element_type(f)) == _DT_REGISTER_GROUP):
-            base, stride = array_base_stride(comp_dtype, f.name)
-            visit(array_element_type(f), [f.name], base, [stride])
+        try:
+            if field_is_reg_group(f):
+                visit(f.datatype, [f.name], 0, [])
+            elif (field_is_array(f)
+                    and _dt_name(array_element_type(f)) == _DT_REGISTER_GROUP):
+                base, stride = array_base_stride(comp_dtype, f.name)
+                visit(array_element_type(f), [f.name], base, [stride])
+        except OffsetFoldError as e:
+            if getattr(e, "node", None) is None:
+                e.node = f
+            raise
     return accs
 
 
-def _mk(segs, name, reg_dtype, const_off, strides) -> RegAccessor:
+def _mk(segs, name, reg_dtype, const_off, strides, decl=None) -> RegAccessor:
     bits = value_bits(reg_dtype)
     if bits > 64:
         # The register's size selects its primitive (LRM 21.14.5 a), and the
         # widest is read64/write64. Accessing it at 64 bits, as every target
         # did, reads and writes part of it with no diagnostic.
+        from ..diag import at
         from ..driver import CompileError
-        raise CompileError(
-            f"register '{'.'.join(list(segs) + [name])}' is {bits} bits wide; "
-            f"no read/write primitive is wider than 64 bits (LRM 21.14.5)")
+        msg = (f"register '{'.'.join(list(segs) + [name])}' is {bits} bits "
+               f"wide; no read/write primitive is wider than 64 bits (LRM "
+               f"21.14.5)")
+        raise CompileError(msg, [at(decl, msg)] if decl is not None else [])
     return RegAccessor(
         segs=tuple(segs),
         name=name,

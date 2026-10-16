@@ -357,7 +357,7 @@ def test_zero_operation_model_is_an_error(tmp_path):
     import argparse
     src = tmp_path / "empty.pss"
     src.write_text("component empty_c { int x;\n"
-                   "  target function void f() { x = 1; } }\n")
+                   "  target function void f() { int y = x; } }\n")
     ns = argparse.Namespace(progseq_root="empty_c", progseq_package="empty_pkg",
                             output_dir=str(tmp_path))
     with pytest.raises(ValueError, match="exports nothing"):

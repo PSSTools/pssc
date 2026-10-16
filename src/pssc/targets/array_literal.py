@@ -14,6 +14,7 @@ from __future__ import annotations
 import dataclasses as dc
 from typing import List, Optional
 
+from ..diag import at
 from .progseq_model import _dt_name
 
 _DT_ARRAY = "DataTypeArray"
@@ -73,7 +74,7 @@ def literal_errors(comps, ctx) -> List[str]:
                 types = ExprTypes(None, comp, ctx)
                 why = shape_error(iv, f.datatype, types.resolve)
                 if why:
-                    out.append(f"{cname}.{f.name}: {why}")
+                    out.append(at((iv, f), f"{cname}.{f.name}: {why}"))
         for fn in getattr(comp, "functions", None) or []:
             types = None
             for s in _assignments(getattr(fn, "body", None)):
@@ -91,7 +92,7 @@ def literal_errors(comps, ctx) -> List[str]:
                        "an aggregate literal given to a value that is not "
                        "an array")
                 if why:
-                    out.append(f"{cname}::{fn.name}: {why}")
+                    out.append(at((s, fn), f"{cname}::{fn.name}: {why}"))
     return list(dict.fromkeys(out))
 
 

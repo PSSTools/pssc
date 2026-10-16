@@ -15,6 +15,9 @@ import sys
 import pytest
 
 from pssc import driver
+from pssc.driver import CompileError
+
+from .conftest import assert_refused_at
 
 
 def _compile(tmp_path, pss, target="op-model-py", **kw):
@@ -37,9 +40,10 @@ def _load(out_dir, rt="pssc_rt"):
         sys.path.remove(str(out_dir))
 
 
-def _run(tmp_path, body, extra=""):
+def _run(tmp_path, body, extra="", top_extra=""):
     """Run `g()` of a pss_top whose body is *body*; its messages."""
     mod, rt = _load(_compile(tmp_path, f"""
+{top_extra}
 component pss_top {{
   {extra}
   target function void g() {{
@@ -65,9 +69,10 @@ def test_the_count_is_evaluated_once(tmp_path):
 
 def test_a_count_with_a_side_effect_runs_it_once(tmp_path):
     assert _run(tmp_path, """
-    repeat (bump()) { message(NONE, "k=%d", k); }""", extra="""
-  int k;
-  function int bump() { k = k + 1; return 2; }""") == ["k=1", "k=1"]
+    ctr_s c;
+    repeat (bump(c)) { message(NONE, "k=%d", c.k); }""", extra="""
+  function int bump(ctr_s c) { c.k = c.k + 1; return 2; }""",
+                top_extra="struct ctr_s { int k; }") == ["k=1", "k=1"]
 
 
 def test_a_count_read_from_a_register_is_read_once_in_the_async_form(tmp_path):
@@ -79,18 +84,18 @@ pure component regs_c : reg_group_c {
 }
 component pss_top {
   regs_c regs;
-  int seen;
   solve function void initialize(addr_handle_t base) { regs.set_handle(base); }
-  target function void g() {
+  target function int g() {
+    int seen = 0;
     repeat (i : regs.CNT.read_val()) { seen = seen + i + 1; }
+    return seen;
   }
 }""", py_await="async")
     mod, rt = _load(out, "pssc_rt_async")
     bus = rt.AsyncMemoryBus()
     dut = mod.PssTop(bus, 0x100)
     bus.mem[0x100] = 3
-    asyncio.run(dut.g())
-    assert dut.seen == 1 + 2 + 3
+    assert asyncio.run(dut.g()) == 1 + 2 + 3
     assert [k for k, *_ in bus.log] == ["read"]
 
 
@@ -117,22 +122,22 @@ def test_a_nested_index_of_the_same_name_does_not_leak_out(tmp_path):
 def test_an_index_named_like_a_parameter_leaves_the_parameter(tmp_path):
     mod, rt = _load(_compile(tmp_path, """
 component pss_top {
-  int total;
-  target function void g(int n) {
+  target function int g(int n) {
+    int total = 0;
     repeat (n : 2) { total = total + n; }
     total = total + n * 100;
+    return total;
   }
 }"""))
     dut = mod.PssTop(rt.MemoryBus())
-    dut.g(5)
-    assert dut.total == (0 + 1) + 500
+    assert dut.g(5) == (0 + 1) + 500
 
 
 def test_sibling_loops_keep_the_plain_name(tmp_path):
     text = (_compile(tmp_path, """
 component pss_top {
-  int t;
   target function void g() {
+    int t = 0;
     repeat (i : 2) { t = t + i; }
     repeat (i : 3) { t = t + i; }
     repeat (4) { t = t + 1; }
@@ -169,15 +174,15 @@ def test_an_index_named_like_a_local_of_another_type_is_typed_as_int(tmp_path):
 
 @pytest.mark.parametrize("write", ["i = 5;", "i += 1;"])
 def test_a_body_that_assigns_its_index_is_refused(tmp_path, write):
-    with pytest.raises(ValueError,
-                       match="its body assigns the index 'i'"):
+    with pytest.raises(CompileError) as ei:
         _compile(tmp_path, f"""
 component pss_top {{
-  int t;
   target function void g() {{
+    int t = 0;
     repeat (i : 4) {{ {write} t = t + 1; }}
   }}
 }}""")
+    assert_refused_at(ei, "its body assigns the index 'i'")
 
 
 def test_op_model_c_lowers_the_loop_too(tmp_path):
@@ -186,8 +191,7 @@ def test_op_model_c_lowers_the_loop_too(tmp_path):
     ("repeat: counted, indexed, nested, empty")."""
     out = _compile(tmp_path, """
 component pss_top {
-  int t;
-  target function void g() { repeat (4) { t = t + 1; } }
+  target function int g() { int t = 0; repeat (4) { t = t + 1; } return t; }
 }""", target="op-model-c", c_prefix="pss_top")
     assert "for (int64_t _pssc_n0 = 4; _pssc_n0 > 0; _pssc_n0--) {" in \
         (out / "pss_top.c").read_text()

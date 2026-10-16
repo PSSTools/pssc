@@ -43,15 +43,21 @@ UNARY = ("~", "neg")
 #: The assignment operators PSS has (8.1 `assign_op`).
 COMPOUND = ("+", "-", "<<", ">>", "|", "&")
 
+#: op -> what a row of the `compound` context (`v op= y`, a statement)
+#: exercises besides the context's own tags.
+COMPOUND_TAGS = {"+": "EX-ASSIGN.2", "-": "EX-ASSIGN.2",
+                 "&": "EX-ASSIGN.3", "|": "EX-ASSIGN.3",
+                 "<<": "EX-ASSIGN.4", ">>": "EX-ASSIGN.4"}
+
 #: name -> taxonomy tags.
 CONTEXTS = {
     "init": ("ST-VAR", "EX-WIDTH.5"),
     "assign": ("EX-ASSIGN.1", "EX-WIDTH.5"),
-    "compound": ("EX-ASSIGN.6", "EX-WIDTH.5"),
+    "compound": ("EX-ASSIGN.6", "EX-WIDTH.5", "ST-ASSIGN.5"),
     "arg": ("FN-PARAM", "EX-WIDTH.5"),
     "return": ("ST-RET", "EX-WIDTH.5"),
     "cond": ("ST-IF", "EX-WIDTH.8"),
-    "message": ("LIB-MSG", "EX-WIDTH.6"),
+    "message": ("LIB-MSG", "EX-WIDTH.6", "LIB-MSG.9"),
     "reg": ("LIB-REG", "EX-WIDTH.5"),
     "field": ("DT-STRUCT", "EX-WIDTH.5"),
     "element": ("DT-ARR", "EX-WIDTH.5"),
@@ -326,6 +332,22 @@ def render(k: int, row: Row, rng: random.Random, helpers: set,
     return Rendered(decls, f"{g}({', '.join(args)});", f"{g} {want}")
 
 
+def row_tags(row: Row) -> set:
+    """What one row exercises that its operator and context alone do not
+    say: a compound assignment's operator, mixed-sign arithmetic (Table 22:
+    signed only if both operands are), a shift amount of another width than
+    the shifted value. Read from the row, so a new seed keeps them true."""
+    tags = set()
+    if row.ctx == "compound":
+        tags.add(COMPOUND_TAGS[row.op])
+    if row.b is not None and row.op in ("+", "-", "*", "/", "%") \
+            and row.a.signed != row.b.signed:
+        tags.add("EX-ARITH.7")
+    if row.op in ("<<", ">>") and row.b.width != row.a.width:
+        tags.add("EX-SHIFT.6")
+    return tags
+
+
 def cases(seed: int = SEED) -> Dict[str, tuple]:
     """{case name: (pss, trace, covers)}: one per operator."""
     from ._matrix import ONE
@@ -343,7 +365,7 @@ def cases(seed: int = SEED) -> Dict[str, tuple]:
             decls += got.decls
             calls.append(got.call)
             want.append(got.want)
-            covers |= set(CONTEXTS[row.ctx])
+            covers |= set(CONTEXTS[row.ctx]) | row_tags(row)
             k += 1
         for t in sorted(helpers):
             decls.append(f"  target function void p_{_tag(t)}(int k, {t} v) "

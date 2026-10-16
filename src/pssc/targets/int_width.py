@@ -17,6 +17,7 @@ from __future__ import annotations
 import dataclasses as dc
 from typing import Any, List, Optional
 
+from ..diag import at
 from .progseq_model import _dt_name
 
 _DT_INT = "DataTypeInt"
@@ -37,23 +38,25 @@ def too_wide(model, limit: int) -> List[str]:
     out: List[str] = []
     seen_structs = set()
 
-    def check_int(dtype, where: str) -> None:
+    def check_int(dtype, where: str, node) -> None:
         bits = int(getattr(dtype, "bits", 32) or 32)
         if bits > limit:
             kind = "int" if getattr(dtype, "signed", False) else "bit"
-            out.append(f"{where}: {kind}[{bits}]")
+            out.append(at(node, f"{where}: {kind}[{bits}]"))
 
     def struct(dtype) -> None:
         if id(dtype) in seen_structs:
             return
         seen_structs.add(id(dtype))
         for f in getattr(dtype, "fields", None) or []:
-            datatype(getattr(f, "datatype", None), f"{_name(dtype)}.{f.name}")
+            datatype(getattr(f, "datatype", None), f"{_name(dtype)}.{f.name}",
+                     (f, dtype))
 
-    def datatype(dtype, where: str) -> None:
+    def datatype(dtype, where: str, node) -> None:
+        """``node``: where a refusal is located (a node or a sequence)."""
         cn = _dt_name(dtype)
         if cn == _DT_INT:
-            check_int(dtype, where)
+            check_int(dtype, where, node)
         elif cn == _DT_STRUCT:
             struct(dtype)
         else:
@@ -61,21 +64,21 @@ def too_wide(model, limit: int) -> List[str]:
             for attr in ("element_type", "elem_type", "type"):
                 sub = getattr(dtype, attr, None)
                 if sub is not None and dc.is_dataclass(sub):
-                    datatype(sub, where)
+                    datatype(sub, where, node)
 
-    def body(node, where: str) -> None:
+    def body(node, where: str, fn) -> None:
         seen = set()
 
-        def walk(n) -> None:
+        def walk(n, near=fn) -> None:
             if n is None or isinstance(n, (str, int, float, bool, type)):
                 return
             if isinstance(n, (list, tuple, set)):
                 for c in n:
-                    walk(c)
+                    walk(c, near)
                 return
             if isinstance(n, dict):
                 for c in n.values():
-                    walk(c)
+                    walk(c, near)
                 return
             if not dc.is_dataclass(n) or id(n) in seen:
                 return
@@ -84,10 +87,14 @@ def too_wide(model, limit: int) -> List[str]:
             if cn in _OPAQUE:
                 return
             if cn in (_DT_INT, _DT_STRUCT):
-                datatype(n, where)
+                datatype(n, where, near)
                 return
+            # The innermost node with a location: a statement, an
+            # expression, a parameter.
+            if getattr(getattr(n, "loc", None), "line", 0):
+                near = n
             for f in dc.fields(n):
-                walk(getattr(n, f.name, None))
+                walk(getattr(n, f.name, None), near)
 
         walk(node)
 
@@ -95,13 +102,14 @@ def too_wide(model, limit: int) -> List[str]:
     for comp in model.comp_dtypes_root_first:
         cname = _name(comp)
         for f in getattr(comp, "fields", None) or []:
-            datatype(getattr(f, "datatype", None), f"{cname}.{f.name}")
+            datatype(getattr(f, "datatype", None), f"{cname}.{f.name}",
+                     (f, comp))
         funcs += [(cname, fn) for fn in getattr(comp, "functions", None) or []]
     funcs += [(None, fn) for fn in getattr(model, "functions", ()) or ()]
     for owner, fn in funcs:
         where = f"{owner}::{fn.name}" if owner else str(fn.name)
         body([getattr(fn, "args", None), getattr(fn, "returns", None),
-              getattr(fn, "body", None)], where)
+              getattr(fn, "body", None)], where, fn)
     return list(dict.fromkeys(out))
 
 
@@ -115,4 +123,4 @@ def refuse_too_wide(model, limit: int, language: str) -> None:
     raise CompileError(
         f"{language} has no integer type wider than {limit} bits, and "
         f"{'this value' if len(found) == 1 else 'these values'} would lose "
-        f"bits silently:\n" + "\n".join(f"  {w}" for w in found))
+        f"bits silently", found)

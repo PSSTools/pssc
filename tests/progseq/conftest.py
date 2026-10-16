@@ -6,6 +6,7 @@ testbench).
 """
 import argparse
 import os
+import re
 import shutil
 
 import pytest
@@ -30,6 +31,18 @@ def diagnostic_text(exc):
     """
     exc = getattr(exc, "value", exc)        # accept a pytest ExceptionInfo
     return "\n".join([str(exc), *getattr(exc, "errors", [])])
+
+
+def assert_refused_at(exc, pattern):
+    """``exc`` (a `CompileError`, or pytest's ExceptionInfo of one) is a
+    refusal located in the model: one of its errors begins
+    ``file.pss:line:col: `` and matches *pattern* after that (plan P5.2)."""
+    from pssc.driver import CompileError
+    exc = getattr(exc, "value", exc)
+    assert isinstance(exc, CompileError), repr(exc)
+    hits = [e for e in exc.errors
+            if re.match(r"\S+\.pss:\d+:\d+: ", e) and re.search(pattern, e)]
+    assert hits, (pattern, diagnostic_text(exc))
 
 
 def available_sims():

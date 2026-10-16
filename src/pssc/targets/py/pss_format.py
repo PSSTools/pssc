@@ -19,7 +19,8 @@ A value is rendered at its DECLARED type, carried beside it as a small tuple:
   "is converted to signed type before being formatted"; this takes it at the
   value's own width, as the bc backend does.
 * `%u %x %X %o %b %B` print it as unsigned at its width.
-* `%n` prints a bool as `true`/`false` and an enum as its item name.
+* `%n` prints a bool as `true`/`false` and an enum as its item name; an
+  integer conversion prints a bool as 1 or 0 (7.12 b).
 * `%s` prints a string.
 
 Floating-point formats and `%p` are refused: the operation-model family has no
@@ -121,7 +122,9 @@ def _pss_fmt(fmt, *args):
         elif ty[0] == "i":
             out.append(_pss_int(spec, value, ty[1]))
         elif ty[0] == "b":
-            out.append(_pss_int(spec, 1 if value else 0, 1))
+            # A bool converts to 1 or 0 (7.12 b), not to a one-bit value
+            # that %d would read as -1.
+            out.append(_pss_int(spec, 1 if value else 0, 32))
         else:
             out.append(_pss_int(spec, value, 32))
     out.append(fmt[pos:].replace("%%", "%"))

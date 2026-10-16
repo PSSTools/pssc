@@ -33,6 +33,7 @@ import dataclasses as dc
 import re
 from typing import Any, Callable, Dict, List, Optional, Set
 
+from ..diag import Refusal
 from .comments import LINE, append_trailing, comment_lines
 from .progseq_model import _dt_name
 
@@ -168,10 +169,10 @@ def in_as_compare(e, types, where: str = "?"):
     import zuspec.ir.core as ir
     v, cont = e.value, e.container
     if any(_dt_name(n) == "ExprCall" for n in _walk(v)):
-        raise ValueError(
+        raise Refusal(
             f"in '{where}': the value of an `in` is compared once per "
             f"element or range, and it contains a call; read it into a "
-            f"local first")
+            f"local first", v, e)
     terms = []
     if _dt_name(cont) == "ExprRangeList":
         for r in cont.ranges:
@@ -182,6 +183,12 @@ def in_as_compare(e, types, where: str = "?"):
                     lhs=ir.ExprBin(lhs=v, op=ir.BinOp.GtE, rhs=r.lower),
                     op=ir.BinOp.And,
                     rhs=ir.ExprBin(lhs=v, op=ir.BinOp.LtE, rhs=r.upper)))
+    elif _dt_name(cont) == "ExprList" and not any(
+            _dt_name(x) in ("ExprList", "ExprStructLiteral")
+            for x in cont.elts):
+        # `v in {1, 2}`: a collection literal (8.5.9) holds its elements;
+        # `{}` holds none (E22).
+        terms = [ir.ExprBin(lhs=v, op=ir.BinOp.Eq, rhs=x) for x in cont.elts]
     elif _dt_name(cont) == "ExprSubscript" \
             and _dt_name(cont.slice) == "ExprSlice":
         # `v in a[lo..hi]` (8.5.9.1): an element whose index the slice
@@ -190,16 +197,16 @@ def in_as_compare(e, types, where: str = "?"):
         t = types.type_of(base)
         size = getattr(types.resolve(getattr(t, "dtype", None)), "size", None)
         if t is None or t.kind != "array" or not isinstance(size, int):
-            raise ValueError(
+            raise Refusal(
                 f"in '{where}': `in` over a slice of a "
                 f"{getattr(t, 'kind', 'value')} is not lowered; a slice of a "
-                f"fixed-size array is")
+                f"fixed-size array is", cont, e)
         if any(_dt_name(n) == "ExprCall"
                for x in (base, sl.lower, sl.upper) if x is not None
                for n in _walk(x)):
-            raise ValueError(
+            raise Refusal(
                 f"in '{where}': the array and bounds of an `in` over a slice "
-                f"are read once per element, and they contain a call")
+                f"are read once per element, and they contain a call", cont, e)
         for i in range(size):
             idx = ir.ExprConstant(value=i)
             term = ir.ExprBin(lhs=v, op=ir.BinOp.Eq,
@@ -217,14 +224,14 @@ def in_as_compare(e, types, where: str = "?"):
         t = types.type_of(cont)
         size = getattr(getattr(t, "dtype", None), "size", None)
         if t is None or t.kind != "array" or not size:
-            raise ValueError(
+            raise Refusal(
                 f"in '{where}': `in` over a {getattr(t, 'kind', 'value')} "
                 f"is not lowered; a value list, a range or a fixed-size "
-                f"array is")
+                f"array is", cont, e)
         if any(_dt_name(n) == "ExprCall" for n in _walk(cont)):
-            raise ValueError(
+            raise Refusal(
                 f"in '{where}': the array of an `in` is read once per "
-                f"element, and it contains a call")
+                f"element, and it contains a call", cont, e)
         for i in range(int(size)):
             terms.append(ir.ExprBin(
                 lhs=v, op=ir.BinOp.Eq,
@@ -353,13 +360,13 @@ def scan_output_locals(node, is_output_call: Callable[[object], bool],
             return
         if _dt_name(n) == "ExprCall" and is_output_call(n):
             if not n.args:
-                raise ValueError(f"{what} takes one output argument")
+                raise Refusal(f"{what} takes one output argument", n)
             arg = n.args[0]
             if _dt_name(arg) != "ExprRefLocal":
-                raise ValueError(
+                raise Refusal(
                     f"{what} writes through a pointer, so its argument must be "
                     f"a local variable; got {_dt_name(arg)}. Assign to a local "
-                    f"and copy it out.")
+                    f"and copy it out.", arg, n)
             found.add(arg.name)
         for f in dc.fields(n):
             walk(getattr(n, f.name, None))
@@ -427,7 +434,10 @@ class BodyWalker:
         tree. A statement that lowers to no lines gets no comment either; prose
         with nothing to describe is worse than none.
         """
-        lines = self.render_stmt(s, ind)
+        try:
+            lines = self.render_stmt(s, ind)
+        except Refusal as e:
+            raise e.at_least(s)
         if not lines:
             return lines
 

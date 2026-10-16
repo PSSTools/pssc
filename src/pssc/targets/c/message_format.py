@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import List
 
+from ...diag import Refusal
 from ..py.pss_format import check_args
 
 __all__ = ["CFormat", "CppFormat", "lower_format"]
@@ -86,7 +87,12 @@ def lower_format(name: str, fmt: str, vals, types, render, spell,
     spells an expression, ``spell`` is a `CFormat`/`CppFormat` and
     ``literal`` makes a string literal. Raises ValueError on a format LRM
     21.1.1 refuses (`check_args`)."""
-    checked = check_args(name, fmt, vals, types.type_of)
+    try:
+        checked = check_args(name, fmt, vals, types.type_of)
+    except ValueError as e:
+        # The format is the model's (21.1.1); the emitter locates it at the
+        # statement it is rendering.
+        raise Refusal(str(e), *vals) from None
     out, args, pos = [], [], 0
     for ((start, end, flags, fwidth, prec, conv), t), v in zip(checked, vals):
         out.append(fmt[pos:start])
@@ -100,10 +106,9 @@ def lower_format(name: str, fmt: str, vals, types, render, spell,
             args.append(f'(({x}) ? "true" : "false")' if t.kind == "bool"
                         else spell.enum_field(x, t.items))
         else:
-            # A bool is a one-bit value and an enum a 32-bit one, as
-            # `_pss_fmt` reads them.
-            width = (1 if t.kind == "bool" else 32 if t.kind == "enum"
-                     else t.width)
+            # A bool converts to 1 or 0 (7.12 b) and an enum is a 32-bit
+            # value, as `_pss_fmt` reads them.
+            width = 32 if t.kind in ("bool", "enum") else t.width
             out.append("%s")
             args.append(spell.int_field(x, width, conv, _flag_bits(flags),
                                         fwidth, prec))

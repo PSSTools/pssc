@@ -178,3 +178,89 @@ def indent_block(text: str, prefix: str = "  ") -> str:
     caret into noise; this is why the CLI does not simply print ``"  " + err``.
     """
     return "\n".join(prefix + line for line in text.split("\n"))
+
+
+# -- diagnostics from the IR -------------------------------------------------
+#
+# A refusal that names ``pss_top::run`` sends the reader looking through the
+# function; one that names ``m.pss:12:5`` sends them to the line, and lets a
+# consumer of locations -- the corpus checker's ``diag_location`` rule, an
+# editor -- point at it (plan P5, docs/design/construct-test-audit/00-plan.md).
+# ast2ir gives every statement, expression, function, parameter, field,
+# component and struct the ``loc`` its AST node had.
+
+class Located(str):
+    """A diagnostic's text prefixed ``file:line:col: ``, carrying the parts.
+
+    A ``str``, so every caller that joins, prints or greps diagnostics is
+    unchanged; `pssc.driver.CompileError.markers` reads the parts.
+    """
+
+    file: Optional[str]
+    line: int
+    col: int
+    message: str
+
+    def __new__(cls, loc: Any, message: str) -> "Located":
+        file = getattr(loc, "file", None)
+        line = int(getattr(loc, "line", 0) or 0)
+        col = int(getattr(loc, "pos", 0) or 0) or 1
+        self = super().__new__(
+            cls, f"{file or '<unknown>'}:{line}:{col}: {message}")
+        self.file, self.line, self.col, self.message = file, line, col, message
+        return self
+
+    def marker(self) -> Dict[str, Any]:
+        """This diagnostic as a pssparser-shaped marker (`marker`)."""
+        return marker(self.message, file=self.file, line=self.line,
+                      col=self.col)
+
+
+def loc_of(*nodes: Any) -> Optional[Any]:
+    """The first located ``loc`` among *nodes* (``None`` entries skipped)."""
+    for n in nodes:
+        loc = getattr(n, "loc", None)
+        if loc is not None and getattr(loc, "line", 0):
+            return loc
+    return None
+
+
+def at(nodes: Any, message: str) -> str:
+    """*message* located at the first of *nodes* -- one node, or a sequence
+    from most to least specific -- that has a location; *message* itself if
+    none does. A node a pass synthesized has no ``loc``: pass the node it
+    came from, or its statement, after it. An invented location is worse
+    than none, so there is no default."""
+    if not isinstance(nodes, (list, tuple)):
+        nodes = (nodes,)
+    loc = loc_of(*nodes)
+    return Located(loc, message) if loc is not None else message
+
+
+class Refusal(ValueError):
+    """A construct of the model refused from inside a pass or an emitter,
+    with the node it is at.
+
+    A pass deep in lowering that meets something it will not render (a
+    `sum()` whose array contains a call, an `in` over a value it cannot
+    enumerate) has no list of diagnostics to append to. A bare
+    ``ValueError`` from there reached the user as an internal error, with
+    no location. This one is the MODEL's error: `OpModelTarget.run` reports
+    it as a `CompileError`, located at the first of ``nodes`` that has a
+    location. It is still a ``ValueError``, so a caller that catches one
+    keeps working.
+    """
+
+    def __init__(self, message: str, *nodes: Any) -> None:
+        super().__init__(message)
+        self.nodes = nodes
+
+    def located(self) -> str:
+        return at(self.nodes, str(self))
+
+    def at_least(self, *nodes: Any) -> "Refusal":
+        """Add *nodes* as the least specific places this is at: an emitter
+        adds the statement it was rendering, so a site deep inside one
+        needs no node of its own to be located."""
+        self.nodes = tuple(self.nodes) + nodes
+        return self

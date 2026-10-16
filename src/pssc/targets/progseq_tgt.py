@@ -124,6 +124,10 @@ class ProgSeqTarget(OpModelTarget):
         from .sv.backend import SvOpModelBackend
         return cls.backend_cls or SvOpModelBackend
 
+    def body_emitter_class(self):
+        from .sv.lower_progseq import _BodyEmitter
+        return _BodyEmitter
+
     def backend_for(self, opts: argparse.Namespace):
         """The backend instance this run generates through."""
         root_name = getattr(opts, "progseq_root", None)

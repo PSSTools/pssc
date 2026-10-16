@@ -93,7 +93,7 @@ component der_c : base_c {
   int a = 100;
   target function int f(int x) { return super.f(x) * 1000 + a + super.a; }
   target function int g() { return 2; }
-  target function void bump() { super.a += 1; a += 10; }
+  solve function void bump() { super.a += 1; a += 10; }
 }
 component third_c : der_c {
   target function int f(int x) { return super.f(x) + 7; }
@@ -102,12 +102,12 @@ component pss_top {
   base_c b;
   der_c d;
   third_c t;
+  solve function void initialize() { d.bump(); }
   target function void run() {
     message(NONE, "%d %d %d", b.f(1), d.f(1), t.f(1));
-    d.bump();
     message(NONE, "%d %d %d", d.a, d.peek(), d.f(0));
   }
-}""", (), None, ["7 8105 8112", "110 6 8116"]),
+}""", (), None, ["7 9116 8112", "110 6 8116"]),
 
     "constructors": ("""
 pure component regs_c : reg_group_c {

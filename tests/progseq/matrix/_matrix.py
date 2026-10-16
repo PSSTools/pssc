@@ -122,6 +122,11 @@ ERROR = "<error>"
 FATAL = "<fatal>"
 
 
+#: How every line of a refusal begins (plan P5.2): the place in the model,
+#: as the gate (`pssc.diag.at`) and pssparser give it, or as ast2ir does.
+LOCATED = re.compile(r"\S+:\d+:\d+: |line \d+: ")
+
+
 def trace_matches(got, want):
     """``got`` (a target's lines) against ``want`` (an expectation, which may
     end in ERROR or FATAL)."""
@@ -169,6 +174,9 @@ def check(cases, name, target, tmp_path, results):
         text = diagnostic_text(ei)
         for pat in want.patterns:
             assert re.search(pat, text), (pat, text)
+        unlocated = [e for e in ei.value.errors or [str(ei.value)]
+                     if not LOCATED.match(e)]
+        assert not unlocated, unlocated
         return
     got = results[(name, target)]
     if isinstance(got, BaseException):

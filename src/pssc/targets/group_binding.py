@@ -22,6 +22,7 @@ from __future__ import annotations
 import dataclasses as dc
 from typing import Any, Dict, FrozenSet, Iterator, List, Optional, Tuple
 
+from ..diag import at
 from .progseq_model import (FuncKind, _dt_name, array_element_type,
                             field_is_array, func_kind, is_reg_group,
                             sub_components)
@@ -99,12 +100,14 @@ def check(comps, ctor_names=None, tm=None) -> List[str]:
     table = bindings(comps, ctor_names, tm)
     for c in comps:
         name = (getattr(c, "name", None) or "?").split("::")[-1]
+        fields = {f.name: f for f in getattr(c, "fields", None) or []}
         for g in table[id(c)].unbound:
-            errs.append(
+            errs.append(at(
+                (fields.get(g), c),
                 f"{name}: register group `{g}` is never bound: no "
                 f"`{g}.set_handle(...)` reaches it, so its registers have no "
                 f"address. Bind it in `{name}`'s constructor (or from an "
-                f"enclosing component's, as `<instance>.{g}.set_handle(...)`).")
+                f"enclosing component's, as `<instance>.{g}.set_handle(...)`)."))
     return errs
 
 

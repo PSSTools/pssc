@@ -20,6 +20,8 @@ import pytest
 from pssc import driver
 from pssc.driver import CompileError
 
+from .conftest import assert_refused_at
+
 
 def _compile(tmp_path, pss, target="op-model-py", **kw):
     src = tmp_path / "m.pss"
@@ -97,8 +99,10 @@ def test_a_struct_field_of_a_component_starts_at_its_defaults(tmp_path):
 
 
 def test_each_element_of_a_struct_array_is_its_own_value(tmp_path):
-    _, dut = _run(tmp_path, "arr[0].next = 7;", decls=_DESC,
-                  extra="desc_s arr[3];")
+    # Written while the component is constructed: target code does not
+    # write a component's fields (20.7.3 b, R13).
+    _, dut = _run(tmp_path, "", decls=_DESC, extra="""desc_s arr[3];
+  solve function void initialize() { arr[0].next = 7; }""")
     assert [d.next for d in dut.arr] == [7, 0, 0]
 
 
@@ -138,10 +142,9 @@ def test_a_field_is_not_aliased_by_a_local(tmp_path):
     msgs, dut = _run(tmp_path, """
     desc_s d = cfg;
     d.next = 9;
-    cfg.adr0 = 1;
-    message(NONE, "%u %u", cfg.next, d.adr0);""", decls=_DESC,
+    message(NONE, "%u %u", cfg.next, d.next);""", decls=_DESC,
                      extra="desc_s cfg;")
-    assert msgs == ["0 160"]
+    assert msgs == ["0 9"]
     assert dut.cfg.next == 0
 
 
@@ -296,7 +299,7 @@ component pss_top {
 
 
 def test_a_region_without_a_stated_address_is_refused(tmp_path):
-    with pytest.raises(ValueError, match="`transparent_addr_region_s`"):
+    with pytest.raises(CompileError) as ei:
         _compile(tmp_path, """
 component pss_top {
   contiguous_addr_space_c<> sys_mem;
@@ -308,6 +311,7 @@ component pss_top {
   }
   target function void g() { }
 }""")
+    assert_refused_at(ei, "`transparent_addr_region_s`")
 
 
 def test_add_region_outside_an_init_block_is_refused(tmp_path):

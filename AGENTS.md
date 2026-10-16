@@ -144,6 +144,25 @@ that is correct for everything, so there is nothing for a table to decide.
 `body_walker.py` is NOT part of the published override surface. `body_emitter_cls`
 is marked `provisional` for exactly this kind of change.
 
+## A refusal says where
+
+ast2ir gives every statement, expression, function, parameter, field,
+component and struct the `loc` of its AST node. A gate refusal is built with
+`pssc.diag.at(nodes, text)`: a `Located` string, `file:line:col: ` first,
+that `CompileError.markers` reports as pssparser does, so the corpus
+adapters see it LOCATED. A pass or emitter refusing from deep inside raises
+`diag.Refusal(text, node...)` (a `ValueError`): `OpModelTarget.run` turns it
+into a `CompileError`, and the body emitter's `stmt` adds the statement it
+was rendering as the fallback location. A bare `ValueError` is an internal
+error -- a compiler bug, never the model's. The matrix requires every line
+of every `Refused` case to be located (`_matrix.LOCATED`).
+
+Before emission, `body_kinds` pre-screens every rendered body
+(`validate_calls.rendered_bodies`) against the kinds the target's body
+emitter renders (`OpModelTarget.body_emitter_class`; its hooks, or C++'s
+`KINDS`) and where an aggregate literal stands. Every IR kind has a row in
+`tests/progseq/test_emitter_kind_registry.py`; add one with the kind.
+
 ## Where a register lives
 
 `targets/reg_layout.py` (`collect_accessors`) is the ONE walk that says which
@@ -200,6 +219,11 @@ op-model targets (`trace_harness.py` builds and runs C, C++, Python and SV;
 a module's builds run together, one per core). A case a target cannot handle
 yet is a strict xfail naming its defect. Each case's `covers=` names the
 constructs it exercises (`docs/design/construct-test-audit/taxonomy.md`).
+`matrix/test_coverage.py` requires every sub-construct of
+`01-lrm-inventory.md` (`DT-INT.3`) to be mapped on every target, by a case
+or by a `coverage.yaml` disposition (`elsewhere`/`n-a`/`open`); tag a case
+only with rows whose rule its PSS actually exercises. An LRM error goes in
+`test_m_neg.py`; legal PSS a target refuses, in `test_m_refusals.py`.
 `test_m_grid.py` is generated (`matrix/grid.py`): integer operators × types ×
 contexts, pairwise, its values from `matrix/ref8_7.py`, a model of LRM 8.7
 that must never import pssc -- it is what the shared `IntSemantics` is held

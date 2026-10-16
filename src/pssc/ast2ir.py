@@ -1040,6 +1040,7 @@ class AstToIrTranslator:
             is_target=(int(plat) == 1),
             is_solve=(int(plat) == 2),
         )
+        ir_func.loc = self._loc(node) or self._loc(proto)
         self._signature_metadata(ir_func, const_params, dirs)
         # The name a qualified call reaches it by (`p_pkg::f(...)`); see
         # `_translate_expr_ref_static_rooted`.
@@ -1498,6 +1499,7 @@ class AstToIrTranslator:
             comp = ir.DataTypeRegisterGroup(name=qualified_name, super=None)
         else:
             comp = ir.DataTypeComponent(name=qualified_name, super=None)
+            comp.loc = self._loc(component)
         comp.doc = ast_doc(component)
 
         # Register in type map (both short and qualified names)
@@ -3284,6 +3286,7 @@ class AstToIrTranslator:
 
         # Create IR struct
         struct_ir = ir.DataTypeStruct(name=qualified_name, super=None)
+        struct_ir.loc = self._loc(struct)
         struct_ir.doc = ast_doc(struct)
 
         # Set flow_kind from StructKind (buffer/stream/state/resource)
@@ -4059,6 +4062,7 @@ class AstToIrTranslator:
             initial_value=initial_value,
             doc=field_doc,
             doc_trailing=field_doc_trailing,
+            loc=self._loc(field),
         )
 
         # A domain (`int in [0..3] x`, 7.3.1; `e_e in [A..B] e`, 7.5.1) is
@@ -4140,6 +4144,7 @@ class AstToIrTranslator:
             is_solve=is_solve,
             is_target=is_target,
             doc=ast_doc(function),
+            loc=self._loc(function) or self._loc(prototype),
         )
         self._signature_metadata(ir_func, const_params, dirs)
         return ir_func
@@ -4200,7 +4205,8 @@ class AstToIrTranslator:
                 at=param if _ast_where(param) else at)
             if not param_type:
                 continue
-            arg_node = ir.Arg(arg=param_name, annotation=param_type)
+            arg_node = ir.Arg(arg=param_name, annotation=param_type,
+                              loc=self._loc(param) or self._loc(at))
             if param.getIs_const():
                 const_params.append(param_name)
             direction = self._PARAM_DIRS.get(param.getDir())
@@ -4280,6 +4286,11 @@ class AstToIrTranslator:
                 stmts.append(stmt)
         return stmts
 
+    def _loc(self, node: Any) -> Optional[Loc]:
+        """*node*'s source location, or None (also for no node)."""
+        return (ast_loc(node, getattr(self, "_files", {}))
+                if node is not None else None)
+
     def _translate_statement(self, ctx: AstToIrContext, stmt_node: Any) -> Optional[ir.Stmt]:
         """Translate a statement node to IR, carrying its comments across.
 
@@ -4302,6 +4313,9 @@ class AstToIrTranslator:
                 f"dropping it")
             return None
 
+        if stmt.loc is None:
+            # Where a gate that refuses something in it points (plan P5).
+            stmt.loc = self._loc(stmt_node)
         if stmt is not None:
             leading, trailing = ast_comments(stmt_node)
             if leading is not None:
@@ -4621,6 +4635,10 @@ class AstToIrTranslator:
                      or _ast_where(getattr(self, "_stmt_node", None)))
             ctx.add_error(f"{where}this expression is "
                           f"{_no_ir_form(expr_node)}")
+        elif expr is not None and expr.loc is None:
+            # The parser leaves some expressions unlocated, as above.
+            expr.loc = (self._loc(expr_node)
+                        or self._loc(getattr(self, "_stmt_node", None)))
         return expr
 
     def _translate_expression_kind(self, ctx: AstToIrContext,
@@ -5029,18 +5047,8 @@ class AstToIrTranslator:
                         continue
                     id_obj = elem.getId()
                     attr = id_obj.getId() if isinstance(id_obj, pss_ast.ExprId) else str(id_obj)
-                    result_lv = ir.ExprAttribute(value=result_lv, attr=attr)
-                    result_lv = self._apply_subscripts(ctx, elem, result_lv)
-                    # Handle method calls on this element (e.g. s.upper())
-                    params = elem.getParams() if hasattr(elem, 'getParams') else None
-                    if params is not None and hasattr(params, 'numParameters'):
-                        args = []
-                        for j in range(params.numParameters()):
-                            arg_node = params.getParameter(j)
-                            arg_ir = self._translate_expression(ctx, arg_node)
-                            if arg_ir is not None:
-                                args.append(arg_ir)
-                        result_lv = ir.ExprCall(func=result_lv, args=args)
+                    result_lv = self._apply_call_and_subscripts(
+                        ctx, elem, ir.ExprAttribute(value=result_lv, attr=attr))
                 return self._apply_ref_bit_slice(expr, result_lv)
 
         # A call the linker resolved to a package-scope function: a function
@@ -5104,23 +5112,28 @@ class AstToIrTranslator:
                 continue
             id_obj = elem.getId()
             name = id_obj.getId() if isinstance(id_obj, pss_ast.ExprId) else str(id_obj)
-            result = ir.ExprAttribute(value=result, attr=name)
-
-            # Apply any subscript indexes on this element: items[0] → result[0]
-            result = self._apply_subscripts(ctx, elem, result)
-
-            # If this element has method parameters, emit a call immediately
-            params = elem.getParams() if hasattr(elem, 'getParams') else None
-            if params is not None and hasattr(params, 'numParameters'):
-                args = []
-                for j in range(params.numParameters()):
-                    arg_node = params.getParameter(j)
-                    arg_ir = self._translate_expression(ctx, arg_node)
-                    if arg_ir is not None:
-                        args.append(arg_ir)
-                result = ir.ExprCall(func=result, args=args)
+            result = self._apply_call_and_subscripts(
+                ctx, elem, ir.ExprAttribute(value=result, attr=name))
 
         return self._apply_ref_bit_slice(expr, result)
+
+    def _apply_call_and_subscripts(self, ctx: AstToIrContext, elem,
+                                   result: ir.Expr) -> ir.Expr:
+        """*result* (the element's name) called with the element's
+        parameters, if it has any, then indexed by its subscripts:
+        `items[0]` is an index of a field, and `g(7)[2]` an index of what
+        `g` returns -- a function is not an array, so a subscript on an
+        element with parameters always follows the call (it was applied
+        first, making `g(7)[2]` read `g[2](7)`)."""
+        params = elem.getParams() if hasattr(elem, 'getParams') else None
+        if params is not None and hasattr(params, 'numParameters'):
+            args = []
+            for j in range(params.numParameters()):
+                arg_ir = self._translate_expression(ctx, params.getParameter(j))
+                if arg_ir is not None:
+                    args.append(arg_ir)
+            result = ir.ExprCall(func=result, args=args)
+        return self._apply_subscripts(ctx, elem, result)
 
     def _apply_subscripts(self, ctx: AstToIrContext, elem, result: ir.Expr) -> ir.Expr:
         """Wrap *result* in an ``ExprSubscript`` per subscript carried by *elem*.

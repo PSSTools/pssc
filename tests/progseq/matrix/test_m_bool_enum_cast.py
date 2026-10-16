@@ -4,7 +4,22 @@ See `_matrix` for what a case is and how it is run.
 """
 from __future__ import annotations
 
-from ._matrix import Case, define_tests, ONE
+from ._matrix import ALL, Case, define_tests, on, ONE, Refused
+
+F1 = ("F1: operand types are not checked (8.5.2): a relational operator on "
+      "bools is accepted")
+F2 = ("F2: enum values are not checked (7.5.1 e/j, 17.2.4): a duplicate "
+      "value, or a variable of an itemless enum, is accepted")
+F3 = ("F3: an unqualified enum item is resolved where the expected type is "
+      "not the enum (`(int)BLUE`, Example 37)")
+F4 = ("F4: illegal casts are accepted (7.12.1 a): from a chandle, struct or "
+      "string, or to a struct")
+W46 = ("W46: a value of a domain-restricted type defaults to the first item, "
+       "not the first declared item in the domain (7.5.1)")
+E24 = ("E24: a domain-typed field is an internal error (py/c/cpp) or an "
+       "invalid `_range_0` task (sv)")
+I18 = ("I18: an array size given by an enum item is refused as not folding "
+       "(8.2: it is a constant expression)")
 
 
 CASES = {
@@ -30,7 +45,7 @@ component pss_top {""" + ONE + """
        "write 32 0x1004 0x1", "write 32 0x1004 0xc8",
        "write 32 0x1004 0x1", "write 32 0x1004 0x9", "write 32 0x1004 0x0",
        "write 32 0x1004 0x1"],
-        covers=("DT-CAST", "DT-BOOL")),
+        covers=("DT-CAST", "DT-BOOL", "DT-INT.7", "DT-CAST.1")),
 
     # --- P3: bool (7.4, 7.12.1 b, 8.5.4) ---------------------------------------
     # `&& || !` on bools, `==`/`!=` between bools, and a bool cast to an
@@ -48,7 +63,7 @@ component pss_top {""" + ONE + """
 }""", ["false true false true false", "1 1", "ne",
        "true true false false false", "2 0", "eq"],
         covers=("DT-BOOL.1", "DT-BOOL.3", "DT-BOOL.6", "DT-CAST.2",
-                "EX-LOG.1", "EX-EQ.3")),
+                "EX-LOG.1", "EX-EQ.3", "EX-LIT.9")),
 
     # A cast to bool is a condition (IP-82): any non-zero value is true.
     "a bool cast as a condition": Case("""
@@ -107,7 +122,8 @@ component pss_top {""" + ONE + """
 }""", ["FAST edge", "FAST edge", "SLOW mid",
        "OFF edge", "FAST edge", "SLOW mid"],
         covers=("DT-ENUM.6", "DT-ENUM.7", "DT-ENUM.11", "EX-COND.5",
-                "EX-IN.8", "FN-PARAM", "IP-32", "IP-33", "IP-66")),
+                "EX-IN.8", "FN-PARAM", "IP-32", "IP-33", "IP-66",
+                "FN-PARAM.11", "ST-VAR.8")),
 
     # --- P3: `in` at a common type (Table 22, Example 45) ----------------------
     # Every item of a range list and the left side meet at the largest width,
@@ -126,6 +142,205 @@ component pss_top {""" + ONE + """
   }
   target function void run() { go(3, 2, 2, 2, -4, 2); }
 }""", ["in", "in"], covers=("EX-IN.1", "EX-IN.6", "EX-WIDTH.12")),
+
+    # --- P4 ---------------------------------------------------------------------------
+    # An integer format prints a bool as 1 or 0 (21.1.1 c: an implicit
+    # conversion; 7.12 b: true is 1). C, C++ and Python formatted it as a
+    # one-bit value, which `%d` reads as signed: -1 (W35). An `in` is a bool
+    # too, and had no type for a format at all.
+    "a bool printed as an integer": Case("""
+component pss_top {""" + ONE + """
+  target function void run() {
+    bool b = 3 in [1..4];
+    bit[8] x = 7;
+    message(LOW, "%d %u %x %d %d", b, b, x == 7, x != 7, x in [5, 7]);
+  }
+}""", ["1 1 1 0 1"], covers=("DT-BOOL", "LIB-MSG", "EX-IN")),
+
+    # --- P5.3: bool, enums and casts ------------------------------------------------
+    # `<` and the other relational operators take numeric operands only
+    # (8.5.2); bool has `==`/`!=` alone.
+    "a relational operator on bools is refused": Case("""
+component pss_top {""" + ONE + """
+  target function void go(bool p, bool q) {
+    if (p < q) { message(LOW, "lt"); } else { message(LOW, "ge"); }
+  }
+  target function void run() { go(false, true); }
+}""", Refused([r"<", r"bool"]), xfail=on(ALL, F1), covers=("DT-BOOL.4",)),
+
+    # The base type sets an item's width and sign (7.5.1): M is an int[4] -1,
+    # so cast to bit[8] it is sign-extended to 0xFF; U is a bit[4] 15, so it
+    # is zero-extended (8.7.1).
+    "an enum's base type sets its items' sign": Case("""
+enum s_e : int[4] { M = -1, P = 1 }
+enum u_e : bit[4] { U = 15 }
+component pss_top {""" + ONE + """
+  target function void run() {
+    s_e m = M;
+    message(LOW, "%d %x %x", (int)m, (bit[8])m, (bit[8])u_e::U);
+  }
+}""", ["-1 ff f"], covers=("DT-ENUM.3", "DT-CAST.3")),
+
+    # No two items may have one value (7.5.1 e), in the declaration or across
+    # an extension (17.2.4: an explicit conflicting value is illegal).
+    "two enum items with one value are refused": Case("""
+enum e_e { A = 1, B = 1 }
+component pss_top {""" + ONE + """
+  target function void run() { e_e v = B; message(LOW, "%n", v); }
+}""", Refused([r"\bB\b"]), xfail=on(ALL, F2), covers=("DT-ENUM.4",)),
+
+    "an extension item with an existing value is refused": Case("""
+enum e_e { A = 1 }
+extend enum e_e { C = 1 }
+component pss_top {""" + ONE + """
+  target function void run() { e_e v = C; message(LOW, "%n", v); }
+}""", Refused([r"\bC\b"]), xfail=on(ALL, F2), covers=("DT-ENUM.4",)),
+
+    # Extension items take values as if they ended the initial list (17.2.4):
+    # YELLOW follows GREEN = 5. An empty enum may be filled by an extension
+    # (7.5.1 j); an uninitialized one is its first item, P (7.5.1 k).
+    "enum extensions, and an empty enum filled by one": Case("""
+enum col_e { RED, GREEN = 5 }
+extend enum col_e { YELLOW, PINK = 20 }
+enum e_e { }
+extend enum e_e { P = 3, Q }
+component pss_top {""" + ONE + """
+  target function void run() {
+    col_e c = YELLOW;
+    col_e d = col_e::PINK;
+    e_e z;
+    message(LOW, "%n %d %n %d %n %d", c, (int)c, d, (int)d, z, (int)z);
+  }
+}""", ["YELLOW 6 PINK 20 P 3"], covers=("DT-ENUM.8", "DT-ENUM.5")),
+
+    # Item names are unique across the declaration and its extensions (7.5.1 g).
+    "an extension reusing an item name is refused": Case("""
+enum col_e { RED, GREEN }
+extend enum col_e { RED }
+component pss_top {""" + ONE + """
+  target function void run() { col_e c = GREEN; message(LOW, "%n", c); }
+}""", Refused([r"duplicate declaration of enum item 'RED'"]),
+        covers=("DT-ENUM.8",)),
+
+    # A variable of an enum that has no items anywhere is illegal (7.5.1 j).
+    "a variable of an itemless enum is refused": Case("""
+enum n_e { }
+component pss_top {""" + ONE + """
+  target function void run() { n_e v; message(LOW, "%d", (int)v); }
+}""", Refused([r"n_e"]), xfail=on(ALL, F2), covers=("DT-ENUM.8",)),
+
+    # A domain-restricted enum defaults to the first DECLARED item inside the
+    # domain (7.5.1): GREEN for [GREEN..BLUE], and GREEN, not BLACK, for
+    # [BLACK, GREEN].
+    "an enum domain sets a local's default": Case("""
+enum col_e { RED, GREEN, BLUE, BLACK }
+component pss_top {""" + ONE + """
+  target function void run() {
+    col_e in [GREEN..BLUE] c;
+    col_e in [BLACK, GREEN] d;
+    message(LOW, "%n %n", c, d);
+  }
+}""", ["GREEN GREEN"], xfail=on(ALL, W46), covers=("DT-ENUM.9",)),
+
+    "an enum domain on a field": Case("""
+enum col_e { RED, GREEN, BLUE, BLACK }
+component pss_top {""" + ONE + """
+  col_e in [BLUE..] f;
+  target function void run() { message(LOW, "%n", f); }
+}""", ["BLUE"], xfail=on(ALL, E24), covers=("DT-ENUM.9",)),
+
+    # An item is a static constant (7.5.1 a), so it may stand in a constant
+    # expression (8.2): a `compile if` condition and an array size.
+    "an enum item in a compile-if condition": Case("""
+enum sz_e { ONE = 1, FOUR = 4 }
+component pss_top {""" + ONE + """
+  target function void run() {
+    compile if ((int)sz_e::FOUR == 4) { message(LOW, "four"); }
+  }
+}""", ["four"], covers=("DT-ENUM.14", "ST-CIF")),
+
+    "an enum item as an array size": Case("""
+enum sz_e { ONE = 1, FOUR = 4 }
+component pss_top {""" + ONE + """
+  target function void run() {
+    array<bit[8], (int)sz_e::FOUR> x;
+    message(LOW, "%d", x.size());
+  }
+}""", ["4"], xfail=on(ALL, I18), covers=("DT-ENUM.14",)),
+
+    # The cast's type is the expected type of its operand (8.4.3): `BLUE`
+    # resolves unqualified under `(col_e)`, and not under `(int)` (Example 37).
+    "an unqualified item under an enum cast": Case("""
+enum col_e { RED, GREEN, BLUE }
+component pss_top {""" + ONE + """
+  target function void run() { col_e c = (col_e)BLUE; message(LOW, "%n", c); }
+}""", ["BLUE"], covers=("DT-CAST.6",)),
+
+    "an unqualified item under an integer cast is refused": Case("""
+enum col_e { RED, GREEN, BLUE }
+component pss_top {""" + ONE + """
+  target function void run() { int c = (int)BLUE; message(LOW, "%d", c); }
+}""", Refused([r"BLUE"]), xfail=on(ALL, F3), covers=("DT-CAST.6",)),
+
+    # Only a numeric, bool or enum value casts, and only to such a type
+    # (7.12.1 a): not a chandle or a struct, nor to a struct.
+    "casts from a chandle or a struct, or to a struct, are refused": Case("""
+struct p_s { int a; }
+component pss_top {""" + ONE + """
+  target function void run() {
+    chandle c;
+    p_s v;
+    int x = (int)c;
+    int y = (int)v;
+    p_s w = (p_s)3;
+    message(LOW, "%d %d %d", x, y, w.a);
+  }
+}""", Refused([r"cast"]), xfail=on(ALL, F4),
+        covers=("DT-CAST.7", "DT-CHND.4")),
+
+    # `(chandle)` is not a casting_type at all (Syntax 18).
+    "a cast to chandle is refused": Case("""
+component pss_top {""" + ONE + """
+  target function void run() { chandle c = (chandle)5; }
+}""", Refused([r"syntax error at 'chandle'"]), covers=("DT-CAST.7", "DT-CHND.4")),
+
+    "a cast from a string is refused": Case("""
+component pss_top {""" + ONE + """
+  target function void run() {
+    string s = "5";
+    int x = (int)s;
+    message(LOW, "%d", x);
+  }
+}""", Refused([r"cast"]),
+        refused=on(("c", "cpp"), Refused([r": a string", r"ruling R3"])),
+        xfail=on(("py", "sv"), F4), covers=("DT-CAST.7",)),
+
+    # A typedef names its type in a cast (7.12.1): 0x1F is 15 as a bit[4]
+    # and -1 as an int[4] (8.7.2: truncated to the low four bits).
+    "casts to typedefs": Case("""
+package tp { typedef bit[4] u4; typedef int[4] s4; }
+component pss_top {""" + ONE + """
+  target function void run() {
+    bit[8] x = 0x1F;
+    message(LOW, "%u %d", (tp::u4)x, (tp::s4)x);
+  }
+}""", ["15 -1"], covers=("DT-TYPEDEF.3", "DT-CAST.1")),
+
+    # `&&` binds tighter than `||` (8.5.4): a || (b && c) is true, (a || b)
+    # && c false. `&&` and `!` are bool operators, so the 64-bit target does
+    # not reach the `==` inside them (Table 22): x + y meets z at 8 bits,
+    # wraps to 0, and is equal.
+    "logical precedence and self-determined operands": Case("""
+component pss_top {""" + ONE + """
+  target function void go(bool a, bool b, bool c,
+                          bit[8] x, bit[8] y, bit[8] z) {
+    if (a || b && c) message(LOW, "t"); else message(LOW, "f");
+    if ((a || b) && c) message(LOW, "t"); else message(LOW, "f");
+    bit[64] r = (bit[64])((x + y == z) && true);
+    message(LOW, "%d %d", r, !(x + y != z));
+  }
+  target function void run() { go(true, false, false, 0xFF, 1, 0); }
+}""", ["t", "f", "1 1"], covers=("EX-LOG.4", "EX-LOG.5", "EX-LOG.1")),
 }
 
 test_construct = define_tests(CASES)

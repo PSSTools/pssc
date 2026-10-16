@@ -27,6 +27,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Sequence, Tuple
 
+from ...diag import Refusal
 from ..progseq_model import (INIT_EXEC_KINDS, FuncKind, _dt_name,
                              channel_fields, exec_kind, field_is_reg_group,
                              sub_components)
@@ -1211,11 +1212,11 @@ class PyOpModelBackend(object):
         dt = channel_dtype(f)
         depth = int(getattr(dt, "depth", 1) or 1)
         if depth != 1:
-            raise ValueError(
+            raise Refusal(
                 f"channel '{f.name}' has depth {depth}; this target implements "
                 f"only depth-1 channels (share/py/pssc_rt.py). A deeper channel "
                 f"is a ring buffer, which is a different type per capacity and "
-                f"which nothing in scope declares.")
+                f"which nothing in scope declares.", f)
 
     # -- disk ----------------------------------------------------------------
 

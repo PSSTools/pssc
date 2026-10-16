@@ -36,6 +36,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import zuspec.ir.core as ir
 
+from .diag import at
+
 from .reg_field_resolve import (
     FieldSlice, RegFieldError, field_map, is_readable, reg_name, reg_size_bits,
     resolve_field,
@@ -70,19 +72,10 @@ def _fail(ctx, call, msg: str) -> None:
     just been rejected for a better reason: an unreduced call is normally a
     silent-wrong-code hazard, but not when the user has already been told why.
     """
-    ctx.add_error(f"{_where(call)}{msg}")
+    ctx.add_error(at(call, msg))
     if not hasattr(ctx, "_reg_rmw_failed"):
         ctx._reg_rmw_failed = set()
     ctx._reg_rmw_failed.add(id(call))
-
-
-def _where(call) -> str:
-    """``file:line:col: `` for a call that carries a location, else ``''``."""
-    loc = getattr(call, "loc", None)
-    if loc is None:
-        return ""
-    f = loc.file or "<unknown>"
-    return f"{f}:{loc.line}:{loc.pos}: "
 
 
 # --- constant folding -------------------------------------------------------
@@ -688,9 +681,10 @@ def check_reduced(ctx) -> None:
         if isinstance(f, ir.ExprAttribute) and f.attr in _REDUCED_METHODS:
             if id(e) in getattr(ctx, "_reg_rmw_failed", ()):
                 return          # already reported, for a better reason
-            bad.append(f"{_where(e)}{f.attr}() could not be resolved to a "
-                       f"register field access; the receiver is not a register "
-                       f"reachable from the enclosing component")
+            bad.append(at(e, f"{f.attr}() could not be resolved to a "
+                             f"register field access; the receiver is not a "
+                             f"register reachable from the enclosing "
+                             f"component"))
 
     for dt in list(ctx.type_map.values()):
         _walk_exprs(dt, visit)

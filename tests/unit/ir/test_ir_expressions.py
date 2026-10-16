@@ -17,7 +17,9 @@ from ._ir import body, in_function, shape, translate
 _DECLS = """  array<int, 3> w;
   list<int> l;
   string s;
-  function int g(int a) { return a + 1; }"""
+  function int g(int a) { return a + 1; }
+  function array<int, 3> ga(int a) { array<int, 3> r; return r; }
+  function p_s gs(int a) { p_s r; return r; }"""
 _LOCALS = "int x; bool c; bit[64] u; p_s q; m_e m; string z;"
 _PRE = """enum m_e { M0, M1, M2 }
 struct p_s { bit[8] x; bit[8] y = 3; }
@@ -101,6 +103,10 @@ ROWS = {
     "x = w[n];": "Assign([x], Subscript(self.w, self.n))",
     "x = q.x;": "Assign([x], q.x)",
     "x = g(n);": "Assign([x], Call(self.g, [self.n]))",
+    # an index of a call's result (IP-74): the call, then the index -- it
+    # was `ga[2](n)` (I12)
+    "x = ga(n)[2];": "Assign([x], Subscript(Call(self.ga, [self.n]), 2))",
+    "x = gs(n).y;": "Assign([x], Call(self.gs, [self.n]).y)",
 }
 
 #: Rows ast2ir gets wrong today, and why (strict xfail).

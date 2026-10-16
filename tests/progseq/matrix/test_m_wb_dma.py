@@ -74,7 +74,8 @@ CASES = {
       "write 32 0x140c 0x1410",
       "1410 1420",
       "read 32 0x1400 0x100008", "8"],
-        covers=("LIB-MEM", "DT-STRUCT", "DT-ADDR", "FN-CALL")),
+        covers=("LIB-MEM", "DT-STRUCT", "DT-ADDR", "FN-CALL",
+                "DT-ADDR.4")),
 
     # `configure_interrupt_routing` writes the mask into the bank's register:
     # B at +0x8, A at +0x4. `set_software_pointer` on channel 1 packs ptr

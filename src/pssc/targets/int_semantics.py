@@ -21,6 +21,7 @@ from __future__ import annotations
 import dataclasses as dc
 from typing import Optional
 
+from ..diag import Refusal
 from .expr_types import (CONTEXT_BINARY, CONTEXT_UNARY, LEFT_TYPED,
                          assign_source_type, convert, int_range, is_integral,
                          merge)
@@ -166,9 +167,9 @@ class IntSemantics:
         return render(e.body), render(e.orelse)
 
     def _int_pow(self, e, t) -> "_Val":
-        raise ValueError(
+        raise Refusal(
             f"in '{getattr(self.fn, 'name', '?')}': `**` is not lowered by "
-            f"this target")
+            f"this target", e)
 
     # -- the decisions --------------------------------------------------------
 
@@ -201,9 +202,9 @@ class IntSemantics:
         have = {f.name for f in dtype.fields}
         bad = sorted(set(named) - have)
         if bad:
-            raise ValueError(
+            raise Refusal(
                 f"in '{getattr(self.fn, 'name', '?')}': '{dtype.name}' has no "
-                f"member {', '.join(repr(b) for b in bad)}")
+                f"member {', '.join(repr(b) for b in bad)}", e)
         return [(f, named.get(f.name)) for f in dtype.fields]
 
     def _convert_val(self, e, target) -> Optional[_Val]:
@@ -371,13 +372,13 @@ class IntSemantics:
             a, b = self._int_val(e.lhs), self._int_val(e.rhs)
         if a.const is not None and b.const is not None:
             if op in ("Div", "Mod") and b.const == 0:
-                raise ValueError(
+                raise Refusal(
                     f"in '{getattr(self.fn, 'name', '?')}': division by zero "
-                    f"in a constant expression (LRM 8.5.1)")
+                    f"in a constant expression (LRM 8.5.1)", e)
             if op in ("LShift", "RShift") and b.const < 0:
-                raise ValueError(
+                raise Refusal(
                     f"in '{getattr(self.fn, 'name', '?')}': a negative shift "
-                    f"amount (LRM 8.5.7)")
+                    f"amount (LRM 8.5.7)", e)
             return self.int_const(_FOLD[op](a.const, b.const), t)
         lo = hi = None
         if op == "Add" and None not in (a.lo, a.hi, b.lo, b.hi):

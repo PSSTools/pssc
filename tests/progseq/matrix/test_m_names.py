@@ -5,7 +5,10 @@ See `_matrix` for what a case is and how it is run.
 """
 from __future__ import annotations
 
-from ._matrix import Case, define_tests, ONE
+from ._matrix import Case, define_tests, on, ONE
+
+W63 = ("W63: sv spells `::G` as `G`, and a local `G` (hoisted to the "
+       "top of the task) hides the static const for both")
 
 
 CASES = {
@@ -76,7 +79,8 @@ component pss_top {
     s.initialize(base, 0x10);
   }
   target function void run() { s.poke(2); }
-}""", ["write 32 0x1004 0x24"], covers=("FN-PARAM", "ST-VAR", "EX-REF")),
+}""", ["write 32 0x1004 0x24"], covers=("FN-PARAM", "ST-VAR", "EX-REF",
+                                        "EX-REF.2")),
 
     # ...and the ROOT's constructor parameters, which every target forwards
     # from a factory that takes the platform (`imp`, `imports`, `_bus`).
@@ -135,7 +139,7 @@ component pss_top {""" + ONE + """
     if (x == SV && f == C) { a.STS.write_val(1); }
   }
 }""", ["write 32 0x1004 0x50", "write 32 0x1004 0x1"],
-        covers=("DT-ENUM", "DT-CAST")),
+        covers=("DT-ENUM", "DT-CAST", "EX-EQ.9")),
 
     # An item is scoped by its enum (7.5): two enums may each have an `A`.
     # Python's module-level constants made them one name, the second
@@ -154,6 +158,27 @@ component pss_top {""" + ONE + """
   }
 }""", ["write 32 0x1004 0x7", "write 32 0x1004 0x1", "A A"],
         covers=("DT-ENUM", "LIB-MSG")),
+
+    # --- P5.3: static reference paths (B.18 static_ref_path) -----------------
+    # A package's constant and enum item, a component type's constant, and
+    # the root scope's `::G`, which names the global even where a local `G`
+    # hides it.
+    "static reference paths": Case("""
+package k_pkg {
+  static const int C = 3;
+  enum e_e { X, Y = 5 }
+}
+component sub_c { static const bit[8] K = 0x41; }
+static const int G = 7;
+component pss_top {""" + ONE + """
+  target function void run() {
+    message(LOW, "%d %x %d %d", k_pkg::C + 1, sub_c::K, ::G,
+            (int)k_pkg::e_e::Y);
+    int G = 1;
+    message(LOW, "%d %d", G, ::G);
+  }
+}""", ["4 41 7 5", "1 7"], xfail=on(("sv",), W63),
+        covers=("EX-REF.6",)),
 }
 
 test_construct = define_tests(CASES)

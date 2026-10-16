@@ -54,19 +54,19 @@ component component_c {
 
     /** Arm the channel and return. */
     target function void arm() {
-        chan = 1;
+        int was = chan + 1;
     }
 
     /** Stop the channel and return. */
     target function void stop() {
-        chan = 0;
+        int was = chan;
     }
 
     // An undocumented operation: a leading comment detached by the blank line
     // above it, so nothing propagates and the prototype stands alone.
 
     target function void reset() {
-        chan = 0;
+        int was = chan;
     }
 }
 
@@ -78,11 +78,11 @@ component pss_top {
 
     /** Arm the first channel. */
     target function void arm_first() {
-        armed = 1;
+        int was = armed + 1;
     }
 
     target function void stop_first() {
-        armed = 0;
+        int was = armed;
     }
 
     // The API: op-model-sv puts only exports on it.

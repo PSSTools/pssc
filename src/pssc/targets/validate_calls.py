@@ -22,38 +22,19 @@ import dataclasses as dc
 
 from typing import Dict, FrozenSet, List, Optional, Set
 
+from ..diag import at
 from . import pkg_functions as pf
 from .call_legality import Ctx, Outcome, classify, core_function
 from .progseq_model import (FuncKind, INIT_EXEC_KINDS, exec_kind, func_kind,
                             is_reg_group, _dt_name, sub_components)
 
 
-def _where(node) -> str:
-    """``file:line:col: `` for a node that carries a location, else ``''``.
-
-    Same form as `reg_rmw._where`; diagnostics that do not agree on their prefix
-    are diagnostics users learn to skim past.
-
-    IT RETURNS '' FOR EVERYTHING TODAY. `loc` is a declared field on every IR
-    node and the front end populates none of them -- `ExprCall.loc`,
-    `Function.loc` and `DataTypeComponent.loc` are all None on a freshly
-    translated model, which means `reg_rmw`'s diagnostics have never carried a
-    location either. `_site()` below supplies component::function instead, and
-    this stays so that real locations appear on their own the day ast2ir fills
-    them in.
-    """
-    loc = getattr(node, "loc", None)
-    if loc is None:
-        return ""
-    return f"{loc.file or '<unknown>'}:{loc.line}:{loc.pos}: "
-
-
-def _site(comp, fn, call) -> str:
-    """The most specific location available: a real one if the IR has it, else
-    the component and function that contain the call."""
+def _site(comp, fn) -> str:
+    """``comp::fn: ``: what a diagnostic names besides its location (`at`),
+    so a reader holding the generated API finds the function too."""
     if comp is None:
-        return _where(call) or f"{pf.qualified_name(fn)}: "
-    return _where(call) or f"{_name_of(comp)}::{fn.name}: "
+        return f"{pf.qualified_name(fn)}: "
+    return f"{_name_of(comp)}::{fn.name}: "
 
 
 def _name_of(dtype) -> str:
@@ -211,15 +192,17 @@ def exec_blocks(root, ctx, target: str, init_blocks: bool) -> List[str]:
     """
     msgs: List[str] = []
     for comp in _components(root):
-        kinds = [exec_kind(fn) for fn in (getattr(comp, "functions", None) or [])
-                 if exec_kind(fn) is not None]
-        for k in dict.fromkeys(kinds):
+        kinds = {}
+        for fn in getattr(comp, "functions", None) or []:
+            if exec_kind(fn) is not None:
+                kinds.setdefault(exec_kind(fn), fn)
+        for k, fn in kinds.items():
             if k not in INIT_EXEC_KINDS:
-                msgs.append(f"{_name_of(comp)}: `exec {k}` is not lowered "
-                            f"by '{target}'")
+                msgs.append(at((fn, comp), f"{_name_of(comp)}: `exec {k}` is "
+                               f"not lowered by '{target}'"))
             elif not init_blocks:
-                msgs.append(f"{_name_of(comp)}: `exec {k}` is not lowered "
-                            f"by '{target}' yet")
+                msgs.append(at((fn, comp), f"{_name_of(comp)}: `exec {k}` is "
+                               f"not lowered by '{target}' yet"))
     return msgs
 
 
@@ -289,6 +272,39 @@ def package_bodies(root, ctx, ctor_names=None, entries=(),
     return pf.reach(ctx, bodies)
 
 
+def rendered_bodies(root, ctx, *, ctor_names=None, entries=(),
+                    pkg_functions: bool = False, init_blocks: bool = False,
+                    extra_components=(), native: bool = False):
+    """``[(component, function, context, super_base)]``: every body the
+    target renders, and the context it runs in. The ONE list the gate's
+    passes over bodies walk (this one, `body_kinds`).
+
+    A target rendering inheritance natively (``native``) renders a derived
+    component's DECLARED functions, `super` intact, and reaches the rest
+    through its base class (``super_base``); a flattening one renders
+    `comp_inherit`'s completed view. A package function has no component.
+    A body that is not lowered at all (a declaration, an offset function,
+    which is evaluated) is left out."""
+    from .comp_inherit import declared as _declared_members
+    comps, _ops, _ctors = model_names(root, ctor_names)
+    comps = _with_extra(comps, extra_components)
+    bodies = []
+    for comp in comps:
+        dec = _declared_members(ctx, comp) if native else None
+        fns = dec.functions if dec is not None else (
+            getattr(comp, "functions", None) or [])
+        sb = dec.base if dec is not None else None
+        bodies += [(comp, fn, _context_of(fn, ctor_names), sb) for fn in fns
+                   if init_blocks
+                   or func_kind(fn, ctor_names) is not FuncKind.EXEC]
+    bodies += [(comp, fn, Ctx.TARGET, None) for comp, fn in entries]
+    if pkg_functions:
+        bodies += [(None, fn, c, None) for fn, c in
+                   package_bodies(root, ctx, ctor_names, entries,
+                                  extra_components)]
+    return [b for b in bodies if b[2] is not None]
+
+
 def validate_calls(root, ctx, target: str, *, report_only: bool = False,
                    ctor_names=None, entries=(),
                    pkg_functions: bool = False,
@@ -318,8 +334,7 @@ def validate_calls(root, ctx, target: str, *, report_only: bool = False,
     ``driver.compile`` checks ``ctx.errors`` only BEFORE the target runs, so
     the target has to check for itself (docs §5.3).
     """
-    comps, ops, ctors = model_names(root, ctor_names)
-    comps = _with_extra(comps, extra_components)
+    _comps, ops, ctors = model_names(root, ctor_names)
     solve_names = solve_ops(root, ctor_names)
     import_fns = getattr(ctx, "import_functions", None) or []
     imports: FrozenSet[str] = frozenset(f.name for f in import_fns)
@@ -343,38 +358,18 @@ def validate_calls(root, ctx, target: str, *, report_only: bool = False,
                 import_dirs[qn] = dirs
 
     msgs: List[str] = exec_blocks(root, ctx, target, init_blocks)
-    # What each class renders. A target rendering inheritance natively
-    # (`native`) renders a derived component's DECLARED functions, `super`
-    # intact, and reaches the rest through its base class; a flattening one
-    # renders `comp_inherit`'s completed view.
-    from .comp_inherit import declared as _declared_members
-    bodies = []
-    for comp in comps:
-        dec = _declared_members(ctx, comp) if native else None
-        fns = dec.functions if dec is not None else (
-            getattr(comp, "functions", None) or [])
-        sb = dec.base if dec is not None else None
-        bodies += [(comp, fn, _context_of(fn, ctor_names), sb) for fn in fns
-                   if init_blocks
-                   or func_kind(fn, ctor_names) is not FuncKind.EXEC]
-    bodies += [(comp, fn, Ctx.TARGET, None) for comp, fn in entries]
-
     declared = pf.declared(ctx)
-    if pkg_functions:
-        # A package function has no component, so no call in its body is an
-        # operation or a sub-component constructor of one.
-        bodies += [(None, fn, c, None) for fn, c in
-                   package_bodies(root, ctx, ctor_names, entries,
-                                  extra_components)]
-
-    for comp, fn, context, super_base in bodies:
-        if context is None:
-            continue
+    for comp, fn, context, super_base in rendered_bodies(
+            root, ctx, ctor_names=ctor_names, entries=entries,
+            pkg_functions=pkg_functions, init_blocks=init_blocks,
+            extra_components=extra_components, native=native):
         calls: List[object] = []
         _walk_calls(getattr(fn, "body", None), calls)
         in_pkg = comp is None
         types = None
         for call in calls:
+            def say(text, call=call):
+                msgs.append(at((call, fn), f"{_site(comp, fn)}{text}"))
             func = getattr(call, "func", None)
             name = callee_name(func)
             if name is None:
@@ -385,30 +380,30 @@ def validate_calls(root, ctx, target: str, *, report_only: bool = False,
                 types = types or ExprTypes(fn, comp, ctx)
                 m = method_of(call, types)
                 if m in LISTS:
-                    msgs.append(
-                        f"{_site(comp, fn, call)}cannot lower call: the string "
+                    say(
+                        f"cannot lower call: the string "
                         f"method '{m}' returns a list, which '{target}' does "
                         f"not hold (ruling R4)")
                     continue
                 if m is not None:
                     if not string_methods:
-                        msgs.append(
-                            f"{_site(comp, fn, call)}cannot lower call: "
+                        say(
+                            f"cannot lower call: "
                             f"'{m}' is a string method (PSS 7.6.3), which "
                             f"'{target}' does not lower")
                     continue
             dirs = import_dirs.get(name)
             if dirs:
                 p, d = next(iter(dirs.items()))
-                msgs.append(
-                    f"{_site(comp, fn, call)}cannot lower call: '{name}' has "
+                say(
+                    f"cannot lower call: '{name}' has "
                     f"an {d} parameter '{p}', which '{target}' does not "
                     f"lower yet (only input parameters are supported)")
                 continue
             callee = pf.callee(call, declared)
             if callee is not None and not pkg_functions:
-                msgs.append(
-                    f"{_site(comp, fn, call)}cannot lower call: '{name}' is a "
+                say(
+                    f"cannot lower call: '{name}' is a "
                     f"package-scope function, which '{target}' does not "
                     f"lower yet")
                 continue
@@ -429,8 +424,7 @@ def validate_calls(root, ctx, target: str, *, report_only: bool = False,
                                solve_ops=solve_names)
             if res.outcome is Outcome.SUPPORTED:
                 continue
-            msgs.append(f"{_site(comp, fn, call)}cannot lower call: "
-                        f"{res.message}")
+            say(f"cannot lower call: {res.message}")
 
     if not report_only:
         for m in msgs:
@@ -453,11 +447,12 @@ def array_signatures(comps) -> List[str]:
                       or []):
                 if _dt_name(getattr(a, "annotation", None)) \
                         == "DataTypeArray":
-                    out.append(f"{cname}::{fn.name}: an array parameter "
-                               f"'{a.arg}' is not supported yet")
+                    out.append(at((a, fn), f"{cname}::{fn.name}: an array "
+                                  f"parameter '{a.arg}' is not supported "
+                                  f"yet"))
             if _dt_name(getattr(fn, "returns", None)) == "DataTypeArray":
-                out.append(f"{cname}::{fn.name}: an array result is not "
-                           f"supported yet")
+                out.append(at(fn, f"{cname}::{fn.name}: an array result is "
+                                  f"not supported yet"))
     return out
 
 
@@ -495,6 +490,14 @@ def gate(root, ctx, target: str, language: str, ctor_names=None,
             raise CompileError(
                 f"{len(sigs)} array parameter(s) or result(s) cannot be "
                 f"lowered to {language} yet", sigs)
+    from .field_writes import refusals as field_write_refusals
+    writes = field_write_refusals(
+        _with_extra(_components(root), extra_components), ctx,
+        entries=entries, ctor_names=ctor_names)
+    if writes:
+        raise CompileError(
+            f"{len(writes)} function(s) write a component field from target "
+            f"code", writes)
     bad = validate_calls(root, ctx, target, ctor_names=ctor_names,
                          entries=entries, pkg_functions=pkg_functions,
                          init_blocks=init_blocks,
