@@ -52,12 +52,38 @@ ROWS = {
     "set<int> a;": "Set(int[32])",
     # 7.11: a package typedef is the type it names
     "k::byte_t a;": "bit[8]",
+    # 7.2.1 c: a width is a constant expression, folded (I13: any width but
+    # a literal was 32 bits)
+    "bit[k::M] a;": "bit[2]",
+    "int[k::M * 3 + 1] a;": "int[7]",
+    "bit[(int)e_e::C] a;": "bit[7]",
+    "bit[(bit[2])k::M] a;": "bit[2]",
 }
 
 
 @pytest.mark.parametrize("decl", list(ROWS))
 def test_field_type(tmp_path, decl):
     assert shape(_fields(tmp_path, "  " + decl)["a"].datatype) == ROWS[decl]
+
+
+def test_a_width_from_a_component_constant(tmp_path):
+    f = _fields(tmp_path, "  static const int W = 5;\n  bit[W] a;")
+    assert shape(f["a"].datatype) == "bit[5]"
+
+
+@pytest.mark.parametrize("decl, msg", [
+    ("bit[0] a;", "must be positive; this one is 0"),
+    ("bit[k::M - 3] a;", "must be positive; this one is -1"),
+    ("int n = 3; bit[n] a;", "does not fold"),
+])
+def test_a_width_that_is_not_a_positive_constant_is_refused(tmp_path, decl,
+                                                           msg):
+    """Never a silent `bit[32]`: the error has the declaration's line."""
+    ctx = translate(tmp_path, _PRE + "component pss_top {\n  " + decl
+                    + "\n}\n")
+    errs = [e for e in ctx.errors if "width" in str(e)]
+    assert len(errs) == 1 and msg in str(errs[0]), ctx.errors
+    assert str(errs[0]).startswith("line "), errs
 
 
 def test_an_array_of_structs(tmp_path):

@@ -233,12 +233,12 @@ Sources are in brackets.
 | E40 | c | a channel of a struct | unlocated ValueError | P5.3 |
 | E41 | c, sv | a `foreach` value iterator over a two-dimensional array (a row) | internal error, "unsupported type for DataTypeArray"; cpp and py work | P5.3 |
 | E42 | all (ast2ir) | a template string initializing a `static const` (`static const string S = """c={{K}}""";`) | refused with the template-string message, but with no line | P5.3 |
-| I13 | ast2ir | an integer width that is not a literal: a `static const` (package, component, struct), a constant expression (`bit[2+3]`), an enum item, a template value parameter, a pure call (`bit[sq(2)]`) | **silently wrong**: `bit[32]` (`ast2ir.py` reads only a literal width and defaults to 32). Array sizes fold correctly | P5.3 |
+| I13 | ast2ir | an integer width that is not a literal: a `static const` (package, component, struct), a constant expression (`bit[2+3]`), an enum item, a template value parameter, a pure call (`bit[sq(2)]`) | **silently wrong**: `bit[32]` (`ast2ir.py` read only a literal width and defaulted to 32). **Fixed**: `_int_width` folds the width as a constant expression (with casts, now also in `_eval_const_ir`); one that does not fold, or is not positive (`bit[0]`, F7), is a located error. A template's own value parameter keeps a placeholder until I15; a pure call is I18 | P5.3 |
 | I14 | ast2ir | a select of a `static const` | **silently wrong**: a bit select is dropped (`C[0]` is `C`), and any select of a package-qualified one (`k::C[7:4]` is `C`; elsewhere "no translation"); an array sized by it, a `compile if` and a `match` choice go wrong with it | P5.3 |
 | I15 | ast2ir / linker | template struct specializations (`s_s<4>`, `s_s<8>` of `struct s_s<int N> { bit[N] f; }`) | **silently wrong**: one type with a 32-bit `f` | P5.3 |
 | I16 | ast2ir | a package-scope `import class` | dropped silently; a field of its type gives an unlocated "unresolved type reference" | P5.3 |
 | I17 | ast2ir | a package-scope target-template function | dropped silently; a call to it is refused as "declare it as an `import`" | P5.3 |
-| I18 | ast2ir | an array size given by an enum item (`(int)sz_e::FOUR`) or a pure call (8.2 constant expressions) | refused as "does not fold" (located, but wrong: they are constant) | P5.3 |
+| I18 | ast2ir | an array size or integer width given by a pure call (`bit[sq(2)]`, 8.2 constant expressions) | refused as "does not fold" (located, but wrong: it is constant). The enum-item half (`(int)sz_e::FOUR`) is fixed with I13's cast folding | P5.3 |
 | M1 | all | `%p` of a chandle | refused, "this model has no ... chandle values", though it has one | P5.3 |
 | M2 | all | `get_handle()` (21.14.4), `executor()`, `get_context()` | "no function named X is declared by PSS": the core library declares all three | P5.3 |
 | M3 | py, sv | array `join` / `str_from_chars` (7.9.2.2) | refused as unknown names, like E15 was | P5.3 |
@@ -1252,3 +1252,15 @@ Newest last. Each entry names what changed and the test that proves it.
     base's part (LRM silent); `elsewhere` for EX-REF.3, DT-REF.11 and
     EXEC-KIND.4 on sv points at the parametrized corpus run, not a test aimed
     at the construct; ST-YIELD.3 counts a bc test, as IP-90 did.
+* 2026-10-16 -- **I13 fixed.** An integer width is folded as a constant
+  expression (`AstToIrTranslator._int_width`): a `static const` the linker
+  resolved, arithmetic over constants, a cast (`(int)e_e::B`;
+  `_eval_const_ir` now folds `ExprCast`, a `bool` cast as nonzero). A width
+  that does not fold or is not positive is a located error, never a silent
+  `bit[32]`; that also refuses `bit[0]` (F7, a stopgap until pssparser
+  checks it). The I13 matrix case passes on all four; its template part is
+  now its own case (I15) and its pure-call part too (I18). The enum-item
+  array size (I18's other half) passes with the cast folding. IR rows in
+  `tests/unit/ir/test_ir_types.py`. No golden snapshot changed. Full
+  unit/progseq/compliance: 5866 passed, 389 xfailed; the one failure is
+  `test_doc_references` on the untracked `compound-actions-design.md`.

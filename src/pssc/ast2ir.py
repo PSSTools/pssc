@@ -257,6 +257,19 @@ def _eval_const_ir(e):
             return q if e.op != B.Mod else a - q * b
         f = ops.get(e.op)
         return f() if f is not None else None
+    if isinstance(e, ir.ExprCast):
+        v = _eval_const_ir(e.value)
+        t = e.target_type
+        if v is None:
+            return None
+        if getattr(t, "name", None) == "bool":       # nonzero is true
+            return bool(v)
+        if isinstance(t, ir.DataTypeInt):
+            v = int(v) & ((1 << t.bits) - 1)
+            if t.signed and v >> (t.bits - 1):
+                v -= 1 << t.bits
+            return v
+        return v if isinstance(t, ir.DataTypeEnum) else None
     if type(e).__name__ == "ExprIfExp":
         c = _eval_const_ir(e.test)
         return None if c is None else _eval_const_ir(e.body if c else e.orelse)
@@ -5448,16 +5461,68 @@ class AstToIrTranslator:
                           f"{_no_ir_form(dtype_node)}")
         return dtype
 
+    def _int_width(self, ctx: AstToIrContext, width) -> Optional[int]:
+        """The width of `bit[W]` / `int[W]`: a constant positive expression
+        (7.2.1 c), folded -- a literal, a `static const` the linker resolved,
+        an expression over them. None, with a located error, if it does not
+        fold or is not positive.
+
+        Only a literal used to be read; any other width became 32 bits
+        without a word (I13), so `bit[W] v = 63; v + 1` gave 64.
+        """
+        value = width.getValue() if hasattr(width, 'getValue') else None
+        if self._names_template_param(ctx, width):
+            # A generic template's body (`struct float_base_s<int Wm, ...>
+            # { bit[Wm] mantissa; }`): the width is the parameter's, known
+            # only in a specialization, which is not substituted yet (I15).
+            return 32
+        if not isinstance(value, int) or isinstance(value, bool):
+            saved = len(ctx.errors)
+            try:
+                value = _eval_const_ir(self._translate_expression(ctx, width))
+            except Exception:
+                value = None
+            del ctx.errors[saved:]          # reported below, once
+        where = (_ast_where(width)
+                 or _ast_where(getattr(self, "_stmt_node", None)))
+        if not isinstance(value, int) or isinstance(value, bool):
+            ctx.add_error(f"{where}an integer type's width must be a "
+                          f"constant expression; this one does not fold")
+            return None
+        if value <= 0:
+            ctx.add_error(f"{where}an integer type's width must be "
+                          f"positive; this one is {value}")
+            return None
+        return value
+
+    @staticmethod
+    def _names_template_param(ctx: AstToIrContext, expr) -> bool:
+        """True if *expr* is a bare name the linker left unresolved that a
+        template declaration introduced as a parameter."""
+        if not isinstance(expr, pss_ast.ExprRefPathContext):
+            return False
+        if getattr(expr, 'getTarget', lambda: None)() is not None:
+            return False
+        hier = expr.getHier_id()
+        if hier is None or hier.numElems() != 1:
+            return False
+        eid = hier.getElem(0).getId()
+        name = eid.getId() if hasattr(eid, 'getId') else None
+        return name in ctx.template_param_names
+
     def _translate_data_type_kind(self, ctx: AstToIrContext,
                                   dtype_node: Any) -> Optional[ir.DataType]:
         """Dispatch on the data type kind; None if it has no IR form."""
         if isinstance(dtype_node, pss_ast.DataTypeInt):
             # Get bit width and signedness
             width = dtype_node.getWidth()
-            if width and hasattr(width, 'getValue'):
-                bits = width.getValue()
+            if width is None:
+                bits = 32                       # `int` (7.2 Table 6)
             else:
-                bits = 32  # Default
+                bits = self._int_width(ctx, width)
+                if bits is None:
+                    return ir.DataTypeInt(bits=32,
+                                          signed=dtype_node.getIs_signed())
 
             is_signed = dtype_node.getIs_signed()
             return ir.DataTypeInt(bits=bits, signed=is_signed)

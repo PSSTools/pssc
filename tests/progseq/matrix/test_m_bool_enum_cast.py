@@ -18,8 +18,6 @@ W46 = ("W46: a value of a domain-restricted type defaults to the first item, "
        "not the first declared item in the domain (7.5.1)")
 E24 = ("E24: a domain-typed field is an internal error (py/c/cpp) or an "
        "invalid `_range_0` task (sv)")
-I18 = ("I18: an array size given by an enum item is refused as not folding "
-       "(8.2: it is a constant expression)")
 
 
 CASES = {
@@ -266,7 +264,7 @@ component pss_top {""" + ONE + """
     array<bit[8], (int)sz_e::FOUR> x;
     message(LOW, "%d", x.size());
   }
-}""", ["4"], xfail=on(ALL, I18), covers=("DT-ENUM.14",)),
+}""", ["4"], covers=("DT-ENUM.14",)),
 
     # The cast's type is the expected type of its operand (8.4.3): `BLUE`
     # resolves unqualified under `(col_e)`, and not under `(int)` (Example 37).

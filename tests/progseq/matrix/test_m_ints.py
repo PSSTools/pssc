@@ -7,9 +7,10 @@ from __future__ import annotations
 
 from ._matrix import ALL, Case, define_tests, on, ONE, Refused
 
-I13 = ("I13: an integer width that is not a literal (a static const, a "
-       "constant expression, an enum item, a template parameter, a pure "
-       "call) becomes 32 bits")
+I15 = ("I15: template specializations share one type: a value parameter "
+       "used as a width is not substituted")
+I18 = ("I18: a pure function call does not fold as a constant expression "
+       "(8.2)")
 I14 = ("I14: a select of a static const is dropped, or a package-qualified "
        "one has no translation")
 W46 = ("W46: a domain-restricted value defaults to 0, not the smallest "
@@ -626,20 +627,16 @@ component pss_top {""" + ONE + """
 
     # A width is any constant expression (7.2.1 c, 8.2): a static const of a
     # package, a component and a struct, an arithmetic expression, an enum
-    # item, a template value parameter (and a default naming an earlier
-    # one, 10.3.1), a pure call with constant arguments. Each value below is
-    # truncated to its width. An array size and a static const's declared
-    # type (OFF is bit[64], so OFF - 13 is unsigned 64 bits) are already
-    # honoured; the widths are not.
+    # item (cast: the expected type is an integer, 7.5.1 i). Each value
+    # below is truncated to its width; OFF is bit[64], so OFF - 13 is
+    # unsigned 64 bits (I13).
     "integer widths from constant expressions": Case("""
 package k {
   static const int W = 4;
   static const bit[64] OFF = 12;
   static const int M = 2;
-  pure function int sq(int x) { return x * x; }
 }
 struct s_s { static const int N = 3; bit[8] f; }
-struct w_s<int W = 8, int V = W * 2> { bit[W] x; bit[V] y; }
 enum e_e { A = 3, B }
 component pss_top {""" + ONE + """
   static const int CW = 6;
@@ -647,21 +644,40 @@ component pss_top {""" + ONE + """
     bit[k::W] v = 0x1F;
     bit[s_s::N] t = 9;
     bit[2 + 3] u = 0x3F;
-    bit[B] e = 0x1F;
+    bit[(int)e_e::B] e = 0x1F;
     bit[CW] c = 63;
-    w_s<4> ws;
-    bit[k::sq(2)] p = 0xFF;
+    int[k::M + 2] s = 7;
     array<bit[8], k::M + 1> arr;
     c = c + 1;
+    s = s + 1;
+    message(LOW, "%u %u %u %u %u %d", v, t, u, e, c, s);
+    message(LOW, "%d %x", arr.size(), k::OFF - 13);
+  }
+}""", ["15 1 31 15 0 -8", "3 ffffffffffffffff"],
+        covers=("DT-INT.3", "DT-CONST.1", "DT-CONST.3", "DT-CONST.4")),
+
+    # A template's value parameters as widths, one defaulted from another
+    # (7.8.1, 10): each specialization has its own widths.
+    "integer widths from template value parameters": Case("""
+struct w_s<int W = 8, int V = W * 2> { bit[W] x; bit[V] y; }
+component pss_top {""" + ONE + """
+  target function void run() {
+    w_s<4> ws;
     ws.x = 0x1F;
     ws.y = 0x1FF;
-    message(LOW, "%u %u %u %u %u", v, t, u, e, c);
-    message(LOW, "%u %u %u %d %x", ws.x, ws.y, p, arr.size(), k::OFF - 13);
+    message(LOW, "%u %u", ws.x, ws.y);
   }
-}""", ["15 1 31 15 0", "15 255 15 3 ffffffffffffffff"],
-        xfail=on(ALL, I13),
-        covers=("DT-INT.3", "DT-CONST.1", "DT-CONST.3", "DT-CONST.4",
-                "FN-PURE.4")),
+}""", ["15 255"], xfail=on(ALL, I15), covers=("DT-INT.3", "DT-STRUCT.12")),
+
+    # A call of a pure function is a constant expression (8.2, 20.2.6).
+    "an integer width from a pure function call": Case("""
+package k { pure function int sq(int x) { return x * x; } }
+component pss_top {""" + ONE + """
+  target function void run() {
+    bit[k::sq(2)] p = 0xFF;
+    message(LOW, "%u", p);
+  }
+}""", ["15"], xfail=on(ALL, I18), covers=("DT-INT.3", "FN-PURE.4")),
 
     # Without an initializer, a value of a type whose domain excludes 0 takes
     # the domain's smallest value (7.2.1 d); the domain is intersected with
