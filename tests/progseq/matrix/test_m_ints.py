@@ -11,8 +11,6 @@ I15 = ("I15: template specializations share one type: a value parameter "
        "used as a width is not substituted")
 I18 = ("I18: a pure function call does not fold as a constant expression "
        "(8.2)")
-I14 = ("I14: a select of a static const is dropped, or a package-qualified "
-       "one has no translation")
 W46 = ("W46: a domain-restricted value defaults to 0, not the smallest "
        "value of its domain")
 W62 = ("W62: c/cpp fold `u == -1` (u a bit[8] parameter) to false and "
@@ -789,7 +787,6 @@ component pss_top {""" + ONE + """
   }
   target function void run() { go(5); }
 }""", ["a 1 0 5", "ten", "m"],
-        xfail=on(ALL, I14),
         covers=("EX-SEL.5", "DT-CONST.6", "DT-CONST.3")),
 
     # The same, of a package's constant named by its qualified path.
@@ -810,7 +807,6 @@ component pss_top {""" + ONE + """
   }
   target function void run() { go(5); }
 }""", ["a 1 0 a 5", "ten", "m"],
-        xfail=on(ALL, I14),
         covers=("EX-SEL.5", "DT-CONST.6", "DT-CONST.3")),
 
     # A part select is unsigned, of width hi-lo+1, and a bit select a `bit`

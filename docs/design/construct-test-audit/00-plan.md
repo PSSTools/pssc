@@ -234,7 +234,7 @@ Sources are in brackets.
 | E41 | c, sv | a `foreach` value iterator over a two-dimensional array (a row) | internal error, "unsupported type for DataTypeArray"; cpp and py work | P5.3 |
 | E42 | all (ast2ir) | a template string initializing a `static const` (`static const string S = """c={{K}}""";`) | refused with the template-string message, but with no line | P5.3 |
 | I13 | ast2ir | an integer width that is not a literal: a `static const` (package, component, struct), a constant expression (`bit[2+3]`), an enum item, a template value parameter, a pure call (`bit[sq(2)]`) | **silently wrong**: `bit[32]` (`ast2ir.py` read only a literal width and defaulted to 32). **Fixed**: `_int_width` folds the width as a constant expression (with casts, now also in `_eval_const_ir`); one that does not fold, or is not positive (`bit[0]`, F7), is a located error. A template's own value parameter keeps a placeholder until I15; a pure call is I18 | P5.3 |
-| I14 | ast2ir | a select of a `static const` | **silently wrong**: a bit select is dropped (`C[0]` is `C`), and any select of a package-qualified one (`k::C[7:4]` is `C`; elsewhere "no translation"); an array sized by it, a `compile if` and a `match` choice go wrong with it | P5.3 |
+| I14 | ast2ir | a select of a `static const` | **silently wrong**: a bit select is dropped (`C[0]` is `C`), and any select of a package-qualified one (`k::C[7:4]` is `C`; elsewhere "no translation"); an array sized by it, a `compile if` and a `match` choice go wrong with it **Fixed** (pssc: the subscript and slice of a folded constant are kept, a rooted static path `k::D[1]` folds, bounds are translated, `_eval_const_ir` folds a select, an array size of a select has no `size_ref`; pssparser b52f1d2: `compile if` applies the select) | P5.3 |
 | I15 | ast2ir / linker | template struct specializations (`s_s<4>`, `s_s<8>` of `struct s_s<int N> { bit[N] f; }`) | **silently wrong**: one type with a 32-bit `f` | P5.3 |
 | I16 | ast2ir | a package-scope `import class` | dropped silently; a field of its type gives an unlocated "unresolved type reference" | P5.3 |
 | I17 | ast2ir | a package-scope target-template function | dropped silently; a call to it is refused as "declare it as an `import`" | P5.3 |
@@ -1264,3 +1264,17 @@ Newest last. Each entry names what changed and the test that proves it.
   `tests/unit/ir/test_ir_types.py`. No golden snapshot changed. Full
   unit/progseq/compliance: 5866 passed, 389 xfailed; the one failure is
   `test_doc_references` on the untracked `compound-actions-design.md`.
+* 2026-10-16 -- **I14 fixed**, in two places. pssc (`ast2ir.py`): a folded
+  constant keeps the bit select written on it (`C[0]` was `C`), a qualified
+  one its slice (`k::D[7:4]`), the rooted form `k::D[1]` folds
+  (`_rooted_constant`; it had no translation), a part select's bounds are
+  translated rather than read as literals (`C[K:0]` lost its upper bound),
+  `_eval_const_ir` folds a select (an array size, a `match` choice), and an
+  array sized by a select has no `size_ref` (SV spelled `arr[D]`). pssparser
+  (`packages/pssparser`, branch `const-select-eval`, b52f1d2, stacked on
+  `chained-method-calls`): the `compile if` evaluator applied no select, so
+  `compile if (C[7:4] == 0xA)` took the else branch; an index it cannot
+  apply now leaves the condition unevaluable (an error), never the whole
+  value. Both I14 matrix cases pass on all four; IR rows in
+  `test_ir_expressions.py`, pssparser rows in
+  `test_compile_time_semantics.py` (each calibrated).

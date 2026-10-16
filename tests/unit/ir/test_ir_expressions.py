@@ -14,14 +14,17 @@ import pytest
 
 from ._ir import body, in_function, shape, translate
 
-_DECLS = """  array<int, 3> w;
+_DECLS = """  static const bit[8] C = 0xA5;
+  static const int K = 3;
+  array<int, 3> w;
   list<int> l;
   string s;
   function int g(int a) { return a + 1; }
   function array<int, 3> ga(int a) { array<int, 3> r; return r; }
   function p_s gs(int a) { p_s r; return r; }"""
 _LOCALS = "int x; bool c; bit[64] u; p_s q; m_e m; string z;"
-_PRE = """enum m_e { M0, M1, M2 }
+_PRE = """package k_pkg { static const bit[8] D = 0xA5; }
+enum m_e { M0, M1, M2 }
 struct p_s { bit[8] x; bit[8] y = 3; }
 """
 
@@ -68,6 +71,14 @@ ROWS = {
     "x = b[7:4];": "Assign([x], Subscript(self.b, Slice(4, 7, True)))",
     "b[1:0] = 2;": "Assign([Subscript(self.b, Slice(0, 1, True))], 2)",
     "b[0] = 1;": "Assign([Subscript(self.b, 0)], 1)",
+    # a select of a named constant keeps its select (I14: `C[0]` was `C`,
+    # `k_pkg::D[1]` had no translation, a named bound was dropped)
+    "x = C[0];": "Assign([x], Subscript(pss_top::C=165'8u, 0))",
+    "x = C[7:4];": "Assign([x], Subscript(pss_top::C=165'8u, Slice(4, 7, True)))",
+    "x = C[K:0];":
+        "Assign([x], Subscript(pss_top::C=165'8u, Slice(0, pss_top::K=3'32s, True)))",
+    "x = k_pkg::D[7:4];": "Assign([x], Subscript(k_pkg::D=165'8u, Slice(4, 7, True)))",
+    "x = k_pkg::D[1];": "Assign([x], Subscript(k_pkg::D=165'8u, 1))",
     # 7.12 casts
     "x = (int[8])b;": "Assign([x], Cast(int[8], self.b))",
     "x = (int)M1;": "Assign([x], Cast(int[32], m_e::M1=1))",

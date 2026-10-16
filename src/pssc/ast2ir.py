@@ -214,6 +214,20 @@ def _node_key(node) -> int:
     return nid() if callable(nid) else id(node)
 
 
+def _is_selected(node) -> bool:
+    """True if reference *node* carries a bit/part select or a subscript
+    (`D[3:0]`, `D[1]`): it names a part of what it references."""
+    if getattr(node, 'getSlice', lambda: None)() is not None:
+        return True
+    hier = getattr(node, 'getHier_id', lambda: None)()
+    if hier is not None and any(hier.getElem(i).numSubscript()
+                                for i in range(hier.numElems())):
+        return True
+    leaf = getattr(node, 'getLeaf', lambda: None)()
+    return leaf is not None and any(leaf.getElem(i).numSubscript()
+                                    for i in range(leaf.numElems()))
+
+
 def _eval_const_ir(e):
     """The value of constant IR expression *e* (an int or a bool), or None.
 
@@ -257,6 +271,25 @@ def _eval_const_ir(e):
             return q if e.op != B.Mod else a - q * b
         f = ops.get(e.op)
         return f() if f is not None else None
+    if isinstance(e, ir.ExprSubscript):
+        # A bit or part select of a constant integer (8.6.1): `C[3]`,
+        # `C[7:4]` (`[hi:lo]`; `[i:]` is not PSS).
+        v = _eval_const_ir(e.value)
+        if not isinstance(v, int) or isinstance(v, bool):
+            return None
+        sl = e.slice
+        if isinstance(sl, ir.ExprSlice):
+            hi, lo = _eval_const_ir(sl.upper), _eval_const_ir(sl.lower)
+            if not isinstance(hi, int) or not isinstance(lo, int) or hi < lo:
+                return None
+            w = getattr(e.value, "width", None)
+            if w:
+                v &= (1 << w) - 1
+            return (v >> lo) & ((1 << (hi - lo + 1)) - 1)
+        i = _eval_const_ir(sl)
+        if not isinstance(i, int) or i < 0:
+            return None
+        return (v >> i) & 1
     if isinstance(e, ir.ExprCast):
         v = _eval_const_ir(e.value)
         t = e.target_type
@@ -4743,10 +4776,12 @@ class AstToIrTranslator:
         qualified = "::".join(parts)
         linked = self._linked_constant(ctx, expr)
         if linked is not None:
-            return linked
+            # `k::D[7:4]`: the slice was dropped (I14).
+            return self._apply_ref_bit_slice(ctx, expr, linked)
         for key in (qualified, parts[-1]):
             if key in ctx.const_map:
-                return ir.ExprConstant(value=ctx.const_map[key])
+                return self._apply_ref_bit_slice(
+                    ctx, expr, ir.ExprConstant(value=ctx.const_map[key]))
         enum_val = self._resolve_enum_constant(ctx, parts[-1])
         if enum_val is not None:
             return ir.ExprConstant(value=enum_val)
@@ -4757,6 +4792,26 @@ class AstToIrTranslator:
         for name in parts:
             result = ir.ExprAttribute(value=result, attr=name)
         return result
+
+    def _rooted_constant(self, ctx: AstToIrContext, root, leaf_elem,
+                         qname: str) -> Optional[ir.ExprConstant]:
+        """The `static const` a rooted static path names -- *root* resolved
+        by the linker, *leaf_elem*'s target its child -- folded, or None."""
+        scope = self._symbol_scope_at(ctx, root.getTarget(), depth=0)
+        idx = leaf_elem.getTarget() if hasattr(leaf_elem, 'getTarget') else None
+        if scope is None or not isinstance(idx, int) \
+                or not 0 <= idx < getattr(scope, "numChildren", lambda: 0)():
+            return None
+        decl = scope.getChild(idx)
+        if not isinstance(decl, pss_ast.Field):
+            return None
+        attr = int(decl.getAttr()) if hasattr(decl, 'getAttr') else 0
+        if not attr & int(pss_ast.FieldAttr.Static):
+            return None
+        value = self._static_const_value(ctx, decl)
+        if value is None:
+            return None
+        return self._const_of_decl(ctx, decl, value, qname)
 
     def _translate_expr_ref_static_rooted(self, ctx: AstToIrContext,
                                           expr) -> Optional[ir.Expr]:
@@ -4797,6 +4852,14 @@ class AstToIrTranslator:
             parts.append(eid.getId())
             args_node = elem.getParams()
 
+        if args_node is None and parts and leaf.numElems() == 1:
+            # No call: a selected `static const` (`k::D[1]`, `k::D[7:4]`) is
+            # spelled with the leaf split off; it had no translation (I14).
+            const = self._rooted_constant(ctx, root, leaf.getElem(0),
+                                          "::".join(parts))
+            if const is not None:
+                return self._apply_ref_bit_slice(ctx, expr, self._apply_subscripts(
+                    ctx, leaf.getElem(0), const))
         if args_node is None or not parts:
             return None
 
@@ -5050,7 +5113,7 @@ class AstToIrTranslator:
                 # element's: every return below applies it, or `x[31:12]`
                 # silently reads as `x`.
                 if len(elems) == 1:
-                    return self._apply_ref_bit_slice(expr, self._apply_subscripts(
+                    return self._apply_ref_bit_slice(ctx, expr, self._apply_subscripts(
                         ctx, elems[0], ir.ExprRefLocal(name=local_name)))
                 # Multi-element path rooted at a local variable (e.g. p.x, s.upper())
                 result_lv: ir.Expr = self._apply_subscripts(
@@ -5062,7 +5125,7 @@ class AstToIrTranslator:
                     attr = id_obj.getId() if isinstance(id_obj, pss_ast.ExprId) else str(id_obj)
                     result_lv = self._apply_call_and_subscripts(
                         ctx, elem, ir.ExprAttribute(value=result_lv, attr=attr))
-                return self._apply_ref_bit_slice(expr, result_lv)
+                return self._apply_ref_bit_slice(ctx, expr, result_lv)
 
         # A call the linker resolved to a package-scope function: a function
         # named by its qualified name, not a member of `self`. Deciding this
@@ -5086,7 +5149,7 @@ class AstToIrTranslator:
                             f"'{qname}'")
                         return ir.ExprRefUnresolved(name=qname)
                     args.append(arg_ir)
-                return self._apply_ref_bit_slice(expr, self._apply_subscripts(
+                return self._apply_ref_bit_slice(ctx, expr, self._apply_subscripts(
                     ctx, elems[0],
                     ir.ExprCall(func=ir.ExprRefUnresolved(name=qname), args=args)))
 
@@ -5102,14 +5165,17 @@ class AstToIrTranslator:
             if name not in ctx.local_vars:
                 linked = self._linked_constant(ctx, expr)
                 if linked is not None:
-                    return self._apply_ref_bit_slice(expr, linked)
+                    # `C[0]` is a bit select of the constant: its subscript
+                    # was dropped, so `C[0]` read as `C` (I14).
+                    return self._apply_ref_bit_slice(ctx, expr, self._apply_subscripts(
+                        ctx, elems[0], linked))
             enum_val = self._resolve_enum_constant(ctx, name)
             if enum_val is not None:
                 return self._apply_ref_bit_slice(
-                    expr, ir.ExprConstant(value=enum_val))
+                    ctx, expr, ir.ExprConstant(value=enum_val))
             if name in ctx.const_map and name not in ctx.local_vars:
                 return self._apply_ref_bit_slice(
-                    expr, ir.ExprConstant(value=ctx.const_map[name]))
+                    ctx, expr, ir.ExprConstant(value=ctx.const_map[name]))
 
         # Build the ExprAttribute chain starting from self. (`super.x` was
         # handled above: the front end gives it its own node, ExprRefPathSuper.)
@@ -5128,7 +5194,7 @@ class AstToIrTranslator:
             result = self._apply_call_and_subscripts(
                 ctx, elem, ir.ExprAttribute(value=result, attr=name))
 
-        return self._apply_ref_bit_slice(expr, result)
+        return self._apply_ref_bit_slice(ctx, expr, result)
 
     def _apply_call_and_subscripts(self, ctx: AstToIrContext, elem,
                                    result: ir.Expr) -> ir.Expr:
@@ -5166,7 +5232,8 @@ class AstToIrTranslator:
                 result = ir.ExprSubscript(value=result, slice=index_ir)
         return result
 
-    def _apply_ref_bit_slice(self, expr_node, result: ir.Expr) -> ir.Expr:
+    def _apply_ref_bit_slice(self, ctx: AstToIrContext, expr_node,
+                             result: ir.Expr) -> ir.Expr:
         """If *expr_node* carries a bit-slice, wrap *result* in ExprSubscript.
 
         ``ExprRefPathContext`` and the static variants can all have a
@@ -5182,9 +5249,17 @@ class AstToIrTranslator:
         # bit_slice grammar: [upper:lower]; ExprBitSlice has getLhs()=upper, getRhs()=lower
         upper_node = slice_node.getLhs() if hasattr(slice_node, 'getLhs') else None
         lower_node = slice_node.getRhs() if hasattr(slice_node, 'getRhs') else None
-        # Translate bounds as plain numeric constants (they are always constant exprs)
-        upper_expr = ir.ExprConstant(value=int(upper_node.getValue())) if (upper_node and hasattr(upper_node, 'getValue')) else None
-        lower_expr = ir.ExprConstant(value=int(lower_node.getValue())) if (lower_node and hasattr(lower_node, 'getValue')) else None
+        # The bounds are constant expressions (8.6.1): a named constant's
+        # bound was dropped when only a literal was read (`C[K:0]`, I14).
+        def bound(node):
+            if node is None:
+                return None
+            v = node.getValue() if hasattr(node, 'getValue') else None
+            if isinstance(v, int) and not isinstance(v, bool):
+                return ir.ExprConstant(value=v)
+            return self._translate_expression(ctx, node)
+        upper_expr = bound(upper_node)
+        lower_expr = bound(lower_node)
         slc = ir.ExprSlice(lower=lower_expr, upper=upper_expr, step=None, is_bit_slice=True)
         return ir.ExprSubscript(value=result, slice=slc)
 
@@ -5838,12 +5913,15 @@ class AstToIrTranslator:
             # The constant the LINKER resolved, wherever it is declared: a
             # component's `static const` is in no package's name table, and
             # its array was `size=-1` (P2).
-            for n in (inner, getattr(inner, 'getType_id', lambda: None)()):
+            selected = _is_selected(inner)
+            for n in (() if selected else
+                      (inner, getattr(inner, 'getType_id', lambda: None)())):
+                # (A select of the constant, `D[3:0]`, is folded below.)
                 if n is not None and hasattr(n, 'getTarget'):
                     linked = self._linked_static_const(ctx, n)
                     if isinstance(linked, int) and not isinstance(linked, bool):
                         return linked
-            folded = self._fold_const_expr(ctx, inner)
+            folded = None if selected else self._fold_const_expr(ctx, inner)
             if folded is None and isinstance(inner, pss_ast.Expr):
                 # An expression over constants (`array<int, N + 1>`).
                 try:
@@ -5858,7 +5936,9 @@ class AstToIrTranslator:
 
         elif coll_name == "array":
             size_ref = None
-            if params.numValues() > 1:
+            if params.numValues() > 1 \
+                    and not _is_selected(params.getValue(1).getValue()):
+                # (`D[3:0]` is not D: a select of a constant has no name.)
                 size_ref = self._linked_const_name(
                     ctx, params.getValue(1).getValue())
             size = get_int_param(1)
