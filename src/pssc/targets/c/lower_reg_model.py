@@ -106,7 +106,15 @@ def emit_value_union(struct_dtype, reg_style: str = "bitfields") -> str:
     # struct_layout emits exactly one slice per declared field, in order, so
     # the two zip. The slice carries the arithmetic; the field carries what the
     # source said about it.
-    for fs, f in zip(struct_layout(struct_dtype), struct_dtype.fields):
+    # Bitfields are allocated from the LSB (the little-endian assumption the
+    # header states), so they are declared by position, a gap as an unnamed
+    # one: a big-endian struct's first field is its highest (W49).
+    pos = 0
+    for fs, f in sorted(zip(struct_layout(struct_dtype), struct_dtype.fields),
+                        key=lambda p: p[0].lsb):
+        if fs.width and fs.lsb > pos:
+            lines.append(f"    {ut} {'':12} : {fs.lsb - pos:2};")
+        pos = max(pos, fs.lsb + fs.width)
         # The prose above, the layout facts beside -- the same split the PSS
         # source uses. `doc_trailing` already states the bit range, and more
         # besides (access mode, reset), so it replaces the range synthesized

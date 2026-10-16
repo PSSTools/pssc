@@ -18,7 +18,7 @@ from ..progseq_model import (
     array_size, _dt_name, _scalar_offset, _array_base_stride, _is_reserved,
     collect_reg_groups, collect_value_structs,
 )
-from ...reg_field_resolve import field_width
+from ...reg_field_resolve import struct_layout, field_width
 from ..c.lower_reg_model import (
     c_struct_name, _prim_bits, _struct_total_bits, _reg_value_bits, _strip_pkg,
 )
@@ -38,11 +38,17 @@ def emit_value_union(struct_dtype) -> str:
     prim = _prim_bits(_struct_total_bits(struct_dtype))
     ut = f"std::uint{prim}_t"
     lines = [f"typedef union {{ {ut} raw; struct {{"]
-    bit = 0
+    # Declared by position from the LSB, a gap as an unnamed bitfield, as
+    # the C backend does: a big-endian struct's first field is its highest.
     for f in struct_dtype.fields:
-        w = field_width(f)
-        lines.append(f"    {ut} {f.name:12} : {w:2};   /* [{bit + w - 1}:{bit}] */")
-        bit += w
+        field_width(f)                     # refuses an aggregate field
+    pos = 0
+    for fs in sorted(struct_layout(struct_dtype), key=lambda x: x.lsb):
+        if fs.lsb > pos:
+            lines.append(f"    {ut} {'':12} : {fs.lsb - pos:2};")
+        lines.append(f"    {ut} {fs.name:12} : {fs.width:2};   "
+                     f"/* [{fs.lsb + fs.width - 1}:{fs.lsb}] */")
+        pos = fs.lsb + fs.width
     lines.append(f"}}; }} {name};")
     return "\n".join(lines)
 

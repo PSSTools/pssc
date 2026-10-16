@@ -3512,6 +3512,14 @@ class AstToIrTranslator:
         super_t = struct.getSuper_t()
         if super_t is not None:
             super_name = self._type_identifier_name(super_t)
+            if super_name and super_name.split("::")[-1] == "packed_s" \
+                    and self._big_endian_arg(ctx, super_t):
+                # `packed_s<BIG_ENDIAN>` (21.13.1.1): named as R17 names a
+                # specialization; `reg_field_resolve.is_big_endian` reads it.
+                generic = ctx.get_type(super_name)
+                super_name += "_BIG_ENDIAN"
+                if generic is not None and ctx.get_type(super_name) is None:
+                    ctx.add_type(super_name, generic)
             if super_name:
                 struct_ir.super = ir.DataTypeRef(ref_name=super_name)
 
@@ -3543,6 +3551,29 @@ class AstToIrTranslator:
         ctx.pop_scope()
 
         return struct_ir
+
+    def _big_endian_arg(self, ctx: AstToIrContext, super_t) -> bool:
+        """True if `packed_s<...>` is given BIG_ENDIAN (its one argument)."""
+        if not isinstance(super_t, pss_ast.TypeIdentifier) \
+                or super_t.numElems() == 0:
+            return False
+        params = super_t.getElem(super_t.numElems() - 1).getParams()
+        if params is None or params.numValues() == 0:
+            return False
+        arg = params.getValue(0).getValue()
+        if isinstance(arg, pss_ast.DataTypeUserDefined):
+            arg = arg.getType_id()        # a bare name in argument position
+        c = self._linked_constant(ctx, arg) if hasattr(arg, "getTarget") \
+            else None
+        if c is None and arg is not None:
+            saved = len(ctx.errors)
+            try:
+                c = self._translate_expression(ctx, arg)
+            except Exception:
+                c = None
+            del ctx.errors[saved:]
+        ref = getattr(c, "ref", None) or ""
+        return ref.split("::")[-1] == "BIG_ENDIAN"
 
     def _struct_references_initial(self, struct_ir) -> bool:
         """Return True if any constraint in this state struct references the `initial` field.

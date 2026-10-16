@@ -117,34 +117,56 @@ def field_width(field) -> int:
     return w
 
 
-def field_layout(reg_dtype, resolve=None) -> List[FieldSlice]:
-    """Declared fields of ``reg_dtype``'s value struct, LSB-first.
+def is_big_endian(struct_dtype) -> bool:
+    """True if ``struct_dtype`` is `packed_s<BIG_ENDIAN>`, directly or through
+    its bases (ast2ir names that base `packed_s_BIG_ENDIAN`)."""
+    dt, depth = struct_dtype, 0
+    while dt is not None and depth < 64:
+        sup = getattr(dt, "super", None)
+        nm = (getattr(sup, "ref_name", None) or getattr(sup, "name", None)
+              or "").split("::")[-1]
+        if nm.startswith("packed_s"):
+            return nm == "packed_s_BIG_ENDIAN"
+        dt, depth = (sup if _dt_name(sup) == _DT_STRUCT else None), depth + 1
+    return False
 
-    Fields are laid out in declaration order starting at bit 0 -- the
-    ``packed_s<>`` convention this toolchain has always used for C, and the
-    one the SV lowering reverses on emission rather than at layout time.
 
-    Aggregate-typed fields are represented with ``width == 0`` so their
-    presence is visible to :func:`resolve_field` (which rejects them by name)
-    without corrupting the running offset of the fields that follow -- there is
-    no honest offset to give them, and silently skipping them would shift every
-    later field.
+def _place(fields, big: bool) -> List[FieldSlice]:
+    """Lay ``fields`` out in declaration order (21.13.1.1): from the LSB
+    up for little-endian; for big-endian from the MSB of the packed register
+    (whole bytes) down, the don't-care bits at its LSB end. Big-endian was
+    laid out little-endian (W49).
+
+    Aggregate-typed fields get ``width == 0``, so their presence is visible
+    to :func:`resolve_field` (which rejects them by name) without moving the
+    fields that follow -- there is no honest offset to give them, and
+    silently skipping them would shift every later field.
     """
-    fields = list(getattr(reg_dtype, "fields", []) or [])
-    if not fields:
-        vs = value_struct(reg_dtype, resolve)
-        fields = list(getattr(vs, "fields", []) or []) if vs is not None else []
-
+    widths = [_field_bits(f) for f in fields]
+    total = sum(w for w in widths if w)
+    top = (total + 7) // 8 * 8
     out: List[FieldSlice] = []
     bit = 0
-    for f in fields:
-        w = _field_bits(f)
+    for f, w in zip(fields, widths):
         if w is None:
             out.append(FieldSlice(name=f.name, lsb=bit, width=0))
             continue
-        out.append(FieldSlice(name=f.name, lsb=bit, width=w))
+        lsb = top - bit - w if big else bit
+        out.append(FieldSlice(name=f.name, lsb=lsb, width=w))
         bit += w
     return out
+
+
+def field_layout(reg_dtype, resolve=None) -> List[FieldSlice]:
+    """Declared fields of ``reg_dtype``'s value struct, placed by
+    :func:`_place` (the SV lowering reverses the declaration order on
+    emission, not here)."""
+    fields = list(getattr(reg_dtype, "fields", []) or [])
+    vs = None
+    if not fields:
+        vs = value_struct(reg_dtype, resolve)
+        fields = list(getattr(vs, "fields", []) or []) if vs is not None else []
+    return _place(fields, vs is not None and is_big_endian(vs))
 
 
 def field_map(reg_dtype, resolve=None) -> Dict[str, FieldSlice]:
@@ -158,16 +180,8 @@ def struct_layout(struct_dtype) -> List[FieldSlice]:
     union per struct, not per register), so it needs the layout without a
     register to hang it on. Same arithmetic, one implementation.
     """
-    out: List[FieldSlice] = []
-    bit = 0
-    for f in getattr(struct_dtype, "fields", []) or []:
-        w = _field_bits(f)
-        if w is None:
-            out.append(FieldSlice(name=f.name, lsb=bit, width=0))
-            continue
-        out.append(FieldSlice(name=f.name, lsb=bit, width=w))
-        bit += w
-    return out
+    return _place(list(getattr(struct_dtype, "fields", []) or []),
+                  is_big_endian(struct_dtype))
 
 
 # --- resolution -------------------------------------------------------------

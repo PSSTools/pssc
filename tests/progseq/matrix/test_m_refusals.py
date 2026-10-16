@@ -928,6 +928,21 @@ component pss_top {''' + ONE + '''
                r"'pss_top::X'"]),
         covers=("EXEC-TT.1", "EXEC-TT.2", "EXEC-TT.3", "EXEC-TT.4",
                 "EXEC-TT.5", "EXEC-TT.6", "EXEC-KIND.6")),
+
+    # A group may give its offsets by `get_offset_of_path` (21.14.2); no
+    # target evaluates it yet. Its registers took the dense layout, the
+    # first at 0, without a word (W48).
+    "a register group with get_offset_of_path": Case("""
+pure component gp_c : reg_group_c {
+  reg_c<bit[32], READWRITE, 32> R;
+  function bit[64] get_offset_of_path(list<node_s> path) { return 0x8; }
+}
+component pss_top {
+  gp_c g;
+  solve function void initialize(addr_handle_t base) { g.set_handle(base); }
+  target function void run() { g.R.write_val(1); }
+}""", Refused([r"'gp_c' gives its offsets by get_offset_of_path, which is "
+               r"not evaluated yet"]), covers=("LIB-REG.7",)),
 }
 
 test_construct = define_tests(CASES)

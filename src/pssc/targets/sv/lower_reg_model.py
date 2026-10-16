@@ -74,10 +74,16 @@ def emit_value_struct(struct_dtype) -> str:
     """
     name = _strip_pkg(struct_dtype.name)
     lines = ["  typedef struct packed {"]
-    for f in reversed(struct_dtype.fields):   # LSB-first -> MSB-first
+    # MSB first: a little-endian struct's last field is highest, a
+    # big-endian one's first (W49); its don't-care bits are a member.
+    from .lower_api_types import _packed_order
+    members, pad = _packed_order(struct_dtype)
+    for f in members:
         lines += comment_lines(getattr(f, "doc", None), "    ")
         decl = f"    {_sv_bit_type(field_width(f))} {f.name};"
         lines += append_trailing([decl], getattr(f, "doc_trailing", None))
+    if pad:
+        lines.append(f"    {_sv_bit_type(pad)} pss_pad;")
     lines.append(f"  }} {name};")
     return "\n".join(lines)
 

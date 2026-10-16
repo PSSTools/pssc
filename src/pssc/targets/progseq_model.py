@@ -487,6 +487,27 @@ def _offset_fn(group_dtype, fname: str):
     return None
 
 
+def _check_offset_fns(group_dtype) -> None:
+    """Refuse a group whose offsets this build cannot evaluate rightly
+    (21.14.2): one implementing `get_offset_of_path`, which is not evaluated
+    yet -- its registers silently took the dense layout, the first at 0
+    (W48) -- and one implementing all three offset functions, an error."""
+    gname = _strip_pkg_name(group_dtype)
+    have = {fn.name for fn in getattr(group_dtype, "functions", []) or []
+            if fn.body and fn.name in _REG_OFFSET_FNS | {"get_offset_of_path"}}
+    if len(have) == 3:
+        raise OffsetFoldError(
+            f"register group '{gname}' implements get_offset_of_path, "
+            f"get_offset_of_instance and get_offset_of_instance_array; "
+            f"21.14.2 makes implementing all three an error")
+    if "get_offset_of_path" in have:
+        raise OffsetFoldError(
+            f"register group '{gname}' gives its offsets by "
+            f"get_offset_of_path, which is not evaluated yet; implement "
+            f"get_offset_of_instance and get_offset_of_instance_array "
+            f"instead")
+
+
 def array_base_stride(group_dtype, field_name: str) -> Tuple[int, int]:
     """``(base, stride)`` for an instance array, from the group's own
     ``get_offset_of_instance_array``, evaluated (:class:`_OffsetEval`).
@@ -495,6 +516,7 @@ def array_base_stride(group_dtype, field_name: str) -> Tuple[int, int]:
     function answers the -1 sentinel for it -- the case a renamed RDL instance
     produces.
     """
+    _check_offset_fns(group_dtype)
     gname = _strip_pkg_name(group_dtype)
     fn = _offset_fn(group_dtype, "get_offset_of_instance_array")
     if fn is None:
@@ -521,6 +543,7 @@ def scalar_offset(group_dtype, name: str) -> int:
     the model places at 0x8 at 0x4 -- right only for a dense, in-order layout,
     and a wrong address that no golden snapshot can catch.
     """
+    _check_offset_fns(group_dtype)
     gname = _strip_pkg_name(group_dtype)
     fn = _offset_fn(group_dtype, "get_offset_of_instance")
     if fn is not None and fn.body:

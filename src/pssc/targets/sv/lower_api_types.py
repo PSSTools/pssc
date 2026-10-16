@@ -180,14 +180,29 @@ def _sv_const_list(e, consts=None) -> str:
     return "'{" + ", ".join(parts) + "}"
 
 
+def _packed_order(struct_dtype):
+    """``(members MSB first, pad bits under the last)`` of a packed struct.
+    PSS little-endian is LSB first, so its declaration order reverses;
+    big-endian is MSB first as declared, with its don't-care bits at the LSB
+    end (21.13.1.1, W49) -- known only when every member is a scalar."""
+    from ...reg_field_resolve import is_big_endian, struct_layout
+    fields = list(struct_dtype.fields)
+    if not is_big_endian(struct_dtype):
+        return list(reversed(fields)), 0
+    layout = struct_layout(struct_dtype)
+    pad = (min(fs.lsb for fs in layout)
+           if layout and all(fs.width for fs in layout) else 0)
+    return fields, pad
+
+
 def emit_struct(struct_dtype, consts=None) -> str:
     name = _strip_pkg(struct_dtype.name)
     packed = _is_packed(struct_dtype)
     fields = list(struct_dtype.fields)
+    pad = 0
     if packed:
-        # Declaration order IS the bit numbering in PSS (LSB first); SV packed
-        # structs are declared MSB first, so the order reverses.
-        fields = list(reversed(fields))
+        # SV packed structs are declared MSB first (`_packed_order`).
+        fields, pad = _packed_order(struct_dtype)
     lines = [f"  typedef struct{' packed' if packed else ''} {{"]
     for f in fields:
         # A field initializer is part of the type (7.8): a local declared
@@ -218,6 +233,8 @@ def emit_struct(struct_dtype, consts=None) -> str:
             lines.append(f"    {sv_member_type(elem)} {f.name}{dim_str}{dflt};")
         else:
             lines.append(f"    {sv_member_type(f.datatype)} {f.name}{dflt};")
+    if pad:
+        lines.append(f"    bit [{pad - 1}:0] pss_pad;")
     lines.append(f"  }} {name};")
     return "\n".join(lines)
 

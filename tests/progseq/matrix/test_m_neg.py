@@ -481,6 +481,24 @@ component pss_top {""" + ONE + """
   }
 }""", Refused([r"file_exists", r"solve|target"]), xfail=on(ALL, F22),
         covers=("LIB-FILE.6",)),
+
+    # A register group shall not implement all three offset functions
+    # (21.14.2).
+    "a register group implementing all three offset functions": Case("""
+pure component g3_c : reg_group_c {
+  reg_c<bit[32], READWRITE, 32> R;
+  function bit[64] get_offset_of_instance(string name) { return 0x0; }
+  function bit[64] get_offset_of_instance_array(string name, int index) {
+    return 0x0;
+  }
+  function bit[64] get_offset_of_path(list<node_s> path) { return 0x0; }
+}
+component pss_top {
+  g3_c g;
+  solve function void initialize(addr_handle_t base) { g.set_handle(base); }
+  target function void run() { g.R.write_val(1); }
+}""", Refused([r"'g3_c' implements get_offset_of_path, get_offset_of_instance "
+               r"and get_offset_of_instance_array"]), covers=("LIB-REG.7",)),
 }
 
 test_construct = define_tests(CASES)

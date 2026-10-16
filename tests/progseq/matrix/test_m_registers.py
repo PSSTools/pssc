@@ -11,7 +11,6 @@ import pytest
 from .. import trace_harness as th
 from ._matrix import ALL, Case, define_tests, on, ONE, Refused, REGS
 
-W49 = "W49: packed_s<BIG_ENDIAN> as a register value is laid out little-endian"
 W50 = "W50: reg_c<packed struct> with no SZ is accessed with 32-bit primitives"
 W59 = "W59: a read of a WRITEONLY / write of a READONLY register is accepted"
 E28 = "E28: a nested packed struct or array field in a register value"
@@ -406,8 +405,39 @@ component pss_top {
     a.F.write(v);
   }
 }""", ["read 32 0x1000 0x12345678", "1 2345678", "write 32 0x1000 0x52345678"],
-        mem={0x1000: 0x12345678}, xfail=on(ALL, W49),
+        mem={0x1000: 0x12345678},
         covers=("DT-PACK.4", "DT-REG")),
+
+    # The LRM's own 30-bit struct, both ways (21.13.1.2-3, Ex 344, Ex 345):
+    # little-endian packs A at bit 0 and pads at the MSB end; big-endian
+    # packs A at bit 31 and pads at the LSB end (bits 1:0).
+    "the LRM's packing examples, little- and big-endian": Case("""
+struct le_s : packed_s<LITTLE_ENDIAN> {
+  bit[6] A; bit[2] B; bit[9] C; bit[7] D; bit[6] E;
+}
+struct be_s : packed_s<BIG_ENDIAN> {
+  bit[6] A; bit[2] B; bit[9] C; bit[7] D; bit[6] E;
+}
+pure component gle_c : reg_group_c {
+  reg_c<le_s, READWRITE, 32> L;
+  reg_c<be_s, READWRITE, 32> B;
+  function bit[64] get_offset_of_instance(string name) {
+    match (name) { ["L"]: return 0x0; ["B"]: return 0x4; }
+    return 0xFFFFFFFFFFFFFFFF;
+  }
+}
+component pss_top {
+  gle_c a;
+  solve function void initialize(addr_handle_t base) { a.set_handle(base); }
+  target function void run() {
+    le_s l; be_s b;
+    l.A = 1; l.B = 2; l.C = 3; l.D = 4; l.E = 5;
+    b.A = 1; b.B = 2; b.C = 3; b.D = 4; b.E = 5;
+    a.L.write(l);
+    a.B.write(b);
+  }
+}""", ["write 32 0x1000 0x5080381", "write 32 0x1004 0x6018414"],
+        covers=("DT-PACK.4", "DT-PACK.3", "DT-REG")),
 
     # A nested packed struct and an array field (21.13.1, Ex 360) pack in
     # place, densely: z bit 0, i.x bits 2:1, i.y bit 3, f[k] bits 5+2k:4+2k,
