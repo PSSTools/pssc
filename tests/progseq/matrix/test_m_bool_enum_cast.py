@@ -14,10 +14,6 @@ F3 = ("F3: an unqualified enum item is resolved where the expected type is "
       "not the enum (`(int)BLUE`, Example 37)")
 F4 = ("F4: illegal casts are accepted (7.12.1 a): from a chandle, struct or "
       "string, or to a struct")
-W46 = ("W46: a value of a domain-restricted type defaults to the first item, "
-       "not the first declared item in the domain (7.5.1)")
-E24 = ("E24: a domain-typed field is an internal error (py/c/cpp) or an "
-       "invalid `_range_0` task (sv)")
 
 
 CASES = {
@@ -238,14 +234,14 @@ component pss_top {""" + ONE + """
     col_e in [BLACK, GREEN] d;
     message(LOW, "%n %n", c, d);
   }
-}""", ["GREEN GREEN"], xfail=on(ALL, W46), covers=("DT-ENUM.9",)),
+}""", ["GREEN GREEN"], covers=("DT-ENUM.9",)),
 
     "an enum domain on a field": Case("""
 enum col_e { RED, GREEN, BLUE, BLACK }
 component pss_top {""" + ONE + """
   col_e in [BLUE..] f;
   target function void run() { message(LOW, "%n", f); }
-}""", ["BLUE"], xfail=on(ALL, E24), covers=("DT-ENUM.9",)),
+}""", ["BLUE"], covers=("DT-ENUM.9",)),
 
     # An item is a static constant (7.5.1 a), so it may stand in a constant
     # expression (8.2): a `compile if` condition and an array size.

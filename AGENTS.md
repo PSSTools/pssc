@@ -80,7 +80,10 @@ Two rules hold it together, and both are tested
 
 **A type keeps its PSS name**, in C and C++ alike: the component `wb_dma_c`,
 the struct `wb_dma_ch_cfg_s`, the enum `wb_dma_status_e`
-(`Prefixes.type_name`; user ruling, 2026-10-07). Functions stay
+(`Prefixes.type_name`; user ruling, 2026-10-07). A template
+specialization is a type of its own, named with its arguments appended
+(`s_s<4>` is `s_s_4`, `p_s<e_e::A>` is `p_s_A`; ruling R17, 2026-10-16;
+`ast2ir._specialized_struct`). Functions stay
 `<prefix>_<name>`, the prefix being the type name without `_c`; a
 `--prefix-map` entry renames the type as well, since it is how two components
 with one name are told apart. C has one namespace for all of it, so

@@ -11,8 +11,6 @@ from ._matrix import ALL, Case, define_tests, on, ONE, Refused
 #: and SV declare a derived struct flattened, with no relation to its base,
 #: and Python copies a derived struct's members into a base one.
 W31 = "W31: a derived struct is not usable as its base (8.3, 20.3.2)"
-I15 = ("I15: template struct specializations collapse into one type with a "
-       "32-bit member")
 E26 = ("E26: a static const struct is an internal error on c/cpp, and not "
        "translated at package scope")
 F6 = ("F6: a private member written from outside is accepted (17.4): "
@@ -405,7 +403,7 @@ component pss_top {""" + ONE + """
     w.f = w.f + 1;
     message(LOW, "%d %d", v.f, w.f);
   }
-}""", ["0 16"], xfail=on(ALL, I15), covers=("DT-STRUCT.12",)),
+}""", ["0 16"], covers=("DT-STRUCT.12",)),
 
     # A `static const` struct is read like any struct, and passed to a
     # `const` parameter (7.1, 20.2.3).

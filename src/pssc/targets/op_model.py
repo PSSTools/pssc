@@ -415,6 +415,23 @@ def count(tree: CompNode, kind: CompKind) -> int:
 
 # --- the target base class --------------------------------------------------
 
+def _drop_constraint_functions(ctx) -> None:
+    """Remove each type's constraint functions (`_is_constraint`: a domain's
+    `in`, 7.2.1 d) -- an op-model never solves, and every reader of a
+    component's functions took one for an operation with no signature (E24).
+    A domain's DEFAULT is the field's initial value, set by ast2ir."""
+    seen = set()
+    for dt in list((getattr(ctx, "type_map", None) or {}).values()):
+        fns = getattr(dt, "functions", None)
+        if id(dt) in seen or not fns:
+            continue
+        seen.add(id(dt))
+        keep = [f for f in fns if not (getattr(f, "metadata", None) or {})
+                .get("_is_constraint")]
+        if len(keep) != len(fns):
+            fns[:] = keep
+
+
 class OpModelTarget(Target):
     """A target that projects a PSS component tree into a programming API.
 
@@ -744,6 +761,7 @@ class OpModelTarget(Target):
         # First: every reader below -- the entry-name clash check included --
         # sees a derived component with what it inherits (`comp_inherit`),
         # and a derived struct with its bases' members.
+        _drop_constraint_functions(ctx)
         complete(ctx)
         pm.flatten_struct_bases(ctx)
         entries = entry_points(ctx, getattr(opts, "export_actions", None) or [])

@@ -176,3 +176,73 @@ def test_a_type_with_no_ir_form_is_refused_with_its_line(tmp_path, decl,
     # Line 8: the prelude `translate` writes, _PRE, then the component.
     assert any(e.startswith("line 8: ") and what in e for e in ctx.errors), \
         ctx.errors
+
+
+def test_each_template_specialization_is_its_own_type(tmp_path):
+    """`s_s<4>` and `s_s<8>` are two types (I15: both were the generic
+    `s_s` with a 32-bit field), named with their arguments appended (user
+    ruling): a constant argument by its value, an enum item by its name, a
+    default filled in."""
+    ctx = translate(tmp_path, _PRE + """
+struct s_s<int N = 2> { bit[N] f; }
+struct w_s<int W = 8, int V = W * 2> { bit[W] x; bit[V] y; }
+struct q_s<e_e E = A> { bit[4] g; }
+component pss_top {
+  s_s<4> a; s_s<8> b; s_s<k::M + 2> c; s_s<> d;
+  w_s<3> e; q_s<C> f; q_s<> g;
+}
+""")
+    assert ctx.errors == [], ctx.errors
+    got = {f.name: (f.datatype.name,
+                    [(m.name, shape(m.datatype)) for m in f.datatype.fields])
+           for f in ctx.type_map["pss_top"].fields}
+    assert got == {
+        "a": ("s_s_4", [("f", "bit[4]")]),
+        "b": ("s_s_8", [("f", "bit[8]")]),
+        "c": ("s_s_4", [("f", "bit[4]")]),
+        "d": ("s_s_2", [("f", "bit[2]")]),
+        "e": ("w_s_3_6", [("x", "bit[3]"), ("y", "bit[6]")]),
+        "f": ("q_s_C", [("g", "bit[4]")]),
+        "g": ("q_s_A", [("g", "bit[4]")]),
+    }
+    a = ctx.type_map["pss_top"].fields[0].datatype
+    assert ctx.type_map["pss_top"].fields[2].datatype is a
+
+
+@pytest.mark.parametrize("order", ["struct first", "struct last"])
+def test_a_specialization_name_taken_by_a_struct_is_refused(tmp_path, order):
+    tmpl = "struct s_s<int N = 2> { bit[N] f; }\n"
+    user = "struct s_s_4 { int a; }\n"
+    comp = "component pss_top { s_s<4> v; }\n"
+    src = tmpl + (user + comp if order == "struct first" else comp + user)
+    ctx = translate(tmp_path, src)
+    assert len(ctx.errors) == 1 and "s_s_4" in str(ctx.errors[0]), ctx.errors
+    assert str(ctx.errors[0]).startswith("line "), ctx.errors
+
+
+@pytest.mark.parametrize("decl, value", [
+    # 7.2.1 d: the smallest domain value when 0 is outside the domain ...
+    ("bit[5] in [1, 2, 4] a;", 1),
+    ("int in [-10..-5] a;", -10),
+    ("bit[5] in [10..] a;", 10),
+    ("int in [3, 8..9] a;", 3),
+    # ... and the type's own default (no initializer) when 0 is in it.
+    ("int in [-10..5] a;", None),
+    ("bit[4] in [..7] a;", None),
+    # 7.5.1 k: the first DECLARED item in the domain (C = 7 comes after B).
+    ("e_e in [B..C] a;", ("e_e::B", 3)),
+    ("e_e in [D, B] a;", ("e_e::B", 3)),
+    # An initializer wins.
+    ("bit[5] in [1, 2, 4] a = 4;", 4),
+])
+def test_a_domain_sets_the_default(tmp_path, decl, value):
+    """W46: a domain-restricted variable without an initializer starts at the
+    domain's default, a field as a local does."""
+    f = _fields(tmp_path, "  " + decl)["a"]
+    got = f.initial_value
+    if value is None:
+        assert got is None
+    elif isinstance(value, tuple):
+        assert (got.ref, got.value) == value
+    else:
+        assert got.value == value

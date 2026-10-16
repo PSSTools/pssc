@@ -13,7 +13,6 @@ from ._matrix import ALL, Case, define_tests, on, ONE, Refused, REGS
 
 W49 = "W49: packed_s<BIG_ENDIAN> as a register value is laid out little-endian"
 W50 = "W50: reg_c<packed struct> with no SZ is accessed with 32-bit primitives"
-W54 = "W54: a parameterized packed struct as a register value is mis-packed"
 W59 = "W59: a read of a WRITEONLY / write of a READONLY register is accepted"
 E28 = "E28: a nested packed struct or array field in a register value"
 F27 = "F27: a reg_c outside a reg_group_c is accepted (21.14.1)"
@@ -579,7 +578,7 @@ component pss_top {
   }
 }""", ["write 32 0x1008 0x41a20000", "read 32 0x1008 0x41a20000",
        "220000 83 0"],
-        xfail=on(ALL, W54), covers=("LIB-FP.4", "DT-REG")),
+        covers=("LIB-FP.4", "DT-REG")),
 
     # write_val_masked (21.14.1): new = (cur & ~mask) | (val & mask), so
     # 0xaabbccdd keeps all but byte 1, which becomes 0x12. A bit[32]

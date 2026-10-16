@@ -376,6 +376,8 @@ class AstToIrContext:
         # DataTypeRef naming one of these is a parameter placeholder, not an
         # unresolved type, so the completeness check below must not report it.
         self.template_param_names: Set[str] = set()
+        # name -> struct, for each template specialization translated
+        self.specialization_names: Dict[str, Any] = {}
         # Maps qualified action name ('MyC::MyA') -> parent component name ('MyC')
         self.parent_comp_names: Dict[str, str] = {}
         # Set of local variable names in the current scope (e.g. foreach loop vars)
@@ -938,6 +940,9 @@ class AstToIrTranslator:
         ref = expr.getTarget() if hasattr(expr, 'getTarget') else None
         if ref is None:
             return None
+        param = self._template_param_at(ctx, ref)
+        if param is not None:
+            return self._template_value(ctx, param)
         decl = self._symbol_scope_at(ctx, ref, depth=0)
         if isinstance(decl, pss_ast.EnumItem):
             value = self._linked_enum_value(ctx, expr)
@@ -950,6 +955,101 @@ class AstToIrTranslator:
             return None
         return self._const_of_decl(ctx, decl, value,
                                    self._ref_qname(ctx, ref, decl))
+
+    def _template_param_at(self, ctx: AstToIrContext, ref):
+        """The template parameter declaration a `SymbolRefPath` ending in a
+        parameter index names (`N` in the body of the specialization
+        `s_s<4>`), or None."""
+        path = list(ref.getPathList())
+        if not path or path[-1].kind != pss_ast.SymbolRefPathElemKind.ElemKind_ParamIdx:
+            return None
+        owner = self._symbol_scope_at(ctx, ref, depth=0, drop=1, specs=True)
+        decl = owner.getTarget() if hasattr(owner, "getTarget") else None
+        params = decl.getParams() if hasattr(decl, "getParams") else None
+        idx = path[-1].idx
+        if params is None or not 0 <= idx < params.numParams():
+            return None
+        return params.getParam(idx)
+
+    def _template_value(self, ctx: AstToIrContext,
+                        param) -> Optional[ir.ExprConstant]:
+        """A specialization's value parameter folded: its value is the
+        declaration's default, which pssparser sets to the argument."""
+        if not isinstance(param, pss_ast.TemplateValueParamDecl):
+            return None
+        key = ("tparam", _node_key(param))
+        if key in ctx.static_consts:              # a cycle folds to nothing
+            return ctx.static_consts[key]
+        ctx.static_consts[key] = None
+        dflt = param.getDflt() if hasattr(param, "getDflt") else None
+        out = None
+        if isinstance(dflt, pss_ast.TypeIdentifier):
+            # In argument position a bare name parses as a type: `p_s<B>`.
+            out = self._linked_constant(ctx, dflt)
+        elif dflt is not None:
+            saved = len(ctx.errors)
+            try:
+                e = self._translate_expression(ctx, dflt)
+            except Exception:
+                e = None
+            del ctx.errors[saved:]
+            v = _eval_const_ir(e)
+            if isinstance(v, (int, bool)):
+                out = ir.ExprConstant(
+                    value=v, ref=getattr(e, "ref", None)
+                    if isinstance(e, ir.ExprConstant) else None)
+        ctx.static_consts[key] = out
+        return out
+
+    def _specialized_struct(self, ctx: AstToIrContext, type_id,
+                            base_name: str) -> Optional[ir.DataType]:
+        """The struct a template specialization (`s_s<4>`) names, translated
+        once as a type of its own, or None if *type_id* names no struct
+        specialization whose arguments are all values.
+
+        Every specialization used to be the generic template -- `s_s<4>`
+        and `s_s<8>` one type with a 32-bit field (I15). Its name is the
+        template's with each argument appended (user ruling, 2026-10-16):
+        `s_s<4>` is `s_s_4`, `w_s<4, 8>` `w_s_4_8`, `p_s<e_e::B>` `p_s_B`; a
+        clash with another name is refused where names are gathered."""
+        ref = type_id.getTarget() if hasattr(type_id, "getTarget") else None
+        path = list(ref.getPathList()) if ref is not None else []
+        if not path or path[-1].kind != pss_ast.SymbolRefPathElemKind.ElemKind_TypeSpec:
+            return None
+        spec = self._symbol_scope_at(ctx, ref, depth=0, specs=True)
+        struct = spec.getTarget() if hasattr(spec, "getTarget") else None
+        if not isinstance(struct, pss_ast.Struct):
+            return None
+        params = struct.getParams()
+        args: List[str] = []
+        for i in range(params.numParams() if params is not None else 0):
+            c = self._template_value(ctx, params.getParam(i))
+            if c is None:
+                return None      # a type parameter (E25), or no value
+            owner = c.ref.rsplit("::", 1)[0] if c.ref and "::" in c.ref else None
+            if owner and any(isinstance(ctx.get_type(n), ir.DataTypeEnum)
+                             for n in (owner, owner.rsplit("::", 1)[-1])):
+                args.append(c.ref.rsplit("::", 1)[-1])     # an enum item
+            # (A constant goes by its value: `s_s<k::Q>` is `s_s<6>`.)
+            elif isinstance(c.value, bool):
+                args.append("true" if c.value else "false")
+            else:
+                args.append(str(c.value) if c.value >= 0 else f"m{-c.value}")
+        name = "_".join([base_name] + args)
+        specs = ctx.specialization_names
+        existing = ctx.get_type(name)
+        if existing is not None and specs.get(name) is not existing:
+            where = (_ast_where(type_id)
+                     or _ast_where(getattr(self, "_stmt_node", None)))
+            ctx.add_error(f"{where}the specialization {spec.getName()} is "
+                          f"named '{name}', which is already the name of a "
+                          f"type")
+            return existing
+        if existing is not None:
+            return existing
+        out = self._translate_struct(ctx, struct, name=name)
+        specs[name] = out
+        return out
 
     def _const_of_decl(self, ctx: AstToIrContext, decl, value,
                        qname: Optional[str]) -> ir.ExprConstant:
@@ -2544,6 +2644,51 @@ class AstToIrTranslator:
             return None
         return ir.ExprRangeList(ranges=ranges)
 
+    def _domain_default(self, ctx: AstToIrContext, dtype_node,
+                        ir_type) -> Optional[ir.ExprConstant]:
+        """The value a variable of a domain-restricted type starts with when
+        it has no initializer, or None if it is the type's own default.
+
+        7.2.1 d: an integer's is 0 if the domain holds 0, else the smallest
+        value in the domain (intersected with the width: `bit[5] in [10..]`
+        starts at 10). 7.5.1 k: an enum's is its first declared item that is
+        in the domain. Both were 0 / the first item (W46).
+        """
+        domain = None
+        if isinstance(dtype_node, pss_ast.DataTypeInt):
+            domain = dtype_node.getIn_range()
+        elif isinstance(dtype_node, pss_ast.DataTypeEnum):
+            domain = dtype_node.getIn_rangelist()
+        if domain is None:
+            return None
+        saved = len(ctx.errors)
+        ranges = self._translate_domain_range_list(ctx, domain, ir_type)
+        del ctx.errors[saved:]                   # the field reports them
+        spans = []
+        for r in (ranges.ranges if ranges is not None else []):
+            lo = _eval_const_ir(r.lower)
+            hi = lo if r.upper is None else _eval_const_ir(r.upper)
+            if not isinstance(lo, int) or not isinstance(hi, int):
+                return None                       # not a constant domain
+            spans.append((lo, hi))
+        inside = lambda v: any(lo <= v <= hi for lo, hi in spans)
+        if isinstance(ir_type, ir.DataTypeEnum):
+            for item, v in (ir_type.items or {}).items():
+                if inside(v):
+                    return ir.ExprConstant(value=v,
+                                           ref=f"{ir_type.name}::{item}")
+            return None
+        if not isinstance(ir_type, ir.DataTypeInt) or not ir_type.bits:
+            return None
+        bits = int(ir_type.bits)
+        tlo, thi = ((-(1 << (bits - 1)), (1 << (bits - 1)) - 1)
+                    if ir_type.signed else (0, (1 << bits) - 1))
+        lows = [max(lo, tlo) for lo, hi in spans if max(lo, tlo) <= min(hi, thi)]
+        if not lows or inside(0):
+            return None
+        return ir.ExprConstant(value=min(lows), width=bits,
+                               signed=bool(ir_type.signed))
+
     def _flush_range_constraints(self, type_ir: ir.DataTypeStruct) -> None:
         """Emit one constraint function for any of ``type_ir``'s own fields that
         carry a ``rand int in [range]`` domain.
@@ -3305,7 +3450,9 @@ class AstToIrTranslator:
         kind = ir.FieldKind.Lock if field_claim.getIs_lock() else ir.FieldKind.Share
         return ir.Field(name=field_name, datatype=resource_type, kind=kind)
 
-    def _translate_struct(self, ctx: AstToIrContext, struct: pss_ast.Struct, namespace_prefix: str = "") -> ir.DataTypeStruct:
+    def _translate_struct(self, ctx: AstToIrContext, struct: pss_ast.Struct,
+                          namespace_prefix: str = "",
+                          name: Optional[str] = None) -> ir.DataTypeStruct:
         """Translate a PSS struct to IR DataTypeStruct
 
         Args:
@@ -3326,6 +3473,8 @@ class AstToIrTranslator:
             struct_name = str(name_node)
 
         qualified_name = f"{namespace_prefix}{struct_name}"
+        if name is not None:                      # a specialization's
+            qualified_name = struct_name = name
 
         if self.debug:
             self.logger.debug(f"Translating struct: {qualified_name}")
@@ -3345,6 +3494,10 @@ class AstToIrTranslator:
                 pss_ast.StructKind.Resource: ir.FlowKind.RESOURCE,
             }
             struct_ir.flow_kind = _flow_kind_map.get(kind)
+
+        if name is None and qualified_name in ctx.specialization_names:
+            ctx.add_error(f"{_ast_where(struct)}struct '{qualified_name}' "
+                          f"has the name a template specialization is given")
 
         # Register in type map
         ctx.add_type(qualified_name, struct_ir)
@@ -4094,6 +4247,12 @@ class AstToIrTranslator:
         # places. Collapsing them would drop whichever lost.
         field_doc, field_doc_trailing = ast_comments(field)
 
+        if initial_value is None and not attr & pss_ast.FieldAttr.Rand:
+            # (A rand field's domain is its solver's; a non-rand one starts
+            # at the domain's default, 7.2.1 d / 7.5.1 k.)
+            initial_value = self._domain_default(ctx, field.getType(),
+                                                 field_type)
+
         ir_field = ir.Field(
             name=field_name,
             datatype=field_type,
@@ -4447,6 +4606,8 @@ class AstToIrTranslator:
         value = None
         if init_expr:
             value = self._translate_expression(ctx, init_expr)
+        else:
+            value = self._domain_default(ctx, stmt.getDatatype(), var_type)
 
         # Create name expression for target and register as local variable. A
         # declaration that shadows a visible local gets a fresh IR name.
@@ -5666,9 +5827,11 @@ class AstToIrTranslator:
         return "::".join(reversed(names)) or None
 
     def _symbol_scope_at(self, ctx: AstToIrContext, ref, depth: int,
-                         drop: int = 0):
+                         drop: int = 0, specs: bool = False):
         """The symbol scope a `SymbolRefPath` names, or None. With *drop*,
-        the scope that many steps short of it (1: what contains it)."""
+        the scope that many steps short of it (1: what contains it). A
+        template specialization step is followed only with *specs*: every
+        other caller names the template (`executor_c<>` is `executor_c`)."""
         root = getattr(ctx, "symbol_root", None)
         if ref is None or root is None or depth > 64:
             return None
@@ -5681,11 +5844,19 @@ class AstToIrTranslator:
                         or not 0 <= pe.idx < scope.numChildren():
                     return None
                 scope = scope.getChild(pe.idx)
+            elif pe.kind == K.ElemKind_TypeSpec and specs:
+                # A specialization of a template type (`s_s<4>`), which
+                # pssparser builds as a type of its own.
+                if not hasattr(scope, "numSpec_types") \
+                        or not 0 <= pe.idx < scope.numSpec_types():
+                    return None
+                scope = scope.getSpec_type(pe.idx)
             elif pe.kind == K.ElemKind_Super:
                 ts = scope.getTarget() if hasattr(scope, "getTarget") else None
                 sup = ts.getSuper_t() if hasattr(ts, "getSuper_t") else None
                 sref = sup.getTarget() if hasattr(sup, "getTarget") else None
-                scope = self._symbol_scope_at(ctx, sref, depth + 1)
+                scope = self._symbol_scope_at(ctx, sref, depth + 1,
+                                              specs=specs)
                 if scope is None:
                     return None
             else:
@@ -5777,6 +5948,10 @@ class AstToIrTranslator:
             qualified_name = "::".join(parts)
         else:
             qualified_name = type_name
+
+        spec = self._specialized_struct(ctx, type_id, qualified_name)
+        if spec is not None:
+            return spec
 
         # Check type_map first (handles enums, typedefs, structs, components)
         existing = ctx.get_type(qualified_name)

@@ -7,15 +7,10 @@ from __future__ import annotations
 
 from ._matrix import ALL, Case, define_tests, on, ONE, Refused
 
-I15 = ("I15: template specializations share one type: a value parameter "
-       "used as a width is not substituted")
 I18 = ("I18: a pure function call does not fold as a constant expression "
        "(8.2)")
-W46 = ("W46: a domain-restricted value defaults to 0, not the smallest "
-       "value of its domain")
 W62 = ("W62: c/cpp fold `u == -1` (u a bit[8] parameter) to false and "
       "leave u unused: -Werror=unused-parameter fails the build")
-E24 = "E24: a domain-typed field is an internal error (py/c/cpp), invalid SV"
 
 
 CASES = {
@@ -665,7 +660,7 @@ component pss_top {""" + ONE + """
     ws.y = 0x1FF;
     message(LOW, "%u %u", ws.x, ws.y);
   }
-}""", ["15 255"], xfail=on(ALL, I15), covers=("DT-INT.3", "DT-STRUCT.12")),
+}""", ["15 255"], covers=("DT-INT.3", "DT-STRUCT.12")),
 
     # A call of a pure function is a constant expression (8.2, 20.2.6).
     "an integer width from a pure function call": Case("""
@@ -694,7 +689,6 @@ component pss_top {""" + ONE + """
     message(LOW, "%u %u %d %d %d %u %d", x, z, y0, y, w, d, f);
   }
 }""", ["1 10 0 -10 -16 2 3"],
-        xfail=on(ALL, W46),
         covers=("DT-INT.5", "ST-VAR.1", "ST-VAR.5")),
 
     # The same default for a component field.
@@ -704,7 +698,6 @@ component pss_top {""" + ONE + """
   int in [-10..-5] g;
   target function void run() { message(LOW, "%u %d", f, g); }
 }""", ["1 -10"],
-        xfail=on(ALL, E24),
         covers=("DT-INT.5", "ST-VAR.1")),
 
     # --- P5.3: relational and equality operators (8.5.2, 8.5.3) --------------
