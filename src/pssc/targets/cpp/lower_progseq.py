@@ -946,6 +946,11 @@ class _BodyEmitter(CIntSemantics):
                 _dt_name(func.value) == "TypeExprRefSelf":
             name = func.attr
         if name is not None and name in self.model_ops:
+            callee = _fn_named(self.comp, name)
+            if (getattr(callee, "metadata", None) or {}).get("static"):
+                # A static function is not polymorphic (20.2): a qualified
+                # call is this class's, not the override's (W47).
+                return f"{self.cls}::{mangle(name)}(" + ", ".join(args) + ")"
             return f"this->{mangle(name)}(" + ", ".join(args) + ")"
         if name is not None and name in self.imports:
             # An import is the PLATFORM's function, reached through the same

@@ -4352,6 +4352,10 @@ class AstToIrTranslator:
             loc=self._loc(function) or self._loc(prototype),
         )
         self._signature_metadata(ir_func, const_params, dirs)
+        if getattr(prototype, 'getIs_static', lambda: False)():
+            # `static function` (20.2): no instance, and a call to it is not
+            # polymorphic -- a base's body calls the base's (W47).
+            ir_func.metadata["static"] = True
         return ir_func
 
     @staticmethod

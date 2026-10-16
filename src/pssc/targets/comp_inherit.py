@@ -193,23 +193,30 @@ def _complete(ctx, comp, done: Set[int], found: Dict[int, str], stack) -> None:
     own = list(comp.functions or [])
     own_fn = {fn.name for fn in own if not _is_block(fn)}
     own_exec = {exec_kind(fn) for fn in own if _is_block(fn)}
+    kept = [fn for fn in (base.functions or [])
+            if not (fn.name in own_fn if not _is_block(fn)
+                    else exec_kind(fn) in own_exec)]
+    extra: List[Any] = []
+    have = {fn.name for fn in kept} | own_fn
+    # A static function is not polymorphic (20.2): a base body's call of
+    # one the component shadows is the base's, as `super.f(...)` is (W47).
+    static_shadowed = {fn.name for fn in (base.functions or [])
+                       if not _is_block(fn) and fn.name in own_fn
+                       and (fn.metadata or {}).get("static")}
+
     def from_base(fn):
         """A copy of the base's ``fn`` for this component. EVERY copy comes
         through here: a base body reads the base's fields, so one the
-        component shadows is read under its private name."""
+        component shadows is read under its private name, and calls a static
+        function the component shadows through its private copy."""
         cp = _copy(fn, base)
-        if hidden_field:
+        if hidden_field or static_shadowed:
             cp.body = _rewrite(cp.body, self_fields=hidden_field,
-                               bound=_params(fn))
+                               bound=_params(fn),
+                               self_fns=lambda n: (super_fn(n)
+                                                   if n in static_shadowed
+                                                   else None))
         return cp
-
-    inherited = [from_base(fn) for fn in (base.functions or [])
-                 if not (fn.name in own_fn if not _is_block(fn)
-                         else exec_kind(fn) in own_exec)]
-
-    # -- the component's own bodies: `super.x`, `super.f(...)` ---------------
-    extra: List[Any] = []
-    have = {fn.name for fn in inherited} | own_fn
 
     def super_fn(name: str) -> Optional[str]:
         """`super.<name>(...)` -> the private copy of the base's `name`."""
@@ -219,12 +226,16 @@ def _complete(ctx, comp, done: Set[int], found: Dict[int, str], stack) -> None:
             return None
         hidden = _hidden(base, name)
         if hidden not in have:
+            have.add(hidden)            # first: its own body may call it
             cp = from_base(target)
             cp.name = hidden
             cp.metadata = dict(cp.metadata, **{SUPER_IMPL: f"{_name(base)}::{name}"})
             extra.append(cp)
-            have.add(hidden)
         return hidden
+
+    inherited = [from_base(fn) for fn in kept]
+
+    # -- the component's own bodies: `super.x`, `super.f(...)` ---------------
 
     base_field_names = {f.name for f in (base.fields or [])}
     # Rewritten COPIES: the declared functions keep `super`, for a backend that
@@ -292,7 +303,7 @@ def _has_super(node) -> bool:
 
 
 def _rewrite(node, *, self_fields=None, bound=frozenset(), super_fields=None,
-             super_fns=None):
+             super_fns=None, self_fns=None):
     """A copy of ``node`` with member references redirected; unchanged nodes
     are shared, and nothing is modified in place.
 
@@ -303,6 +314,8 @@ def _rewrite(node, *, self_fields=None, bound=frozenset(), super_fields=None,
     * ``super_fns(name)``: `super.f(...)` -> `self.<hidden>(...)`; None leaves
       the call (a core-library primitive's default, or an error the call gate
       reports).
+    * ``self_fns(name)``: `self.f(...)` -> `self.<hidden>(...)` likewise (a
+      base body calling a static function the component shadows).
     """
     def walk(n):
         if isinstance(n, list):
@@ -323,6 +336,13 @@ def _rewrite(node, *, self_fields=None, bound=frozenset(), super_fields=None,
                         value=ir.TypeExprRefSelf(loc=n.func.value.loc),
                         attr=hidden, loc=n.func.loc),
                     args=walk(n.args))
+        if (self_fns is not None and isinstance(n, ir.ExprCall)
+                and isinstance(n.func, ir.ExprAttribute)
+                and isinstance(n.func.value, ir.TypeExprRefSelf)):
+            hidden = self_fns(n.func.attr)
+            if hidden is not None:
+                return dc.replace(n, func=dc.replace(n.func, attr=hidden),
+                                  args=walk(n.args))
         if isinstance(n, ir.ExprAttribute):
             if (super_fields and isinstance(n.value, ir.TypeExprRefSuper)
                     and n.attr in super_fields):

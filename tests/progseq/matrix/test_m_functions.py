@@ -8,8 +8,6 @@ from ._matrix import ALL, Case, define_tests, on, ONE, Refused
 
 W40 = ("W40: a const parameter passed to a non-const formal is accepted "
        "(20.2.3): pssparser does not check it")
-W47 = ("W47: a static function shadowed in a derived component is "
-       "dispatched virtually from an inherited body (20.2)")
 E26 = "E26: a static const struct: 'unsupported field initializer ExprStructLiteral'"
 E32 = ("E32: a function returning a component without `ref`: unlocated "
        "'unsupported ... type for DataTypeComponent'")
@@ -325,7 +323,7 @@ component der_c : base_c { static function int f(int x) { return x + 100; } }
 component pss_top {""" + ONE + """
   der_c d;
   target function void run() { message(LOW, "%d", d.g()); }
-}""", ["2"], xfail=on(ALL, W47), covers=("FN-VIRT", "FN-VIRT.5")),
+}""", ["2"], covers=("FN-VIRT", "FN-VIRT.5")),
 
     # ...and an instance function declared in a base and defined only in a
     # derived type may not be called on a base instance (20.2.7).

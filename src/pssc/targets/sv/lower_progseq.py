@@ -2334,8 +2334,10 @@ def _routine(fn, be, name: str, prefix: str, pad: str) -> List[str]:
 def _method_defs(comp, view, base, members, namer=None, ctor_names=None,
                  ctx=None, consts=None) -> List[str]:
     """The functions this class declares -- `solve` ones as SV functions,
-    `target` and unqualified ones as tasks -- all `virtual`: component
-    functions are virtual (a base's code calling `f` runs the override)."""
+    `target` and unqualified ones as tasks -- `virtual`: component
+    functions are virtual (a base's code calling `f` runs the override). A
+    `static` one is not polymorphic (20.2), so it is not `virtual`: a call
+    binds to the function of the class it is written in (W47)."""
     lines: List[str] = []
     for fn in view.functions:
         if func_kind(fn, ctor_names) not in (FuncKind.EXPORT_OP,
@@ -2344,7 +2346,8 @@ def _method_defs(comp, view, base, members, namer=None, ctor_names=None,
         be = _emitter(fn, comp, members, base, namer, ctor_names, ctx,
                       consts)
         blank_line(lines)
-        lines += _routine(fn, be, mangle(fn.name), "virtual ", "    ")
+        virt = "" if (fn.metadata or {}).get("static") else "virtual "
+        lines += _routine(fn, be, mangle(fn.name), virt, "    ")
         lines.append("")
     return lines
 

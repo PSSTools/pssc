@@ -1451,6 +1451,14 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
         if name is not None and name in self.model_ops:
             # Another operation of this component is a PSS target function and
             # is generated `async def` in this form, so calling it is an await.
+            if self.native and (getattr(callee, "metadata", None)
+                                or {}).get("static"):
+                # A static function is not polymorphic (20.2): this class's,
+                # looked up from it, whatever `self` is an instance of (W47).
+                cls = class_name(getattr(self.comp, "name", ""))
+                return self._awaited(
+                    f"{cls}.{mangle(name)}(" + ", ".join(["self"] + args)
+                    + ")", call)
             return self._awaited(
                 f"self.{mangle(name)}(" + ", ".join(args) + ")", call)
         if name is not None and name in self.imports:
