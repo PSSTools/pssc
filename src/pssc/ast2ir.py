@@ -740,6 +740,8 @@ class AstToIrTranslator:
                 self._translate_typedef(ctx, child)
             elif isinstance(child, pss_ast.FunctionImportProto):
                 self._translate_import_proto(ctx, child, namespace_prefix)
+            elif isinstance(child, pss_ast.FunctionImportType):
+                self._translate_import_type(ctx, child, namespace_prefix)
             elif isinstance(child, pss_ast.ExportFunction):
                 self._record_export(ctx, child, None, namespace_prefix)
             elif isinstance(child, pss_ast.ExportAction):
@@ -996,35 +998,49 @@ class AstToIrTranslator:
         proto = node.getProto() if hasattr(node, 'getProto') else None
         if proto is None:
             return
+        self._record_import(ctx, node, proto, namespace_prefix)
+
+    def _translate_import_type(self, ctx: AstToIrContext, node,
+                               namespace_prefix: str = "") -> None:
+        """``import target function f;`` (20.4.1): the import of a function
+        declared by its prototype elsewhere. The prototype is the one the
+        LINKER resolved the name to. Both declarations were dropped, and a
+        call to `f` reached the IR naming nothing."""
+        tid = node.getType()
+        ref = tid.getTarget() if hasattr(tid, 'getTarget') else None
+        scope = self._symbol_scope_at(ctx, ref, 0) if ref is not None else None
+        proto = None
+        if isinstance(scope, pss_ast.SymbolFunctionScope):
+            for i in range(scope.numPrototypes()):
+                proto = scope.getPrototype(i)
+                if proto is not None:
+                    break
+        if proto is None:
+            ctx.add_error(f"{_ast_where(node)}import: the imported function "
+                          f"could not be resolved to its prototype")
+            return
+        self._record_import(ctx, node, proto, namespace_prefix)
+
+    def _record_import(self, ctx: AstToIrContext, node, proto,
+                       namespace_prefix: str) -> None:
+        """Record the import *node* of prototype *proto*."""
         name_node = proto.getName()
         func_name = name_node.getId() if isinstance(name_node, pss_ast.ExprId) else str(name_node)
 
-        return_type = None
-        rt_node = proto.getRtype() if hasattr(proto, 'getRtype') else None
-        if rt_node is not None:
-            return_type = self._translate_data_type(ctx, rt_node)
-
-        params: List[ir.Arg] = []
-        for i in range(proto.numParameters()):
-            param = proto.getParameter(i)
-            if param is None:
-                continue
-            pn_node = param.getName()
-            pname = pn_node.getId() if isinstance(pn_node, pss_ast.ExprId) else str(pn_node)
-            ptype = self._translate_data_type(ctx, param.getType())
-            if ptype is not None:
-                params.append(ir.Arg(arg=pname, annotation=ptype))
+        return_type, params, defaults, const_params, vararg, dirs = \
+            self._translate_signature(ctx, proto, func_name, node)
 
         plat = node.getPlat() if hasattr(node, 'getPlat') else 0
         ir_func = ir.Function(
             name=func_name,
-            args=ir.Arguments(args=params),
+            args=ir.Arguments(args=params, vararg=vararg, defaults=defaults),
             returns=return_type,
             is_async=False,
             is_import=True,
             is_target=(int(plat) == 1),
             is_solve=(int(plat) == 2),
         )
+        self._signature_metadata(ir_func, const_params, dirs)
         # The name a qualified call reaches it by (`p_pkg::f(...)`); see
         # `_translate_expr_ref_static_rooted`.
         ir_func.metadata["qualified_name"] = f"{namespace_prefix}{func_name}"
@@ -1859,10 +1875,10 @@ class AstToIrTranslator:
             return ir.ActivityFieldDecl(field=field) if field is not None else None
         name_node = child.getName()
         name = name_node.getId() if hasattr(name_node, "getId") else str(name_node)
-        datatype = self._translate_data_type(ctx, child.getType())
+        datatype = self._translate_data_type(
+            ctx, child.getType(), what=f"the type of action handle '{name}'",
+            at=child)
         if datatype is None:
-            ctx.add_error(f"{_ast_where(child)}the type of action handle "
-                          f"'{name}' could not be translated")
             return None
         type_qname = self._traversed_type_qname(ctx, child)
         return ir.ActivityFieldDecl(
@@ -2441,13 +2457,23 @@ class AstToIrTranslator:
                 ranges.append(ir.ExprRange(lower=lower, upper=upper))
         return ir.ExprRangeList(ranges=ranges)
 
-    def _translate_domain_range_list(self, ctx, domain_node) -> 'Optional[ir.ExprRangeList]':
+    def _translate_domain_range_list(self, ctx, domain_node,
+                                     dtype=None) -> 'Optional[ir.ExprRangeList]':
         """Translate a PSS ExprDomainOpenRangeList to an IR ExprRangeList.
 
-        Used for `rand int in [range]` domain constraint generation.
+        Used for `rand int in [range]` domain constraint generation. An open
+        bound (`[6..]`, `[..2]`, 7.2.1) is the bound of the field's type
+        *dtype*: `[6..]` was the single value 6, and `[..2]` vanished.
         """
         if domain_node is None:
             return None
+        lo = hi = None
+        if isinstance(dtype, ir.DataTypeInt) and dtype.bits:
+            bits = int(dtype.bits)
+            lo, hi = ((-(1 << (bits - 1)), (1 << (bits - 1)) - 1)
+                      if dtype.signed else (0, (1 << bits) - 1))
+        elif isinstance(dtype, ir.DataTypeEnum) and dtype.items:
+            lo, hi = min(dtype.items.values()), max(dtype.items.values())
         ranges = []
         for vi in range(domain_node.numValues()):
             val = domain_node.getValue(vi)
@@ -2455,6 +2481,15 @@ class AstToIrTranslator:
             rhs = val.getRhs()
             lower = self._translate_expression(ctx, lhs) if lhs else None
             upper = self._translate_expression(ctx, rhs) if rhs else None
+            if not val.getSingle():
+                if lhs is None and lo is not None:
+                    lower = ir.ExprConstant(value=lo)
+                if rhs is None and hi is not None:
+                    upper = ir.ExprConstant(value=hi)
+                if lower is None or upper is None:
+                    ctx.add_error(f"{_ast_where(domain_node)}an open domain "
+                                  f"range needs an integer or enum type")
+                    continue
             if lower is not None:
                 ranges.append(ir.ExprRange(lower=lower, upper=upper))
         if not ranges:
@@ -3979,10 +4014,15 @@ class AstToIrTranslator:
         if self.debug:
             self.logger.debug(f"Translating field: {field_name}")
 
-        # Get field type
-        field_type = self._translate_data_type(ctx, field.getType())
+        # Get field type. The declaration is where anything in its type is
+        # refused: a type node is not located itself.
+        outer, self._stmt_node = getattr(self, "_stmt_node", None), field
+        try:
+            field_type = self._translate_data_type(
+                ctx, field.getType(), what=f"field '{field_name}'", at=field)
+        finally:
+            self._stmt_node = outer
         if not field_type:
-            ctx.add_error(f"Failed to translate field type for {field_name}")
             return None
 
         # Create IR field
@@ -4012,19 +4052,26 @@ class AstToIrTranslator:
             rand_kind=rand_kind,
             # `action bit[4] n;` (13.4.1, Ex 173): randomized when traversed.
             action_qualified=bool(attr & pss_ast.FieldAttr.Action),
+            # `const` / `static const` (7.13); references to a static one
+            # fold to its value, but the field is still read-only.
+            is_const=bool(attr & pss_ast.FieldAttr.Const),
             type_qname=self._traversed_type_qname(ctx, field),
             initial_value=initial_value,
             doc=field_doc,
             doc_trailing=field_doc_trailing,
         )
 
-        # Extract `rand int in [range]` domain constraint (T-12).
+        # A domain (`int in [0..3] x`, 7.3.1; `e_e in [A..B] e`, 7.5.1) is
+        # a constraint on the field, emitted by the owning type (T-12).
         dtype_node = field.getType()
-        if (isinstance(dtype_node, pss_ast.DataTypeInt)
-                and hasattr(dtype_node, 'getIn_range')
-                and dtype_node.getIn_range() is not None):
+        domain = None
+        if isinstance(dtype_node, pss_ast.DataTypeInt):
             domain = dtype_node.getIn_range()
-            range_list = self._translate_domain_range_list(ctx, domain)
+        elif isinstance(dtype_node, pss_ast.DataTypeEnum):
+            domain = dtype_node.getIn_rangelist()
+        if domain is not None:
+            range_list = self._translate_domain_range_list(
+                ctx, domain, field_type)
             if range_list is not None:
                 field_ref = ir.ExprAttribute(value=ir.TypeExprRefSelf(), attr=field_name)
                 in_expr = ir.ExprIn(value=field_ref, container=range_list)
@@ -4061,55 +4108,8 @@ class AstToIrTranslator:
         if self.debug:
             self.logger.debug(f"Translating function: {func_name}")
 
-        # Get return type (may be None for void)
-        return_type_node = prototype.getRtype()
-        return_type = None
-        if return_type_node is not None:
-            return_type = self._translate_data_type(ctx, return_type_node)
-            if return_type is None:
-                # Was taken for `void` (I1).
-                ctx.add_error(
-                    f"{_ast_where(return_type_node) or _ast_where(function)}"
-                    f"the result of '{func_name}' is "
-                    f"{_no_ir_form(return_type_node)}")
-
-        # Get parameters
-        params = []
-        defaults = []
-        const_params: List[str] = []
-        vararg: Optional[ir.Arg] = None
-        for i in range(prototype.numParameters()):
-            param = prototype.getParameter(i)
-            if param:
-                # Extract param name and type
-                param_name_node = param.getName()
-                if isinstance(param_name_node, pss_ast.ExprId):
-                    param_name = param_name_node.getId()
-                else:
-                    param_name = str(param_name_node)
-
-                param_type = self._translate_data_type(ctx, param.getType())
-                if param_type is None:
-                    # Was dropped from the signature, changing the function's
-                    # arity with no error (I1, I2).
-                    ctx.add_error(
-                        f"{_ast_where(param) or _ast_where(function)}"
-                        f"parameter '{param_name}' of '{func_name}' is "
-                        f"{_no_ir_form(param.getType())}")
-                if param_type:
-                    is_varargs = param.getIs_varargs() if hasattr(param, 'getIs_varargs') else False
-                    arg_node = ir.Arg(arg=param_name, annotation=param_type)
-                    if getattr(param, 'getIs_const', None) and param.getIs_const():
-                        const_params.append(param_name)
-                    if is_varargs:
-                        vararg = arg_node
-                    else:
-                        params.append(arg_node)
-                        dflt_node = param.getDflt() if hasattr(param, 'getDflt') else None
-                        if dflt_node is not None:
-                            dflt_ir = self._translate_expression(ctx, dflt_node)
-                            if dflt_ir is not None:
-                                defaults.append(dflt_ir)
+        return_type, params, defaults, const_params, vararg, dirs = \
+            self._translate_signature(ctx, prototype, func_name, function)
 
         # Create Arguments structure
         args = ir.Arguments(args=params, vararg=vararg, defaults=defaults)
@@ -4141,12 +4141,81 @@ class AstToIrTranslator:
             is_target=is_target,
             doc=ast_doc(function),
         )
-        if const_params:
-            # `const` (LRM 20.2.3) is part of the signature. `ir.Arg` has no
-            # field for it, so the function carries the names.
-            ir_func.metadata["const_params"] = tuple(const_params)
-
+        self._signature_metadata(ir_func, const_params, dirs)
         return ir_func
+
+    @staticmethod
+    def _signature_metadata(ir_func, const_params, dirs) -> None:
+        """What `ir.Arg` has no field for, carried by the function."""
+        if const_params:
+            # `const` (LRM 20.2.3) is part of the signature.
+            ir_func.metadata["const_params"] = tuple(const_params)
+        if dirs:
+            # `output`/`inout` (20.4.1): {name: direction} for each parameter
+            # that is not an input. A consumer that passes every scalar by
+            # value must refuse these (W18).
+            ir_func.metadata["param_dirs"] = dict(dirs)
+
+    #: pssparser's parameter direction -> the IR's spelling (20.4.1).
+    _PARAM_DIRS = {
+        pss_ast.ParamDir.ParamDir_Out: "output",
+        pss_ast.ParamDir.ParamDir_InOut: "inout",
+    }
+
+    def _translate_signature(self, ctx: AstToIrContext, prototype,
+                             func_name: str, at):
+        """A prototype's ``(result, params, defaults, const param names,
+        vararg, {name: direction})``.
+
+        A result or parameter whose type has no IR form is refused with its
+        line: a dropped parameter changed the function's arity with no
+        error, and a dropped result was taken for `void` (I1, I2). One
+        reading for a defined function and an imported one.
+        """
+        return_type = None
+        return_type_node = prototype.getRtype()
+        if return_type_node is not None:
+            return_type = self._translate_data_type(
+                ctx, return_type_node, what=f"the result of '{func_name}'",
+                at=at)
+
+        params: List[ir.Arg] = []
+        defaults: List[ir.Expr] = []
+        const_params: List[str] = []
+        vararg: Optional[ir.Arg] = None
+        dirs: Dict[str, str] = {}
+        for i in range(prototype.numParameters()):
+            param = prototype.getParameter(i)
+            if not param:
+                continue
+            param_name_node = param.getName()
+            if isinstance(param_name_node, pss_ast.ExprId):
+                param_name = param_name_node.getId()
+            else:
+                param_name = str(param_name_node)
+
+            param_type = self._translate_data_type(
+                ctx, param.getType(),
+                what=f"parameter '{param_name}' of '{func_name}'",
+                at=param if _ast_where(param) else at)
+            if not param_type:
+                continue
+            arg_node = ir.Arg(arg=param_name, annotation=param_type)
+            if param.getIs_const():
+                const_params.append(param_name)
+            direction = self._PARAM_DIRS.get(param.getDir())
+            if direction is not None:
+                dirs[param_name] = direction
+            if param.getIs_varargs():
+                vararg = arg_node
+                continue
+            params.append(arg_node)
+            dflt_node = param.getDflt()
+            if dflt_node is not None:
+                dflt_ir = self._translate_expression(ctx, dflt_node)
+                if dflt_ir is not None:
+                    defaults.append(dflt_ir)
+        return return_type, params, defaults, const_params, vararg, dirs
 
     def _translate_exec_scope(self, ctx: AstToIrContext, exec_scope) -> List[ir.Stmt]:
         """Translate an execution scope (function body)
@@ -4310,10 +4379,8 @@ class AstToIrTranslator:
             var_name = str(name_node)
 
         # Get variable type
-        var_type = self._translate_data_type(ctx, stmt.getDatatype())
-        if var_type is None:
-            ctx.add_error(f"{_ast_where(stmt)}local '{var_name}' is "
-                          f"{_no_ir_form(stmt.getDatatype())}")
+        var_type = self._translate_data_type(
+            ctx, stmt.getDatatype(), what=f"local '{var_name}'", at=stmt)
 
         # Get initial value (if any)
         init_expr = stmt.getInit()
@@ -4536,17 +4603,41 @@ class AstToIrTranslator:
         return ir.StmtMatch(subject=subject, cases=cases)
 
     def _translate_expression(self, ctx: AstToIrContext, expr_node: Any) -> Optional[ir.Expr]:
-        """Translate an expression node to IR
+        """Translate an expression node to IR, or refuse it where it stands.
 
-        Args:
-            ctx: Translation context
-            expr_node: PSS expression AST node
-
-        Returns:
-            IR expression or None
+        An expression with no IR form is an ERROR, never a None left in the
+        IR: a None operand is not an error anywhere downstream, it is an
+        operand that quietly disappears (I1, I3). A translation that reported
+        its own error is not reported twice.
         """
+        if expr_node is None:
+            return None
+        n_errors = len(ctx.errors)
+        expr = self._translate_expression_kind(ctx, expr_node)
+        if expr is None and len(ctx.errors) == n_errors:
+            # The parser leaves some expressions unlocated: the statement
+            # they are in is the place then.
+            where = (_ast_where(expr_node)
+                     or _ast_where(getattr(self, "_stmt_node", None)))
+            ctx.add_error(f"{where}this expression is "
+                          f"{_no_ir_form(expr_node)}")
+        return expr
+
+    def _translate_expression_kind(self, ctx: AstToIrContext,
+                                   expr_node: Any) -> Optional[ir.Expr]:
+        """Dispatch on the expression kind; None if it has no IR form."""
         if isinstance(expr_node, (pss_ast.ExprNumber, pss_ast.ExprSignedNumber, pss_ast.ExprUnsignedNumber)):
             return self._translate_expr_number(ctx, expr_node)
+        elif isinstance(expr_node, pss_ast.ExprTemplateString):
+            # A triple-quoted string with special elements (4.7.1): its
+            # mustache expressions and directives are expanded when the
+            # string is evaluated. It reached every target as its raw text
+            # -- `"""v={{n}}"""` printed `v={{n}}` (I7).
+            ctx.add_error(
+                f"{self._where_expr(expr_node)}a triple-quoted string with "
+                f"mustache expressions or control-flow directives (LRM "
+                f"4.7.1) is not supported yet")
+            return None
         elif isinstance(expr_node, pss_ast.ExprString):
             return self._translate_expr_string(ctx, expr_node)
         elif isinstance(expr_node, pss_ast.ExprBool):
@@ -4581,17 +4672,17 @@ class AstToIrTranslator:
             return self._translate_expr_ref_static_rooted(ctx, expr_node)
         elif isinstance(expr_node, pss_ast.ExprRefPathStatic):
             return self._translate_expr_ref_static(ctx, expr_node)
-        else:
-            if expr_node is not None:
-                # Refused where it stands, never left a None in the IR (I1:
-                # a float literal; I3: `compile has` in a body).
-                # The parser leaves some expressions unlocated: the
-                # statement they are in is the place then.
-                where = (_ast_where(expr_node)
-                         or _ast_where(getattr(self, "_stmt_node", None)))
-                ctx.add_error(f"{where}this expression is "
-                              f"{_no_ir_form(expr_node)}")
-            return None
+        elif isinstance(expr_node, pss_ast.ExprMemberCall):
+            # A method of a literal (`"a,b".size()`, `{1, 2}.size()`, 8.4):
+            # the chain a named receiver gets, rooted at the literal.
+            receiver = self._translate_expression(ctx, expr_node.getReceiver())
+            if receiver is None:
+                return None
+            return self._translate_ref_chain(
+                ctx, expr_node,
+                [expr_node.getMember(i)
+                 for i in range(expr_node.numMembers())], receiver)
+        return None
 
     def _translate_expr_ref_static(self, ctx: AstToIrContext, expr) -> Optional[ir.Expr]:
         """Translate a qualified static reference: ``pkg::NAME``.
@@ -4772,7 +4863,7 @@ class AstToIrTranslator:
         rhs = self._translate_expression(ctx, expr.getRhs())
 
         # Get operator
-        op = self._map_binop(ctx, expr.getOp())
+        op = self._map_binop(ctx, expr.getOp(), self._where_expr(expr))
 
         return ir.ExprBin(lhs=lhs, op=op, rhs=rhs)
 
@@ -4782,7 +4873,7 @@ class AstToIrTranslator:
         operand = self._translate_expression(ctx, expr.getRhs())
 
         # Get operator
-        op = self._map_unaryop(ctx, expr.getOp())
+        op = self._map_unaryop(ctx, expr.getOp(), self._where_expr(expr))
 
         return ir.ExprUnary(op=op, operand=operand)
 
@@ -5287,37 +5378,66 @@ class AstToIrTranslator:
     # no node for them, so they are refused rather than approximated.
     _UNARYOP_REDUCTION = {4: "&", 5: "|", 6: "^"}
 
-    def _map_binop(self, ctx: AstToIrContext, op: int) -> ir.BinOp:
+    def _where_expr(self, expr) -> str:
+        """``line N: `` for *expr*, else for the statement it is in."""
+        return (_ast_where(expr)
+                or _ast_where(getattr(self, "_stmt_node", None)))
+
+    def _map_binop(self, ctx: AstToIrContext, op: int,
+                   where: str = "") -> ir.BinOp:
         """Map PSS binary operator (integer) to IR operator"""
         if op not in self._BINOP_MAP:
             ctx.add_error(
-                f"unsupported PSS binary operator (ExprBinOp ordinal {op})")
+                f"{where}unsupported PSS binary operator (ExprBinOp ordinal "
+                f"{op})")
             return ir.BinOp.Add
         return self._BINOP_MAP[op]
 
-    def _map_unaryop(self, ctx: AstToIrContext, op: int) -> ir.UnaryOp:
+    def _map_unaryop(self, ctx: AstToIrContext, op: int,
+                     where: str = "") -> ir.UnaryOp:
         """Map PSS unary operator (integer) to IR operator"""
         if op in self._UNARYOP_REDUCTION:
             ctx.add_error(
-                f"the bit-reduction operator '{self._UNARYOP_REDUCTION[op]}' "
+                f"{where}the bit-reduction operator "
+                f"'{self._UNARYOP_REDUCTION[op]}' "
                 f"is not supported by this compiler")
             return ir.UnaryOp.Not
         if op not in self._UNARYOP_MAP:
             ctx.add_error(
-                f"unsupported PSS unary operator (ExprUnaryOp ordinal {op})")
+                f"{where}unsupported PSS unary operator (ExprUnaryOp ordinal "
+                f"{op})")
             return ir.UnaryOp.Not
         return self._UNARYOP_MAP[op]
 
-    def _translate_data_type(self, ctx: AstToIrContext, dtype_node: Any) -> Optional[ir.DataType]:
-        """Translate a data type node to IR
+    def _translate_data_type(self, ctx: AstToIrContext, dtype_node: Any,
+                             what: Optional[str] = None,
+                             at: Any = None) -> Optional[ir.DataType]:
+        """Translate a data type node to IR, or refuse it where it stands.
 
-        Args:
-            ctx: Translation context
-            dtype_node: PSS data type AST node
-
-        Returns:
-            IR DataType or None
+        A type with no IR form is an ERROR, never a None for the caller to
+        drop: a dropped parameter type changed a function's arity, a dropped
+        field type left a field out (I1, I2, I4 of
+        docs/design/construct-test-audit/00-plan.md). *what* names the
+        declaration for the message (``"parameter 'b' of 'h'"``); *at* is
+        where to locate it when the type node itself is not located. A
+        translation that reported its own error is not reported twice.
         """
+        if dtype_node is None and what is None:
+            return None
+        n_errors = len(ctx.errors)
+        # A `type T` parameter has no type node at all.
+        dtype = (self._translate_data_type_kind(ctx, dtype_node)
+                 if dtype_node is not None else None)
+        if dtype is None and len(ctx.errors) == n_errors:
+            where = (_ast_where(dtype_node) or _ast_where(at)
+                     or _ast_where(getattr(self, "_stmt_node", None)))
+            ctx.add_error(f"{where}{what or 'this type'} is "
+                          f"{_no_ir_form(dtype_node)}")
+        return dtype
+
+    def _translate_data_type_kind(self, ctx: AstToIrContext,
+                                  dtype_node: Any) -> Optional[ir.DataType]:
+        """Dispatch on the data type kind; None if it has no IR form."""
         if isinstance(dtype_node, pss_ast.DataTypeInt):
             # Get bit width and signedness
             width = dtype_node.getWidth()
@@ -5358,10 +5478,12 @@ class AstToIrTranslator:
         elif isinstance(dtype_node, pss_ast.DataTypeChandle):
             return ir.DataTypeChandle()
 
-        else:
-            if self.debug:
-                self.logger.debug(f"Unsupported data type: {type(dtype_node).__name__}")
-            return None
+        elif isinstance(dtype_node, pss_ast.DataTypeEnum):
+            # An enum type with a domain (`e_e in [A..B] b`, 7.5.1) parses as
+            # its own node; the domain is the field's (`_translate_field`).
+            return self._translate_data_type_kind(ctx, dtype_node.getTid())
+
+        return None
 
     def _linked_type_name(self, ctx: AstToIrContext, type_id) -> Optional[str]:
         """The qualified name of the type ``type_id`` was LINKED to, or None.
@@ -5635,7 +5757,22 @@ class AstToIrTranslator:
                 v = inner.getValue()
                 if isinstance(v, int) and not isinstance(v, bool):
                     return v
+            # The constant the LINKER resolved, wherever it is declared: a
+            # component's `static const` is in no package's name table, and
+            # its array was `size=-1` (P2).
+            for n in (inner, getattr(inner, 'getType_id', lambda: None)()):
+                if n is not None and hasattr(n, 'getTarget'):
+                    linked = self._linked_static_const(ctx, n)
+                    if isinstance(linked, int) and not isinstance(linked, bool):
+                        return linked
             folded = self._fold_const_expr(ctx, inner)
+            if folded is None and isinstance(inner, pss_ast.Expr):
+                # An expression over constants (`array<int, N + 1>`).
+                try:
+                    folded = _eval_const_ir(
+                        self._translate_expression(ctx, inner))
+                except Exception:
+                    folded = None
             return folded if folded is not None else -1
 
         if coll_name == "list":
@@ -5646,9 +5783,17 @@ class AstToIrTranslator:
             if params.numValues() > 1:
                 size_ref = self._linked_const_name(
                     ctx, params.getValue(1).getValue())
+            size = get_int_param(1)
+            if size < 0:
+                # A fixed-size array's size is a constant (7.9.2). -1 reached
+                # every backend as a size, and none means "unknown" by it.
+                ctx.add_error(
+                    f"{_ast_where(elem) or _ast_where(getattr(self, '_stmt_node', None))}"
+                    f"an array's size must be a constant expression; this "
+                    f"one does not fold")
             return ir.DataTypeArray(
                 element_type=get_type_param(0),
-                size=get_int_param(1),
+                size=size,
                 size_ref=size_ref,
             )
 

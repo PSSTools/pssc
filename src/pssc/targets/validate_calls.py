@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import dataclasses as dc
 
-from typing import FrozenSet, List, Optional, Set
+from typing import Dict, FrozenSet, List, Optional, Set
 
 from . import pkg_functions as pf
 from .call_legality import Ctx, Outcome, classify, core_function
@@ -325,6 +325,17 @@ def validate_calls(root, ctx, target: str, *, report_only: bool = False,
     # separate decision.
     import_contexts = {f.name: pf.contexts_of(f) for f in import_fns
                        if getattr(f, "is_target", False)}
+    # An `output`/`inout` parameter (20.4.1) of an import: every op-model
+    # target passes a scalar by value, so the callee's write would be lost
+    # (W18). Refused until a target carries the direction.
+    import_dirs: Dict[str, Dict[str, str]] = {}
+    for f in import_fns:
+        dirs = (getattr(f, "metadata", None) or {}).get("param_dirs")
+        if dirs:
+            import_dirs[f.name] = dirs
+            qn = f.metadata.get("qualified_name")
+            if qn:
+                import_dirs[qn] = dirs
 
     msgs: List[str] = exec_blocks(root, ctx, target, init_blocks)
     # What each class renders. A target rendering inheritance natively
@@ -361,6 +372,14 @@ def validate_calls(root, ctx, target: str, *, report_only: bool = False,
             func = getattr(call, "func", None)
             name = callee_name(func)
             if name is None:
+                continue
+            dirs = import_dirs.get(name)
+            if dirs:
+                p, d = next(iter(dirs.items()))
+                msgs.append(
+                    f"{_site(comp, fn, call)}cannot lower call: '{name}' has "
+                    f"an {d} parameter '{p}', which '{target}' does not "
+                    f"lower yet (only input parameters are supported)")
                 continue
             callee = pf.callee(call, declared)
             if callee is not None and not pkg_functions:

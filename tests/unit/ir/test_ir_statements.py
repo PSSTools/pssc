@@ -14,6 +14,9 @@ import pytest
 from ._ir import body, in_function, shape, translate
 
 _DECLS = """  array<int, 3> w;
+  list<int> l;
+  map<int, bit[8]> mp;
+  set<int> st;
   int fld;
   function int g(int a) { return a + 1; }"""
 
@@ -50,6 +53,23 @@ ROWS = {
         "Foreach(i, self.w, [Assign([x], Subscript(self.w, i))], i)",
         "Foreach(v, self.w, [Assign([x], Bin(v, Add, j))], j)",
         "Foreach(e, self.w, [Assign([x], e)])"]),
+
+    # Over a list, a set, and a map: a map's index is its KEY (20.7.8).
+    "foreach over a list, a set and a map": ("int x;", """
+    foreach (v : l) { x = v; }
+    foreach (e : st) { x = e; }
+    foreach (b : mp[k]) { x = b + k; }""", [
+        "Foreach(v, self.l, [Assign([x], v)])",
+        "Foreach(e, self.st, [Assign([x], e)])",
+        "Foreach(b, self.mp, [Assign([x], Bin(b, Add, k))], k)"]),
+
+    # break/continue bind to the innermost loop; return leaves them all.
+    "break, continue and return in nested loops": ("", """
+    repeat (i : 3) { repeat (j : 2) { if (j == 1) { break; } continue; } }
+    while (n < 3) { repeat (k : n) { if (k == 2) { return; } } }""", [
+        "For(i, 3, [For(j, 2, [If(Bin(j, Eq, 1), [Break()]), Continue()])])",
+        "While(Bin(self.n, Lt, 3), [For(k, self.n, [If(Bin(k, Eq, 2), "
+        "[Return()])])])"]),
 
     # Values, several values (PatternOr), a range, and default (`_`).
     # `[6..8]` is a range, never the single value 6.
@@ -116,6 +136,17 @@ def test_a_value_return(tmp_path):
     assert [shape(s) for s in body(tmp_path, src, fn="h")] == [
         "If(Bin(self.a, Gt, 0), [Return(self.a)])",
         "Return(Unary(USub, self.a))"]
+
+
+def test_super_in_an_action_body(tmp_path):
+    """`super;` runs the base action's body there (17.1)."""
+    src = """component pss_top {
+  action B { exec body { int x = 1; } }
+  action D : B { exec body { super; int y = 2; } }
+}"""
+    assert [shape(s) for s in body(tmp_path, src, fn="body",
+                                   comp="pss_top::D")] == [
+        "Super()", "AnnAssign(y, int[32], 2)"]
 
 
 def test_randomize_is_refused_with_its_line(tmp_path):

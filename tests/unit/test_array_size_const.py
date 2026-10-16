@@ -46,11 +46,11 @@ def test_qualified_const_array_size_folded():
     """)["a"] == 4
 
 
-def test_unfoldable_size_is_reported_as_unknown():
-    """Folding is deliberately shallow -- a name or a qualified name, nothing
-    arithmetic. An expression it does not understand stays -1 rather than being
-    guessed at: a wrong size would build the wrong number of sub-components
-    silently, while -1 fails where it is used.
+def test_a_constant_expression_size_folds():
+    """`N + 1` folds from the constants the LINKER resolved, evaluated as
+    the IR expression it translates to -- not guessed at. It used to stay
+    -1, and nothing reported it (plan P2, I9). A size that does not fold is
+    an error now (tests/unit/ir/test_ir_types.py).
 
     (An *undeclared* name never gets this far; pssparser rejects it.)"""
     assert sizes("""
@@ -58,4 +58,4 @@ def test_unfoldable_size_is_reported_as_unknown():
         component s_c {}
         import p::*;
         component c_c { s_c a[N + 1]; }
-    """)["a"] == -1
+    """)["a"] == 5

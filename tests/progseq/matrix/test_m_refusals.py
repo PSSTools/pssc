@@ -1,4 +1,5 @@
-"""Constructs refused by ruling: floating point (R5), list/map/set (R4).
+"""Constructs refused by ruling: floating point (R5), list/map/set (R4),
+and an import's `output`/`inout` parameter (W18).
 
 Each refusal is checked, with what it names. These are the known-unsupported
 features of docs/design/construct-test-audit/00-plan.md §7.1.
@@ -57,6 +58,24 @@ component pss_top {""" + ONE + """
   }
 }""", Refused([r"pss_top::run: local 's': a set", r"ruling R4"]),
         covers=("DT-SET",)),
+
+    # Every op-model target passes a scalar by value, so an `output`/`inout`
+    # parameter's write would be lost (W18). ast2ir carries the direction
+    # (`param_dirs`); the gate refuses the call.
+    "an import's output parameter": Case("""
+package q {
+  function void fetch(output int v, inout int w, int k);
+  import target function fetch;
+}
+component pss_top {""" + ONE + """
+  target function void run() {
+    int v;
+    int w = 1;
+    q::fetch(v, w, 2);
+    a.STS.write_val(v + w);
+  }
+}""", Refused([r"pss_top::run.*'(q::)?fetch' has an output parameter 'v'"]),
+        covers=("FN-IMPORT", "FN-PARAM")),
 }
 
 test_construct = define_tests(CASES)

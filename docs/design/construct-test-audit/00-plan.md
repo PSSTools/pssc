@@ -3,14 +3,13 @@
 Status: **in progress** (started 2026-10-16, tree `394f75d`). Rulings R1–R3,
 R4, R5, R9 decided (§7). Progress is logged in §8.
 
-**Where it stands (2026-10-16):** P0.2, P0.3 done; P1 done but for three
+**Where it stands (2026-10-16):** P0.2, P0.3 done; P1 done but for two
 items carried forward -- string METHODS on py/sv (E1, to P3 strings: the
-call gate classifies by name and cannot yet type a receiver), W18 (to P2:
-parameter direction at the IR), W24 (a Verilator limitation; declaration-site
-workaround open). P2 started (`tests/unit/ir/`, 78 tests). The construct
-matrix holds 104 cases (was 63) with 5 strict xfails (was 2); every other W
-and E row of §2 is fixed and its case passes on all four targets, or is a
-tested located refusal. Nothing is committed.
+call gate classifies by name and cannot yet type a receiver) and W24 (a
+Verilator limitation; declaration-site workaround open). P0+P1 committed
+(`e2c801f`). **P2 done** (`tests/unit/ir/`, 180 tests, §8): the
+expression and data-type kind registries, the ast2ir None catch-alls, W18,
+and six new IR defects found and fixed (I6-I11). Next: P3.
 
 ## 0. What is in this directory
 
@@ -136,6 +135,12 @@ Sources are in brackets.
 | W24 | sv (Verilator) | default of an array member of a struct (`array<bit[8],2> d = {3, 4};`) | the generated SV dropped it (fixed: `'{3, 4}`); Verilator 5.052 then ignores an unpacked array member's default (IEEE 1800 allows it), so a local still reads 0. Strict xfail; workaround = declaration-site initialisation | P1 |
 | W22 | cpp | struct `==` / `!=` | does not compile: generated structs declare no `operator==` (found by P1 "struct equality") | P1 |
 | I5 | ast2ir | `bool` is `bit[1]` in the IR; `(bool)x` is `Cast(bit[1], x)` | a bool cast truncates to the low bit (7.12.1 b: nonzero is true). Root of W14 (c, sv) and W15 (py) | P2 |
+| I6 | ast2ir | open domain bound (`bit[4] in [6..]`, `int in [..2]`); an enum domain (`e_e in [A..B]`) | **silently wrong**: `[6..]` constrained to the single value 6, `[..2]` vanished; an enum domain failed as "Failed to translate field type", no line | P2 |
+| I7 | ast2ir | triple-quoted string with mustache expressions (4.7.1) in a body | **silently wrong**: the raw text (`v={{n}}`) reached every target | P2 |
+| I8 | ast2ir | `function ... f(...); import target function f;` (20.4.1, the two-declaration import) | both declarations dropped; a call to `f` named nothing | P2 |
+| I9 | ast2ir | array sized by a component `static const` or by a constant expression (`N + 1`) | `size=-1`, no error | P2 |
+| I10 | ast2ir | an import prototype's float parameter, variadic parameter, default | parameter dropped (I1 for imports); `int ... args` became an ordinary parameter; default dropped | P2 |
+| I11 | ast2ir | `u_c::sf(2)` (static function by its type); a method of a literal (`"a".size()`) | None: `int x = u_c::sf(2);` lost its initializer silently | P2 |
 
 P1 found I1 to be **silently wrong in the matrix**: `g(int x, float32 y)`
 called as `g(1, 2.0)` compiles and runs on all four targets, the parameter
@@ -576,6 +581,10 @@ construct is implemented and its refusal test becomes an executed case.
 | `float32` / `float64` | all (refused in ast2ir) | R5 | `test_m_refusals.py` "floating point", "a floating-point parameter ..."; `tests/unit/ir/test_ir_expressions.py` | located (`line N:`) |
 | `ref T` parameter, `type T` parameter | all (refused in ast2ir) | (I2) | `test_ir_expressions.py::test_a_parameter_is_never_dropped` | was dropped from the signature |
 | `compile has` in a procedural body | all (refused in ast2ir) | (I3) | `test_ir_expressions.py::test_compile_has_in_a_body_is_refused` | |
+| an import's `output` / `inout` parameter | all op-model targets (the gate) | (W18) | `test_m_refusals.py` "an import's output parameter" | ast2ir records it (`metadata["param_dirs"]`); every op-model target passes a scalar by value |
+| a triple-quoted string with mustache expressions or directives, in a body | all (refused in ast2ir) | (I7) | `test_ir_expressions.py::test_a_template_string_is_refused_not_taken_as_text` | 4.7.1 expansion at evaluation |
+| `comp::sf(...)`: a static component function by its type | all (refused in ast2ir) | (I11) | `test_ir_functions.py::test_a_static_function_by_its_type_is_refused_with_its_line` | the unqualified call works |
+| `pyobj` (zuspec extension) | all (refused in ast2ir) | – | `test_ir_kind_registry.py` | |
 
 ## 8. Progress log
 
@@ -804,3 +813,40 @@ Newest last. Each entry names what changed and the test that proves it.
   - `unsupported_types` skips core-library structs: a `string` member of
     `addr_reg_pkg::transparent_addr_region_s` is not the model's use of a
     string, and the call gate already refuses `add_region` on C/C++.
+* 2026-10-16 — **P2 done.** `tests/unit/ir/` holds 180 tests (was 78):
+  - **Kind registries** (§4.4), `test_ir_kind_registry.py`: every
+    pssparser `Expr*` and `DataType*` class, found by introspection, has a
+    row -- translated, refused with its line, or not met on its own (and
+    why). A row's PSS is checked to REACH the translator as that class (a
+    spy on `_translate_expression_kind`/`_translate_data_type_kind`), which
+    caught three rows that tested nothing.
+  - **The None catch-alls.** `_translate_expression` and
+    `_translate_data_type` are now wrappers: a kind that returns None
+    without reporting is refused, located at the node or its statement or
+    declaration. `_translate_data_type(what=, at=)` names the declaration
+    (`field 'a' is floating point`), which closes **I4** (field refusals had
+    no line and said "Failed to translate field type").
+  - New files `test_ir_types.py` (35) and `test_ir_functions.py` (15); rows
+    added to statements (foreach over list/set/map key, nested
+    break/continue/return, `super;`), expressions (substring, enum cast,
+    `null`, nested aggregate, collection/string/literal methods, `in` over
+    a list, located reduction refusals).
+  - **W18 closed**: ast2ir records `output`/`inout` per parameter
+    (`Function.metadata["param_dirs"]`, beside `const_params`), and
+    `validate_calls` refuses a call to an import with one on every op-model
+    target. Defined functions with a direction are pssparser's refusal
+    already.
+  - **I6-I11 fixed**, each found by writing the rows (§2): open domain
+    bounds take the type's bounds and an enum domain is a constraint like an
+    integer one (`_translate_domain_range_list`); a template string is
+    refused; the two-declaration import is translated from the prototype
+    the linker resolves (`_translate_import_type`); an array size folds
+    from the constant the linker resolved or from a constant expression,
+    and a size that does not fold is refused; defined and imported functions
+    share one signature reader (`_translate_signature`), so an import keeps
+    its varargs and defaults and refuses a float parameter; a method of a
+    literal is a call on it (`ExprMemberCall`).
+  - `Field.is_const` is set for `const`/`static const` (was always False).
+  - `bool` is still `bit[1]` in the IR (I5's root); the cast is fixed, and
+    `test_ir_types.py` pins the representation.
+

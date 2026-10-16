@@ -527,7 +527,11 @@ statements too (`test_constraint_stmt_registry.py`): one with no IR form yet
 (`soft`, `dist`, `default`) is recorded on its block as
 `metadata["untranslated"]`, and a consumer that SOLVES the block must refuse
 it (`collect_solve_problem` does); the op-model targets, which never solve,
-are unaffected.
+are unaffected. Expressions and data types too
+(`tests/unit/ir/test_ir_kind_registry.py`): `_translate_expression` and
+`_translate_data_type` refuse, with a line, any kind that returns None
+without an error of its own, so nothing reaches the IR as a None. Pass
+`what=`/`at=` to `_translate_data_type` to name the declaration.
 
 **Whose name it is comes from the linker.** In a traversal's `with` block
 and on the left of an initializer, a name the linker found in the traversed
