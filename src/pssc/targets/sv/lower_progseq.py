@@ -20,10 +20,12 @@ import zuspec.ir.core as ir
 
 from .. import pkg_functions as pf
 from ..bit_select import bit_select
-from ..body_walker import BodyWalker, match_values
+from ..expr_types import is_integral
+from ..body_walker import (BodyWalker, assigns_local, foreach_parts,
+                           in_as_compare, match_values)
 from ..validate_calls import callee_name, is_core_call
 from ..array_literal import is_literal
-from ..progseq_model import (enum_first_item, func_kind, FuncKind, field_is_reg_group, _dt_name,
+from ..progseq_model import (channel_count, channel_dtype, enum_first_item, func_kind, FuncKind, field_is_reg_group, _dt_name,
                              sub_components, SubComp, field_is_channel,
                              channel_fields, array_base_stride, scalar_offset,
                              OffsetFoldError, exec_kind, INIT_EXEC_KINDS)
@@ -161,6 +163,9 @@ _BINOP = {
     "Lt": "<", "LtE": "<=", "Le": "<=", "Gt": ">", "GtE": ">=", "Ge": ">=",
     "And": "&&", "Or": "||", "BitAnd": "&", "BitOr": "|", "BitXor": "^",
     "LShift": "<<", "Shl": "<<", "RShift": ">>", "Shr": ">>",
+    # SV's `**` is PSS's (8.5.1 Table 13 is SV's Table 11-4): the left
+    # operand's type, the right self-determined (E4).
+    "Exp": "**",
 }
 
 
@@ -272,7 +277,7 @@ class _BodyEmitter(BodyWalker):
         self.chan_elem_of = {}
         for f in (getattr(comp, "fields", None) or []):
             if field_is_channel(f):
-                elem = getattr(f.datatype, "element_type", None)
+                elem = getattr(channel_dtype(f), "element_type", None)
                 self.chan_elem_of[f.name] = (
                     sv_type(elem) if elem is not None else "bit")
         #: A value-returning TASK yields its result through a leading
@@ -538,23 +543,51 @@ class _BodyEmitter(BodyWalker):
         rendering yet and are refused rather than approximated. The verbosity
         has no SV analogue and is dropped.
         """
-        from ..py.pss_format import parse_format
         args = list(call.args)
         if len(args) < 2:
             raise ValueError("'message' needs a verbosity and a format string")
-        fmt_e, vals = args[1], args[2:]
+        return "$display(" + ", ".join(self._sv_format("message", args[1:])) \
+            + ")"
+
+    #: The SV task each PSS output function is, after its format is
+    #: translated as `message`'s is (W11): `format` returns the text
+    #: (`$sformatf`), `print` adds no newline (21.1.2),
+    #: `error`/`fatal` are SV's own (21.3). `fatal`'s status has no SV
+    #: counterpart -- `$fatal`'s first argument is a verbosity -- so it is
+    #: dropped, and the run stops with SV's.
+    _OUTPUT_TASKS = {"print": "$write", "error": "$error", "fatal": "$fatal",
+                     "format": "$sformatf"}
+
+    def _output_call(self, name: str, call) -> str:
+        args = list(call.args)
+        if name == "fatal":
+            if not args:
+                raise ValueError("'fatal' needs a status and a format string")
+            args = args[1:]
+        parts = self._sv_format(name, args)
+        if name == "fatal":
+            parts = ["1"] + parts
+        return f"{self._OUTPUT_TASKS[name]}(" + ", ".join(parts) + ")"
+
+    def _sv_format(self, name: str, rest) -> List[str]:
+        """``[format literal, args...]`` for a PSS format and its arguments
+        (LRM 21.1.1), translated as `_message` describes."""
+        from ..py.pss_format import parse_format
+        if not rest:
+            raise ValueError(f"'{name}' needs a format string")
+        fmt_e, vals = rest[0], rest[1:]
         fmt = getattr(fmt_e, "value", None)
         if _dt_name(fmt_e) != "ExprConstant" or not isinstance(fmt, str):
             raise ValueError(
-                f"'message' needs a string literal as its format; got "
+                f"'{name}' needs a string literal as its format; got "
                 f"{_dt_name(fmt_e)}")
         try:
             specs = parse_format(fmt)
         except ValueError as e:
-            raise ValueError(f"message({fmt!r}): {e} (LRM 21.1.1 a)") from None
+            raise ValueError(f"{name}({fmt!r}): {e} (LRM 21.1.1 a)") from None
         if len(specs) != len(vals):
             raise ValueError(
-                f"message({fmt!r}): {len(specs)} format specifier(s) for "
+                f"{name}({fmt!r}): {len(specs)} format specifier(s) for "
                 f"{len(vals)} argument(s) (LRM 21.1.1 b)")
 
         def lit(text):
@@ -569,14 +602,14 @@ class _BodyEmitter(BodyWalker):
             pos = end
             if flags or width is not None or prec is not None or conv == "X":
                 raise ValueError(
-                    f"message({fmt!r}): '{fmt[start:end]}' has no "
+                    f"{name}({fmt!r}): '{fmt[start:end]}' has no "
                     f"SystemVerilog rendering yet (only unpadded %d %u %x %o "
                     f"%b %n %s)")
             spec, arg = self._fmt_arg(conv, v)
             out.append(spec)
             sv_args.append(arg)
         out.append(lit(fmt[pos:]))
-        return "$display(" + ", ".join(['"' + "".join(out) + '"'] + sv_args) + ")"
+        return ['"' + "".join(out) + '"'] + sv_args
 
     def _fmt_arg(self, conv: str, v):
         """``(sv specifier, sv argument)`` for one PSS specifier."""
@@ -702,6 +735,16 @@ class _BodyEmitter(BodyWalker):
     # `f"{self.expr(base)}.{e.attr}"` yielded the literal text "None.attr".
     # An unhandled expression class must be a diagnostic, not output.
 
+    def expr_in(self, e) -> str:
+        """`v in [...]` (8.5.9), as the comparisons it means (E3)."""
+        return self.expr(in_as_compare(e, self.types,
+                                       getattr(self.fn, "name", "?")))
+
+    def expr_null(self, e) -> str:
+        """`null` (7.7): the empty chandle. A chandle is an address on this
+        target, as `addr_handle_t` (a `typedef chandle`) is, so it is 0 (E12)."""
+        return "'0"
+
     def expr_constant(self, e) -> str:
         name = self.consts.name_of(e) if self.consts is not None else None
         if name is not None:
@@ -826,7 +869,20 @@ class _BodyEmitter(BodyWalker):
         return f"[{self.expr(e.lower)}:{self.expr(e.upper)}]"
 
     def expr_cast(self, e) -> str:
-        return f"{sv_cast(e.target_type)}'({self.expr(e.value)})"
+        text = f"{sv_cast(e.target_type)}'({self.expr(e.value)})"
+        if _dt_name(e.target_type) != _DT_INT or sv_cast(e.target_type) \
+                == "int":
+            return text
+        # A size cast keeps its OPERAND's signedness in SV: `8'(u)` of an
+        # unsigned 200 is still 200, where PSS's (int[8])200 is -56. So the
+        # target's sign is stated wherever the operand's differs (W14).
+        want = bool(getattr(e.target_type, "signed", False))
+        t = self.types.type_of(e.value)
+        have = getattr(t.as_int(), "signed", want) if is_integral(t) \
+            else want
+        if want == have:
+            return text
+        return f"{'signed' if want else 'unsigned'}'({text})"
 
     def expr_unary(self, e) -> str:
         op = _UNOP.get(e.op.name)
@@ -866,6 +922,10 @@ class _BodyEmitter(BodyWalker):
             return _ADDR_BUILTINS[callee.attr](self, e)
         if callee_name(callee) == "message":
             return self._message(e)
+        name = callee_name(callee)
+        if name in self._OUTPUT_TASKS and name not in {
+                f.name for f in getattr(self.comp, "functions", []) or []}:
+            return self._output_call(name, e)
         self._check_callable(e)
         if self._is_value_task(e):
             # A task has no value: hoist it, and use its temporary (SV-2).
@@ -1113,6 +1173,11 @@ class _BodyEmitter(BodyWalker):
         op = _BINOP.get(s.op.name)
         if op is None:
             raise ValueError(f"unsupported augmented-assign op {s.op.name}")
+        if op == ">>":
+            # As in `expr_bin`: a signed target shifts arithmetically (W10).
+            t = self.types.type_of(s.target)
+            if t is not None and t.kind == "int" and t.signed:
+                op = ">>>"
         return [f"{self.pad(ind)}{self.expr(s.target)} {op}= "
                 f"{self.expr(s.value)};"]
 
@@ -1494,6 +1559,12 @@ class _BodyEmitter(BodyWalker):
             lines.append(f"{pad}  {label}: begin")
             lines += self.stmts(case.body, ind + 2)
             lines.append(f"{pad}  end")
+        if not any(not self._pattern_values(c.pattern) for c in s.cases):
+            # Nothing matched and there is no default: an error (20.7.10 g;
+            # ruling R2). SV's `case` would fall through silently (W16).
+            name = getattr(self.fn, "name", "?")
+            lines.append(f'{pad}  default: $error("{name}: unmatched match '
+                         f'subject");')
         lines.append(f"{pad}endcase")
         return lines
 
@@ -1509,9 +1580,30 @@ class _BodyEmitter(BodyWalker):
         one lowering for both.
         """
         pad = self.pad(ind)
-        idx = getattr(getattr(s, "target", None), "name", "i")
         coll = self.expr(s.iter)
+        index, it = foreach_parts(s)
+        if index is not None:
+            idx = index.name
+        else:
+            self._foreach_k = getattr(self, "_foreach_k", -1) + 1
+            idx = f"pssc_i{self._foreach_k}"
         lines = [f"{pad}foreach ({coll}[{idx}]) begin"]
+        if it is not None:
+            # `foreach (v : a[i])`: v is the ELEMENT (20.7.8); it was taken
+            # for the index (W5). Bound by value; a body writing it -- an
+            # alias of the element in PSS -- is refused, as C and Python do.
+            t = self.types.type_of(s.iter)
+            elem = getattr(getattr(t, "dtype", None), "element_type", None)
+            if elem is None or assigns_local(s.body, it.name):
+                raise ValueError(
+                    f"cannot lower `foreach ({it.name} : {coll})`: "
+                    + ("its body assigns the iterator, which aliases the "
+                       "element (LRM 20.7.8 c); assign the element by index"
+                       if elem is not None else
+                       "the iterator form is lowered over an array of data "
+                       "only; use the index form"))
+            lines.append(f"{self.pad(ind + 1)}{sv_type(elem)} "
+                         f"{self.expr(it)} = {coll}[{idx}];")
         lines += self.stmts(s.body, ind + 1)
         lines.append(f"{pad}end")
         return lines
@@ -1675,6 +1767,10 @@ def _members(comp) -> Dict[str, str]:
     return {f.name: mangle(f.name) for f in (getattr(comp, "fields", None) or [])}
 
 
+#: The field types that are plain data members (`_data_fields`).
+_DATA_KINDS = (_DT_INT, _DT_STRUCT, _DT_ENUM, _DT_CHANDLE, "DataTypeString")
+
+
 def _data_fields(comp) -> List[object]:
     """Fields that become plain data members: not registers, not
     sub-components -- the component's own attributes."""
@@ -1684,12 +1780,12 @@ def _data_fields(comp) -> List[object]:
         if field_is_reg_group(f) or f.name in subs:
             continue
         # A chandle field is an address handle (`sv_type`): a component
-        # that keeps its base for its `init_down` to use holds one.
-        if _dt_name(f.datatype) in (_DT_INT, _DT_STRUCT, _DT_ENUM, _DT_CHANDLE):
+        # that keeps its base for its `init_down` to use holds one. A string
+        # field was left out, so a body naming it did not compile (W21).
+        if _dt_name(f.datatype) in _DATA_KINDS:
             out.append(f)
         elif (_dt_name(f.datatype) == "DataTypeArray"
-              and _dt_name(_array_leaf(f.datatype)) in (
-                  _DT_INT, _DT_STRUCT, _DT_ENUM, _DT_CHANDLE)):
+              and _dt_name(_array_leaf(f.datatype)) in _DATA_KINDS):
             # A fixed-size array of data: an unpacked array member. It used to
             # be no member at all, so a body naming it did not compile.
             out.append(f)
@@ -1915,7 +2011,10 @@ def _member_decls(view, subs: Dict[str, SubComp], consts=None) -> List[str]:
             lines += comment_lines(getattr(f, "doc", None), "    ")
             lines.append(f"    {_data_decl(f, name, consts)}")
         elif id(f) in chans:
-            lines.append(f"    {sv_type(f.datatype)} {name};")
+            # An array of channels is an unpacked array of handles (E10).
+            n = channel_count(f)
+            dim = f"[{n}]" if n is not None else ""
+            lines.append(f"    {sv_type(channel_dtype(f))} {name}{dim};")
     return lines
 
 
@@ -1930,7 +2029,11 @@ def _field_defaults(view, members: Dict[str, str], consts=None) -> List[str]:
     # Channels first: an unconstructed channel handle is null, and a null
     # dereference in SV is a run-time error at the first `get`/`try_put`.
     for f in channel_fields(view):
-        lines.append(f"      {members[f.name]} = new();")
+        m = members[f.name]
+        if channel_count(f) is None:
+            lines.append(f"      {m} = new();")
+        else:
+            lines.append(f"      foreach ({m}[i]) {m}[i] = new();")
     be = _ExprOnly(members, comp=view, consts=consts)
     for f in _data_fields(view):
         if f.initial_value is not None:

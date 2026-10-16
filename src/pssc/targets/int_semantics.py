@@ -139,6 +139,14 @@ class IntSemantics:
         with operands that cannot be negative."""
         raise NotImplementedError
 
+    def int_shift_text(self, op: str, a: "_Val", b: "_Val", t, e) -> str:
+        """`a << b` or `a >> b` at type *t* (8.5.7), *e* being the `ExprBin`.
+
+        A shift by the width or more is 0, or for a signed `>>` the sign
+        (ruling R1). Where the host's own shift already gives that, as
+        Python's does, this is `int_binop_text`."""
+        return self.int_binop_text(op, a, b)
+
     def int_signed_div_text(self, op: str, a: "_Val", b: "_Val") -> str:
         """`a / b` or `a % b`, truncating toward zero, on operands that may be
         negative."""
@@ -172,8 +180,31 @@ class IntSemantics:
         Anything that is not integer-to-integer renders as it stands: an enum,
         a struct, a string, or a value this backend cannot type.
         """
+        if type(e).__name__ == "ExprStructLiteral" and target is not None \
+                and target.kind == "struct":
+            # An aggregate literal's type is where it goes (8.4.2).
+            return self.struct_literal_text(e, self.types.resolve(target.dtype))
         v = self._convert_val(e, target)
         return self.expr(e) if v is None else v.text
+
+    def struct_literal_text(self, e, dtype) -> str:
+        """`{.a = 1, .b = 2}` as a value of struct *dtype* (8.4.2): a member
+        it does not name has its default."""
+        raise ValueError(f"in '{getattr(self.fn, 'name', '?')}': a struct "
+                         f"literal is not lowered by this target")
+
+    def struct_literal_members(self, e, dtype):
+        """``[(field, expr or None)]`` for every member of *dtype*, in
+        declaration order: the literal's value, or None where it names none.
+        A name the struct does not have is refused."""
+        named = {f.name: f.value for f in e.fields}
+        have = {f.name for f in dtype.fields}
+        bad = sorted(set(named) - have)
+        if bad:
+            raise ValueError(
+                f"in '{getattr(self.fn, 'name', '?')}': '{dtype.name}' has no "
+                f"member {', '.join(repr(b) for b in bad)}")
+        return [(f, named.get(f.name)) for f in dtype.fields]
 
     def _convert_val(self, e, target) -> Optional[_Val]:
         """`convert_to`, with the range of the result; ``None`` where the
@@ -379,4 +410,7 @@ class IntSemantics:
                 return _Val(self.int_binop_text(op, a, b), lo, hi,
                             atom=False)
             return _Val(self.int_signed_div_text(op, a, b), lo, hi)
+        if op in ("LShift", "RShift"):
+            return _Val(self.int_shift_text(op, a, b, t, e), lo, hi,
+                        atom=False)
         return _Val(self.int_binop_text(op, a, b), lo, hi, atom=False)

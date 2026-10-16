@@ -34,10 +34,32 @@ def model_has_channels(model) -> bool:
     return any(channel_fields(c) for c in model.comp_dtypes_root_first)
 
 
-def model_needs_env(*, match_default: str, message_style: str) -> bool:
-    """True if `pssc::message` is reachable -- from a body, or from an
-    unmatched `match` lowered to `PSSC_UNREACHABLE`."""
-    return message_style != "none" or match_default == "unreachable"
+def model_needs_env(*, match_default: str, message_style: str,
+                    model=None) -> bool:
+    """True if `pssc_env.hpp` is reachable: `pssc::message` from a body, an
+    unmatched `match` lowered to `PSSC_UNREACHABLE`, or -- whatever the
+    message style -- `pssc::ipow` (a power) or `pssc::fatal`."""
+    if message_style != "none" or match_default == "unreachable":
+        return True
+    return model is not None and _uses_env_helpers(model)
+
+
+def _uses_env_helpers(model) -> bool:
+    import dataclasses as dc
+
+    def walk(n):
+        if isinstance(n, (list, tuple)):
+            return any(walk(x) for x in n)
+        if not dc.is_dataclass(n) or isinstance(n, type):
+            return False
+        cn = type(n).__name__
+        if cn == "ExprBin" and getattr(n.op, "name", "") == "Exp":
+            return True
+        if cn == "ExprCall" and getattr(n.func, "attr", None) == "fatal":
+            return True
+        return any(walk(getattr(n, f.name, None)) for f in dc.fields(n))
+    return any(walk(fn.body) for c in model.comp_dtypes_root_first
+               for fn in (getattr(c, "functions", None) or []))
 
 
 def core_header_names(model, *, match_default: str, message_style: str):
@@ -50,7 +72,8 @@ def core_header_names(model, *, match_default: str, message_style: str):
     names = [_CORE_REG]
     if model_has_channels(model):
         names.append(_CORE_CHAN)
-    if model_needs_env(match_default=match_default, message_style=message_style):
+    if model_needs_env(match_default=match_default, message_style=message_style,
+                       model=model):
         names.append(_CORE_ENV)
     return names
 
@@ -113,7 +136,7 @@ def generate(model, namespace: str, *,
 
     has_chan = model_has_channels(model)
     needs_env = model_needs_env(match_default=match_default,
-                                message_style=message_style)
+                                message_style=message_style, model=model)
 
     guard = f"{namespace.upper()}_HPP"
     h: List[str] = []

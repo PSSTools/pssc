@@ -95,6 +95,10 @@ def cpp_member_type(dtype) -> str:
         return c_struct_name(dtype)
     if cn == "DataTypeChandle":
         return "pssc::addr_t"
+    if cn == "DataTypeArray":
+        # `std::array`, a value: copied with its struct (8.1; E7).
+        from .lower_progseq import cpp_type
+        return cpp_type(dtype)
     raise ValueError(f"unsupported C++ struct member type {cn}")
 
 
@@ -102,6 +106,11 @@ def _cpp_const(e, dtype=None, type_map=None) -> str:
     """A member's initial value, a constant by construction (as in C).
 
     An enum item is spelled as the item the linker resolved."""
+    if _dt_name(e) == "ExprList":
+        # An array member's initializer: each element at the element type.
+        elem = getattr(dtype, "element_type", None)
+        return "{" + ", ".join(_cpp_const(x, elem, type_map)
+                               for x in e.elts) + "}"
     if _dt_name(e) == "ExprConstant" and isinstance(e.value, bool):
         return "true" if e.value else "false"
     item = cpp_enum_constant(e, type_map)
@@ -136,6 +145,13 @@ def emit_struct(struct_dtype, type_map=None) -> str:
             # An enum starts at its first item (7.5), which need not be 0.
             init = cpp_first_item(f.datatype) or "{}"
         lines.append(f"    {cpp_member_type(f.datatype)} {f.name} = {init};")
+    # A struct compares member by member (8.5.3); C++ declares no `==` for
+    # one (W22). Member functions leave it an aggregate.
+    eq = " && ".join(f"{f.name} == o.{f.name}"
+                     for f in struct_dtype.fields) or "true"
+    lines.append(f"    bool operator==(const {name} &o) const {{ return {eq}; }}")
+    lines.append(f"    bool operator!=(const {name} &o) const "
+                 f"{{ return !(*this == o); }}")
     lines.append("};")
     return "\n".join(lines)
 

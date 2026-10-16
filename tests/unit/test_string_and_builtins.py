@@ -214,20 +214,10 @@ class TestBuiltinFunctions(unittest.TestCase):
         self.assertIsInstance(call.func, ir.ExprAttribute)
         self.assertEqual(call.func.attr, "print")
 
-    def test_format_call_translates(self):
-        """format("fmt %0d", n) requires PSS import; skip - not in default scope.
-        format() is a PSS std_pkg function that is not available without special import.
-        This test documents the limitation."""
-        pass  # format() not in default scope; would need std_pkg import
-
-    def test_error_call_translates(self):
-        """error("msg") requires PSS import; skip - not in default scope."""
-        pass  # error() not in default scope; would need std_pkg import
-
-    def test_fatal_call_translates(self):
-        """fatal("msg") requires PSS import; skip - not in default scope."""
-        pass  # fatal() not in default scope; would need std_pkg import
-
+    # format/error/fatal: covered at the IR by tests/unit/ir/ (plan P2,
+    # test_ir_library.py) and executed by the construct matrix
+    # (tests/progseq/matrix/test_m_library.py). The three empty tests that
+    # stood here asserted nothing.
 
 if __name__ == "__main__":
     unittest.main()

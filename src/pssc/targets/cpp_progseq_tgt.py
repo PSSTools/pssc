@@ -24,6 +24,12 @@ class CppProgSeqTarget(OpModelTarget):
     description = "C++ operation-model API generated from a component tree"
     language = "C++"
 
+    #: No string representation in the C++ lowering yet (ruling R3).
+    unsupported_types = dict(
+        OpModelTarget.unsupported_types,
+        DataTypeString="the C++ target has no string representation; "
+                       "ruling R3")
+
     #: A derived component is a derived class: `: public base`, `base::f`.
     native_inheritance = True
 

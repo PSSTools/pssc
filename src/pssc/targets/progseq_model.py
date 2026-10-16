@@ -136,7 +136,10 @@ def func_kind(fn, ctor_names: Optional[FrozenSet[str]] = None) -> FuncKind:
     it explicitly where the caller already has it to hand -- that is the form
     that survives when the ambient value goes away.
     """
-    if fn.name in _REG_OFFSET_FNS:
+    if fn.name in _REG_OFFSET_FNS and (getattr(fn, "metadata", None) or {}
+                                       ).get("reg_offset", True):
+        # Only a register group's own (ast2ir marks which); another
+        # component's function of this name is an operation (W19).
         return FuncKind.REG_OFFSET
     if exec_kind(fn) is not None:
         return FuncKind.EXEC
@@ -240,7 +243,28 @@ def field_is_channel(field) -> bool:
     it, or it falls into whichever bucket has the loosest test -- which is how
     it first came out as an empty component class.
     """
-    return _dt_name(field.datatype) == _DT_CHANNEL
+    return _dt_name(channel_dtype(field)) == _DT_CHANNEL
+
+
+def channel_dtype(field):
+    """The `channel_c` type of a channel field, an array's element's
+    included (`channel_c<bit[32]> ch[2]`)."""
+    dt = field.datatype
+    if _dt_name(dt) == "DataTypeArray":
+        dt = dt.element_type
+    return dt
+
+
+def channel_count(field) -> Optional[int]:
+    """How many channels an ARRAY of them holds; ``None`` for one channel.
+    Each backend declares, constructs and reaches an element by index (E10)."""
+    dt = field.datatype
+    if _dt_name(dt) != "DataTypeArray":
+        return None
+    if _dt_name(dt.element_type) == "DataTypeArray":
+        raise ValueError(f"channel field '{field.name}': an array of arrays "
+                         f"of channels is not supported")
+    return int(dt.size)
 
 
 def channel_fields(comp) -> List[object]:
@@ -736,6 +760,46 @@ def struct_fields(dtype, type_map) -> List[object]:
     base = struct_base(dtype, type_map)
     inherited = struct_fields(base, type_map) if base is not None else []
     return inherited + list(getattr(dtype, "fields", None) or [])
+
+
+def _is_packed_base(dtype) -> bool:
+    nm = getattr(dtype, "name", None) or getattr(dtype, "ref_name", None) or ""
+    return nm.split("::")[-1].startswith("packed_s")
+
+
+def flatten_struct_bases(ctx) -> None:
+    """Give every derived struct its bases' members, first, IN PLACE, as
+    `comp_inherit.complete` does for components. Idempotent.
+
+    The IR lists a struct's OWN members and names its base; a struct's value
+    is all of them (7.8, 17.1). Python reads them through `struct_fields`;
+    C, C++ and SV declared the own ones only, so `v.a` of an inherited `a`
+    did not compile (W4). After this, `fields` is the whole value and the
+    `super` left is the `packed_s<>` the chain reaches, if any -- what makes
+    the type packed (`sv/lower_api_types._is_packed`) -- so `struct_fields`
+    adds nothing twice.
+    """
+    if getattr(ctx, "_pss_struct_flat", False):
+        return
+    ctx._pss_struct_flat = True
+    tm = getattr(ctx, "type_map", None) or {}
+    todo = []
+    for dt in {id(d): d for d in tm.values()}.values():
+        if _dt_name(dt) != _DT_STRUCT:
+            continue
+        base = struct_base(dt, tm)
+        if base is None or _is_packed_base(base):
+            continue
+        root, sup = base, getattr(base, "super", None)
+        while True:
+            nxt = struct_base(root, tm)
+            if nxt is None or _is_packed_base(nxt):
+                break
+            root, sup = nxt, getattr(nxt, "super", None)
+        todo.append((dt, struct_fields(dt, tm), sup))
+    for dt, fields, sup in todo:
+        dt.fields = fields
+        dt.super = sup
 
 
 def collect_value_structs(groups: List[object]) -> List[object]:

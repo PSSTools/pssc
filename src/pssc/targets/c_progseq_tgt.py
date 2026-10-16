@@ -25,6 +25,11 @@ class CProgSeqTarget(OpModelTarget):
     description = "C operation-model API generated from a component tree"
     language = "C"
 
+    #: No string representation or ownership model in C (ruling R3).
+    unsupported_types = dict(
+        OpModelTarget.unsupported_types,
+        DataTypeString="the C target has no string representation; ruling R3")
+
     # This backend emits plain C functions. It generates no coroutine runtime
     # and no scheduler -- that is what the `c-host` / `c-embedded` targets are
     # for -- so there is no way for a caller here to suspend until another

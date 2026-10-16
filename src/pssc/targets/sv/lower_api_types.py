@@ -165,6 +165,21 @@ def _array_dims(dtype, consts=None):
     return dtype, sizes
 
 
+def _sv_const_list(e, consts=None) -> str:
+    """An array initializer of constants as an SV assignment pattern."""
+    parts = []
+    for x in e.elts:
+        if _dt_name(x) == "ExprList":
+            parts.append(_sv_const_list(x, consts))
+        elif _dt_name(x) == "ExprConstant" and isinstance(x.value, (bool, int)):
+            named = consts.name_of(x) if consts is not None else None
+            parts.append(named or str(int(x.value)))
+        else:
+            raise ValueError(f"an array member's initializer element is not "
+                             f"a constant ({_dt_name(x)})")
+    return "'{" + ", ".join(parts) + "}"
+
+
 def emit_struct(struct_dtype, consts=None) -> str:
     name = _strip_pkg(struct_dtype.name)
     packed = _is_packed(struct_dtype)
@@ -187,6 +202,11 @@ def emit_struct(struct_dtype, consts=None) -> str:
             # SV converts no integer to an enum implicitly (6.19.3).
             if _dt_name(f.datatype) == "DataTypeEnum" and named is None:
                 dflt = f" = {_strip_pkg(f.datatype.name)}'({int(init.value)})"
+        elif (not packed and _dt_name(init) == "ExprList"
+              and _dt_name(f.datatype) == "DataTypeArray"):
+            # An array member's initializer is part of the type as a scalar
+            # one is; it was dropped, so the member started at 0 (W24).
+            dflt = f" = {_sv_const_list(init, consts)}"
         elif not packed and init is None and enum_first_item(f.datatype):
             # An enum starts at its first item (7.5); SV's starts at 0.
             from .constants import SvConstants

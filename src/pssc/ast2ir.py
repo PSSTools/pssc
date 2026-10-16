@@ -75,6 +75,22 @@ def _comment_prose(c: Any) -> str:
     return text.lstrip("\n")
 
 
+def _no_ir_form(node: Any) -> str:
+    """What an AST node with no IR form IS, for a refusal: floating point
+    and `ref`/`type` parameters by name (rulings R5, I1-I3 of
+    docs/design/construct-test-audit/00-plan.md), else the node's kind."""
+    kind = type(node).__name__
+    if "Float" in kind:
+        return "floating point (float32/float64), which is not supported"
+    known = {
+        "DataTypeRef": "a reference (`ref T`), which is not supported",
+        "NoneType": "a type parameter (`type T`), which is not supported",
+        "ExprCompileHas": "`compile has`, which is not supported in a "
+                          "procedural body",
+    }
+    return known.get(kind, f"a '{kind}', which has no translation")
+
+
 def _ast_where(node: Any) -> str:
     """``line N: `` for an AST node the parser located, else ``''``."""
     try:
@@ -82,6 +98,72 @@ def _ast_where(node: Any) -> str:
     except Exception:
         return ""
     return f"line {line}: " if line and line > 0 else ""
+
+
+#: LRM 4.7 Table 4: the character each escape stands for.
+_ESCAPES = {"'": "'", '"': '"', "?": "?", "\\": "\\", "a": "\a",
+            "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t",
+            "v": "\v"}
+
+
+def _unescape(text: str) -> str:
+    """A quoted string literal's text with its escapes decoded (4.7). The
+    parser has already refused an escape the LRM does not list."""
+    if "\\" not in text:
+        return text
+    out, i = [], 0
+    while i < len(text):
+        c = text[i]
+        if c == "\\" and i + 1 < len(text):
+            n = text[i + 1]
+            if n in _ESCAPES:
+                out.append(_ESCAPES[n])
+                i += 2
+                continue
+            if text[i + 1:i + 4].isdigit() and all(
+                    d in "01234567" for d in text[i + 1:i + 4]):
+                out.append(chr(int(text[i + 1:i + 4], 8)))
+                i += 4
+                continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+#: A register group's offset functions (21.14.6), which consumers evaluate.
+_OFFSET_FNS = ("get_offset_of_instance", "get_offset_of_instance_array")
+
+
+def _mark_offset_functions(ctx) -> None:
+    """Record on each function NAMED like a register group's offset function
+    whether it IS one -- declared by a component that derives from
+    `reg_group_c` -- as ``metadata["reg_offset"]``.
+
+    Consumers classified these by name alone (`progseq_model.func_kind`), so
+    any component's `get_offset_of_instance` was taken for the register fold
+    and never emitted (W19). Which component declares a function is known
+    here; downstream it is not.
+    """
+    tm = getattr(ctx, "type_map", None) or {}
+
+    def is_group(comp, seen=()):
+        sup = getattr(comp, "super", None)
+        name = getattr(sup, "ref_name", None) or getattr(sup, "name", None)
+        if not name or name in seen:
+            return False
+        if name.split("::")[-1] == "reg_group_c":
+            return True
+        return is_group(tm.get(name), seen + (name,)) if name in tm else False
+
+    for comp in {id(c): c for c in tm.values()}.values():
+        if type(comp).__name__ != "DataTypeComponent":
+            continue
+        fns = [f for f in getattr(comp, "functions", None) or []
+               if f.name in _OFFSET_FNS]
+        if fns:
+            group = is_group(comp)
+            for f in fns:
+                f.metadata["reg_offset"] = group
 
 
 def ast_loc(node: Any, files: Dict[int, str]) -> Optional[Loc]:
@@ -433,6 +515,8 @@ class AstToIrTranslator:
         # reduced form -- a backend must never be handed a field name.
         from . import reg_rmw
         reg_rmw.reduce(ctx)
+
+        _mark_offset_functions(ctx)
 
         return ctx
 
@@ -3982,6 +4066,12 @@ class AstToIrTranslator:
         return_type = None
         if return_type_node is not None:
             return_type = self._translate_data_type(ctx, return_type_node)
+            if return_type is None:
+                # Was taken for `void` (I1).
+                ctx.add_error(
+                    f"{_ast_where(return_type_node) or _ast_where(function)}"
+                    f"the result of '{func_name}' is "
+                    f"{_no_ir_form(return_type_node)}")
 
         # Get parameters
         params = []
@@ -3999,6 +4089,13 @@ class AstToIrTranslator:
                     param_name = str(param_name_node)
 
                 param_type = self._translate_data_type(ctx, param.getType())
+                if param_type is None:
+                    # Was dropped from the signature, changing the function's
+                    # arity with no error (I1, I2).
+                    ctx.add_error(
+                        f"{_ast_where(param) or _ast_where(function)}"
+                        f"parameter '{param_name}' of '{func_name}' is "
+                        f"{_no_ir_form(param.getType())}")
                 if param_type:
                     is_varargs = param.getIs_varargs() if hasattr(param, 'getIs_varargs') else False
                     arg_node = ir.Arg(arg=param_name, annotation=param_type)
@@ -4121,7 +4218,11 @@ class AstToIrTranslator:
         through this one method, so stamping here covers a comment inside a
         nested `if` body as well as one at the top of a function.
         """
-        stmt = self._translate_statement_kind(ctx, stmt_node)
+        outer, self._stmt_node = getattr(self, "_stmt_node", None), stmt_node
+        try:
+            stmt = self._translate_statement_kind(ctx, stmt_node)
+        finally:
+            self._stmt_node = outer
         if stmt is None:
             # A statement with no IR form is REFUSED, never dropped: a dropped
             # one compiles a model that does less than it says (`super;` was
@@ -4210,6 +4311,9 @@ class AstToIrTranslator:
 
         # Get variable type
         var_type = self._translate_data_type(ctx, stmt.getDatatype())
+        if var_type is None:
+            ctx.add_error(f"{_ast_where(stmt)}local '{var_name}' is "
+                          f"{_no_ir_form(stmt.getDatatype())}")
 
         # Get initial value (if any)
         init_expr = stmt.getInit()
@@ -4478,8 +4582,15 @@ class AstToIrTranslator:
         elif isinstance(expr_node, pss_ast.ExprRefPathStatic):
             return self._translate_expr_ref_static(ctx, expr_node)
         else:
-            if self.debug:
-                self.logger.debug(f"Unsupported expression type: {type(expr_node).__name__}")
+            if expr_node is not None:
+                # Refused where it stands, never left a None in the IR (I1:
+                # a float literal; I3: `compile has` in a body).
+                # The parser leaves some expressions unlocated: the
+                # statement they are in is the place then.
+                where = (_ast_where(expr_node)
+                         or _ast_where(getattr(self, "_stmt_node", None)))
+                ctx.add_error(f"{where}this expression is "
+                              f"{_no_ir_form(expr_node)}")
             return None
 
     def _translate_expr_ref_static(self, ctx: AstToIrContext, expr) -> Optional[ir.Expr]:
@@ -4639,8 +4750,14 @@ class AstToIrTranslator:
         return ir.ExprConstant(value=value)
 
     def _translate_expr_string(self, ctx: AstToIrContext, expr: pss_ast.ExprString) -> ir.ExprConstant:
-        """Translate a string literal"""
+        """Translate a string literal: its VALUE, escapes decoded (4.7).
+
+        The parser keeps a quoted literal's text as written, so `"a\\n"`
+        reached every target as a backslash and an `n` (W20). A
+        triple-quoted literal has no escapes."""
         value = expr.getValue()
+        if isinstance(value, str) and not expr.getIs_raw():
+            value = _unescape(value)
         return ir.ExprConstant(value=value)
 
     def _translate_expr_bool(self, ctx: AstToIrContext, expr: pss_ast.ExprBool) -> ir.ExprConstant:
@@ -5055,6 +5172,13 @@ class AstToIrTranslator:
         target_type = self._translate_data_type(ctx, expr.getCasting_type())
         operand = self._translate_expression(ctx, expr.getExpr())
 
+        if isinstance(expr.getCasting_type(), pss_ast.DataTypeBool) \
+                and operand is not None:
+            # `bool` is `bit[1]` in the IR, so a cast to it would keep the
+            # LOW BIT: (bool)0x100 false. A cast to bool is "not zero"
+            # (7.12.1 b), which is what this spells.
+            return ir.ExprBin(lhs=operand, op=ir.BinOp.NotEq,
+                              rhs=ir.ExprConstant(value=0))
         return ir.ExprCast(target_type=target_type, value=operand)
 
     def _translate_expr_bitslice(self, ctx: AstToIrContext, expr: pss_ast.ExprBitSlice) -> ir.ExprSlice:

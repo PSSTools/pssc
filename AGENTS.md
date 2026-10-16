@@ -194,10 +194,12 @@ A subscript of an integer is a bit or part select, decided once from
 `ExprTypes` (`targets/bit_select.py`); every emitter renders it, read and
 read-modify-write.
 
-`tests/progseq/test_op_model_construct_matrix.py` holds these constructs to
-ONE hand-written trace on all four op-model targets (`trace_harness.py`
-builds and runs C, C++, Python and SV). A case a target cannot handle yet is
-a strict xfail naming its defect.
+The construct matrix, `tests/progseq/matrix/` (one `test_m_<area>.py` per
+construct area), holds these constructs to ONE hand-written trace on all four
+op-model targets (`trace_harness.py` builds and runs C, C++, Python and SV;
+a module's builds run together, one per core). A case a target cannot handle
+yet is a strict xfail naming its defect. Each case's `covers=` names the
+constructs it exercises (`docs/design/construct-test-audit/taxonomy.md`).
 
 ## The Python backend
 

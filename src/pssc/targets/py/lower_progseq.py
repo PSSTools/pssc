@@ -47,6 +47,7 @@ from .. import pkg_functions as pf
 from ..bit_select import bit_select
 from ..int_semantics import IntSemantics, _Val, _br
 from ..body_walker import (BodyWalker, CallDispatch, match_values,
+                           in_as_compare,
                            scan_output_locals)
 from ..call_legality import Ctx
 from ..validate_calls import callee_name, is_super_call
@@ -107,7 +108,7 @@ _MEM_PRIMS = {
 #: a call that would reach the output verbatim, which is the whole defect the
 #: registry exists to prevent.
 PY_BUILTINS = frozenset({
-    "message", "print",
+    "message", "print", "error", "fatal", "format",
     "make_handle_from_handle", "addr_value",
     "add_region", "add_nonallocatable_region",
 }) | frozenset(_MEM_PRIMS)
@@ -356,6 +357,10 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
         self.chan_fields = {f.name for f in channel_fields(comp)}
         self.subs = {s.name: s for s in sub_components(comp)}
         self.model_ops = {f.name for f in comp.functions}
+        #: The loop variables in scope, by IR name, with their PSS types --
+        #: how `ExprTypes` learns the type of one. See `_loop_var`. Before
+        #: the scan below, which renders a channel's index.
+        self.loop_vars = {}
         #: Locals a channel `try_get` writes through. They are emitted as
         #: ONE-ELEMENT LISTS and read as `name[0]`, because a PSS output
         #: argument has no other form here: an int is immutable and a name
@@ -371,9 +376,6 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
         #: `match` subjects are bound to a temporary; the counter keeps nested
         #: matches from shadowing each other.
         self._match_depth = 0
-        #: The loop variables in scope, by IR name, with their PSS types --
-        #: how `ExprTypes` learns the type of one. See `_loop_var`.
-        self.loop_vars = {}
 
     # -- blocks --------------------------------------------------------------
 
@@ -495,6 +497,24 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
         """
         s = self.expr(e)
         return f"({s})" if _dt_name(e) in ("ExprBin", "ExprUnary") else s
+
+    def expr_in(self, e) -> str:
+        """`v in [...]` (8.5.9), as the comparisons it means (E3)."""
+        return self.expr(in_as_compare(e, self.types,
+                                       getattr(self.fn, "name", "?")))
+
+    def struct_literal_text(self, e, dtype) -> str:
+        """The value class, by keyword: every member starts at its default,
+        so one the PSS literal leaves out keeps it (E5)."""
+        parts = [f"{f.name}={self.convert_to(v, self.types.of_datatype(f.datatype))}"
+                 for f, v in self.struct_literal_members(e, dtype)
+                 if v is not None]
+        return f"{value_class_name(dtype)}({', '.join(parts)})"
+
+    def expr_null(self, e) -> str:
+        """`null` (7.7): the empty chandle. A chandle is an address on this
+        target, as `addr_handle_t` (a `typedef chandle`) is, so it is 0 (E12)."""
+        return "0"
 
     def expr_constant(self, e) -> str:
         v = e.value
@@ -884,6 +904,27 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
     call_addr = call_mem
     call_utility = call_mem
 
+    def call_offset_fold(self, call) -> Optional[str]:
+        """`g.get_offset_of_instance("R")` / `..._array("A", i)`: a register
+        group's offset, folded at generation time (21.14.6) -- in an
+        operation as in a constructor (E9). ``None`` for any other call."""
+        func = call.func
+        if _dt_name(func) != "ExprAttribute" or func.attr not in (
+                "get_offset_of_instance", "get_offset_of_instance_array"):
+            return None
+        chain = self._chain(func.value)
+        if not chain or len(chain) != 1 or chain[0][0] not in self.reg_groups:
+            return None
+        group = self.reg_groups[chain[0][0]]
+        m, args = func.attr, call.args
+        if m == "get_offset_of_instance":
+            return f"0x{scalar_offset(group, _str_const(args[0], m)):x}"
+        base, stride = array_base_stride(group, _str_const(args[0], m))
+        return f"(0x{base:x} + 0x{stride:x} * {self._operand(args[1])})"
+
+    #: A group offset is folded wherever it is called.
+    call_fold = call_offset_fold
+
     def call_model_op(self, call) -> Optional[str]:
         return self._model_call(call)
 
@@ -1009,11 +1050,9 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
             if k == len(chain) - 1:
                 if name not in {f.name for f in channel_fields(comp)}:
                     return None
-                if idx is not None:
-                    # A channel ARRAY. Nothing in scope declares one, and
-                    # inventing an indexing rule for it here would be a guess.
-                    return None
-                parts.append(mangle(name))
+                # An element of an array of channels is a list element (E10).
+                parts.append(mangle(name) if idx is None
+                             else f"{mangle(name)}[{self.expr(idx)}]")
                 return "self." + ".".join(parts)
             sub = {s.name: s for s in sub_components(comp)}.get(name)
             if sub is None:
@@ -1099,6 +1138,16 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
             return self._mem_call(name, args, call)
         if name in ("message", "print"):
             return self._message_call(name, args)
+        if name == "error":
+            return f"_pss_error({self._format_text(name, args)})"
+        if name == "format":
+            # 21.1.2: the formatted text, as `message` would print it.
+            return self._format_text(name, args)
+        if name == "fatal":
+            if not args:
+                raise ValueError("'fatal' needs a status and a format string")
+            return (f"_pss_fatal({self.expr(args[0])}, "
+                    f"{self._format_text(name, args[1:])})")
         raise ValueError(
             f"built-in '{name}' is claimed by the Python target but has no "
             f"rendering; see targets/py/lower_progseq.py")
@@ -1223,9 +1272,22 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
         HERE, against the LRM 21.1.1 rules, so a bad one is a build error.
         """
         rest = args[1:] if (name == "message" and len(args) >= 2) else args
+        return f"self.{IMPORTS_ATTR}.message({self._format_text(name, rest)})"
+
+    def _format_text(self, name: str, rest) -> str:
+        """The finished text of a format and its arguments (``rest``), as a
+        Python expression: the literal when there is nothing to format, else
+        a `_pss_fmt` call. `error()` and `fatal()` (21.3) format as
+        `message` does."""
         if not rest:
             raise ValueError(f"'{name}' needs a format string")
         fmt_e, vals = rest[0], rest[1:]
+        if name == "print" and _dt_name(fmt_e) == "ExprConstant" and \
+                isinstance(fmt_e.value, str) and fmt_e.value.endswith("\n"):
+            # `print` adds no newline (21.1.2) and ends its own line with
+            # `\n`; the message seam is line-oriented and ends every call's
+            # line itself, so the format's last newline is that one.
+            fmt_e = ir.ExprConstant(value=fmt_e.value[:-1])
         fmt = getattr(fmt_e, "value", None)
         if _dt_name(fmt_e) != "ExprConstant" or not isinstance(fmt, str):
             raise ValueError(
@@ -1233,13 +1295,12 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
                 f"can be checked when the model is generated; got "
                 f"{_dt_name(fmt_e)}")
         if "%" not in fmt and not vals:
-            return f"self.{IMPORTS_ATTR}.message({self.expr(fmt_e)})"
+            return self.expr(fmt_e)
         parts = [self.expr(fmt_e)]
         for (spec, t), v in zip(check_args(name, fmt, vals, self.types.type_of),
                                 vals):
             parts.append(f"({self.expr(v)}, {self._fmt_type(t)})")
-        return (f"self.{IMPORTS_ATTR}.message(_pss_fmt("
-                + ", ".join(parts) + "))")
+        return "_pss_fmt(" + ", ".join(parts) + ")"
 
     @staticmethod
     def _fmt_type(t) -> str:
@@ -1426,6 +1487,9 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
         """*e* as a value of struct *target* that the receiver may keep: as
         it stands if it is fresh (or, with *owned_ok*, a local of this body's
         that is going out of scope), otherwise a copy."""
+        if _dt_name(e) == "ExprStructLiteral":
+            # A literal is a fresh value (E5).
+            return self.struct_literal_text(e, self._struct_dtype(target))
         keep = _dt_name(e) == "ExprCall" or (owned_ok and self._owned(e))
         if keep and self._same_struct(e, target):
             with self._no_hoist_for(e):
@@ -1499,7 +1563,10 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
                     and self._same_struct(s.value, target):
                 with self._no_hoist_for(s.value):
                     return [f"{pad}{self.expr(tgt)} = {self.expr(s.value)}"]
-            value = self.expr(s.value)
+            value = (self.struct_literal_text(s.value,
+                                              self._struct_dtype(target))
+                     if _dt_name(s.value) == "ExprStructLiteral"
+                     else self.expr(s.value))
             return [f"{pad}{self.expr(tgt)}._pss_assign({value})"]
         with self._no_hoist_as_is(s.value, target):
             value = self.convert_to(s.value, target)
@@ -1521,9 +1588,13 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
                 f"'{s.op.name}' has no augmented-assignment form in Python")
         pad = self.pad(ind)
         bop = {"Pow": "Exp"}.get(s.op.name, s.op.name)
-        target = self.types.type_of(s.target)
         whole = ir.ExprBin(lhs=s.target, op=getattr(ir.BinOp, bop),
                            rhs=s.value)
+        if bit_select(s.target, self.types) is not None:
+            # A select is written by read-modify-write (W17).
+            return self.stmt_assign(
+                ir.StmtAssign(targets=[s.target], value=whole), ind)
+        target = self.types.type_of(s.target)
         if target is None or target.kind != "int" \
                 or not is_integral(self.types.type_of(whole)):
             return [f"{pad}{self.expr(s.target)} {op}= {self.expr(s.value)}"]
@@ -1779,11 +1850,11 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
             keyword = "if"
             default = None
             for case in s.cases:
-                labels = self._pattern_labels(case.pattern)
-                if not labels:
+                values = match_values(case.pattern)
+                if not values:
                     default = case
                     continue
-                test = " or ".join(f"{var} == {lb}" for lb in labels)
+                test = " or ".join(self._arm_test(var, v) for v in values)
                 lines.append(f"{pad}{keyword} {test}:")
                 lines += self.block(case.body, ind + 1)
                 keyword = "elif"
@@ -1791,17 +1862,23 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
             if default is not None:
                 lines += self.block(default.body, ind + 1)
             else:
+                # An error (20.7.10 g; ruling R2), the model's own.
                 lines.append(
-                    f"{pad}{self.indent}raise ValueError("
+                    f"{pad}{self.indent}_pss_error("
                     f"{py_string_literal(f'{self.fn.name}: unmatched match subject')}"
                     f' + " (%r)" % (' + var + ",))")
         finally:
             self._match_depth -= 1
         return lines
 
-    def _pattern_labels(self, pattern) -> List[str]:
-        """The arm's labels, rendered; none for `default` (`match_values`)."""
-        return [self.expr(v) for v in match_values(pattern)]
+    def _arm_test(self, var: str, v) -> str:
+        """One alternative of a `match` arm over the bound subject *var*: a
+        value, or a range `lo..hi` (20.7.10; E6)."""
+        if _dt_name(v) == "ExprRange" and v.upper is not None:
+            return f"{self.expr(v.lower)} <= {var} <= {self.expr(v.upper)}"
+        if _dt_name(v) == "ExprRange":
+            v = v.lower
+        return f"{var} == {self.expr(v)}"
 
     def stmt_yield(self, s, ind: int) -> List[str]:
         """`yield` -- the wait primitive, whose cost is the form's to say.
@@ -1960,11 +2037,9 @@ class _CtorMixin:
             # ASSIGNMENT, like `_sub_ctor_call`'s -- `set_handle` returns void,
             # so it can only ever appear as a statement.
             return f"self.{group_base(chain[0][0])} = {self.expr(args[0])}"
-        if m == "get_offset_of_instance":
-            return f"0x{scalar_offset(group, _str_const(args[0], m)):x}"
-        if m == "get_offset_of_instance_array":
-            base, stride = array_base_stride(group, _str_const(args[0], m))
-            return f"(0x{base:x} + 0x{stride:x} * {self._operand(args[1])})"
+        folded = self.call_offset_fold(call)
+        if folded is not None:
+            return folded
         raise ValueError(
             f"unsupported register-group method '{m}'. This target folds group "
             f"offsets at generation time; a method it does not know would "

@@ -109,6 +109,159 @@ def scan_write_only(body) -> Set[str]:
     return declared - read
 
 
+def foreach_parts(s):
+    """``(index, iterator)`` of a `StmtForeach`, either ``None``.
+
+    One reading of the three forms for every rendering (20.7.8): ast2ir
+    writes `foreach (a[i])` with the index as both `target` and `index_var`,
+    `foreach (v : a[i])` with the ELEMENT as `target` and `i` as
+    `index_var`, and `foreach (v : a)` with no `index_var`. C, C++ and SV
+    each took `target` for the index, so in the two value forms `v` was the
+    index and `i` undeclared (W5).
+    """
+    index = getattr(s, "index_var", None)
+    target = getattr(s, "target", None)
+    if index is not None and target is not None and (
+            index is target or getattr(index, "name", None)
+            == getattr(target, "name", None)):
+        return index, None
+    return index, target
+
+
+def assigns_local(body, name: str) -> bool:
+    """Whether *body* assigns the local *name* (a `foreach` iterator, which
+    aliases its element -- 20.7.8 c -- so a rendering binding a copy refuses
+    a write to it)."""
+    for n in _walk(body):
+        cn = _dt_name(n)
+        if cn in ("StmtAssign", "StmtAugAssign"):
+            tgts = n.targets if cn == "StmtAssign" else [n.target]
+            if any(_dt_name(t) == "ExprRefLocal" and t.name == name
+                   for t in tgts):
+                return True
+    return False
+
+
+def _walk(node):
+    if isinstance(node, (list, tuple)):
+        for n in node:
+            yield from _walk(n)
+        return
+    if not dc.is_dataclass(node) or isinstance(node, type):
+        return
+    yield node
+    for f in dc.fields(node):
+        yield from _walk(getattr(node, f.name, None))
+
+
+def in_as_compare(e, types, where: str = "?"):
+    """`v in [a, b..c]` / `v in arr` (8.5.9) as the comparisons it means:
+    `v == a || (v >= b && v <= c)`, or one `==` per element of a fixed-size
+    array. Every target renders comparisons already, at PSS widths, so the
+    one reading here serves them all (E3).
+
+    The value is read once per comparison, so a value containing a call is
+    refused rather than called repeatedly. A range here always has both
+    bounds -- an open one is a domain's form, which the parser refuses in
+    an expression.
+    """
+    import zuspec.ir.core as ir
+    v, cont = e.value, e.container
+    if any(_dt_name(n) == "ExprCall" for n in _walk(v)):
+        raise ValueError(
+            f"in '{where}': the value of an `in` is compared once per "
+            f"element or range, and it contains a call; read it into a "
+            f"local first")
+    terms = []
+    if _dt_name(cont) == "ExprRangeList":
+        for r in cont.ranges:
+            if r.upper is None:
+                terms.append(ir.ExprBin(lhs=v, op=ir.BinOp.Eq, rhs=r.lower))
+            else:
+                terms.append(ir.ExprBin(
+                    lhs=ir.ExprBin(lhs=v, op=ir.BinOp.GtE, rhs=r.lower),
+                    op=ir.BinOp.And,
+                    rhs=ir.ExprBin(lhs=v, op=ir.BinOp.LtE, rhs=r.upper)))
+    else:
+        t = types.type_of(cont)
+        size = getattr(getattr(t, "dtype", None), "size", None)
+        if t is None or t.kind != "array" or not size:
+            raise ValueError(
+                f"in '{where}': `in` over a {getattr(t, 'kind', 'value')} "
+                f"is not lowered; a value list, a range or a fixed-size "
+                f"array is")
+        if any(_dt_name(n) == "ExprCall" for n in _walk(cont)):
+            raise ValueError(
+                f"in '{where}': the array of an `in` is read once per "
+                f"element, and it contains a call")
+        for i in range(int(size)):
+            terms.append(ir.ExprBin(
+                lhs=v, op=ir.BinOp.Eq,
+                rhs=ir.ExprSubscript(value=cont,
+                                     slice=ir.ExprConstant(value=i))))
+    if not terms:
+        return ir.ExprConstant(value=False)
+    out = terms[0]
+    for t in terms[1:]:
+        out = ir.ExprBin(lhs=out, op=ir.BinOp.Or, rhs=t)
+    return out
+
+
+_LOOPS = ("StmtWhile", "StmtFor", "StmtForeach", "StmtRepeatWhile")
+
+
+def _breaks_out(stmts) -> bool:
+    """Whether *stmts* hold a `break` that leaves the loop around them (one
+    not inside a loop of their own)."""
+    for st in stmts or ():
+        cn = _dt_name(st)
+        if cn == "StmtBreak":
+            return True
+        if cn in _LOOPS:
+            continue
+        for f in dc.fields(st):
+            v = getattr(st, f.name, None)
+            if isinstance(v, list) and v and _dt_name(v[0]).startswith("Stmt"):
+                if _breaks_out(v):
+                    return True
+            if cn == "StmtMatch" and f.name == "cases":
+                if any(_breaks_out(c.body) for c in v):
+                    return True
+    return False
+
+
+def match_needs_chain(s) -> bool:
+    """Whether a `match` cannot be a C/C++ `switch`: an arm matches a range
+    (E6), or holds a `break` meant for the enclosing loop -- inside a
+    `switch` it would leave the switch instead (IP-1; W23)."""
+    for case in s.cases:
+        if any(_dt_name(v) == "ExprRange" for v in match_values(case.pattern)):
+            return True
+        if _breaks_out(case.body):
+            return True
+    return False
+
+
+def match_arm_test(subject, values):
+    """The condition one `match` arm stands for: `subject == v` for a value,
+    `lo <= subject && subject <= hi` for a range, joined by `||`."""
+    import zuspec.ir.core as ir
+    terms = []
+    for v in values:
+        if _dt_name(v) == "ExprRange" and v.upper is not None:
+            terms.append(ir.ExprBin(
+                lhs=ir.ExprBin(lhs=subject, op=ir.BinOp.GtE, rhs=v.lower),
+                op=ir.BinOp.And,
+                rhs=ir.ExprBin(lhs=subject, op=ir.BinOp.LtE, rhs=v.upper)))
+        else:
+            v = v.lower if _dt_name(v) == "ExprRange" else v
+            terms.append(ir.ExprBin(lhs=subject, op=ir.BinOp.Eq, rhs=v))
+    out = terms[0]
+    for t in terms[1:]:
+        out = ir.ExprBin(lhs=out, op=ir.BinOp.Or, rhs=t)
+    return out
+
+
 def match_values(pattern) -> List[object]:
     """The value expressions one `match` arm matches; ``[]`` for `default`.
 

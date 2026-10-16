@@ -248,7 +248,7 @@ wb_dma_status_e wb_dma_ch_wait_completion(wb_dma_ch_c *_self) {
  *
  * :param cfg: what to program before arming
  */
-wb_dma_status_e wb_dma_ch_transfer_single(wb_dma_ch_c *_self, wb_dma_ch_cfg_s cfg) {
+wb_dma_status_e wb_dma_ch_transfer_single(wb_dma_ch_c *_self, wb_dma_ch_cfg_s *cfg) {
     wb_dma_ch_transfer_single_start(_self, cfg);
     return wb_dma_ch_wait_completion(_self);
 }
@@ -406,39 +406,39 @@ wb_dma_status_e wb_dma_ch_check_completion(wb_dma_ch_c *_self) {
  * :param cfg: what to program; capability-gated fields are skipped when the
  *             channel was built without the capability
  */
-void wb_dma_ch_configure_channel(wb_dma_ch_c *_self, wb_dma_ch_cfg_s cfg) {
+void wb_dma_ch_configure_channel(wb_dma_ch_c *_self, wb_dma_ch_cfg_s *cfg) {
     wb_dma_sz_s sz = {0};
     wb_dma_csr_s csr = {0};
-    wb_dma_ch_regs_adr0_write_val(_self, cfg.src);
-    wb_dma_ch_regs_am0_write_val(_self, cfg.src_mask);
-    wb_dma_ch_regs_adr1_write_val(_self, cfg.dst);
-    wb_dma_ch_regs_am1_write_val(_self, cfg.dst_mask);
-    wb_dma_sz_s_tot_sz_set(&sz, cfg.tot_sz);
-    wb_dma_sz_s_chk_sz_set(&sz, cfg.chk_sz);
+    wb_dma_ch_regs_adr0_write_val(_self, cfg->src);
+    wb_dma_ch_regs_am0_write_val(_self, cfg->src_mask);
+    wb_dma_ch_regs_adr1_write_val(_self, cfg->dst);
+    wb_dma_ch_regs_am1_write_val(_self, cfg->dst_mask);
+    wb_dma_sz_s_tot_sz_set(&sz, cfg->tot_sz);
+    wb_dma_sz_s_chk_sz_set(&sz, cfg->chk_sz);
     wb_dma_ch_regs_sz_write(_self, sz);
     /*
      * CH_EN is what arms the channel, so it must not ride along with the
      * configuration write.
      */
     wb_dma_csr_s_ch_en_set(&csr, 0);
-    wb_dma_csr_s_src_sel_set(&csr, (cfg.src_if & 0x1));
-    wb_dma_csr_s_dst_sel_set(&csr, (cfg.dst_if & 0x1));
-    wb_dma_csr_s_inc_src_set(&csr, cfg.inc_src);
-    wb_dma_csr_s_inc_dst_set(&csr, cfg.inc_dst);
-    wb_dma_csr_s_mode_set(&csr, (cfg.mode & 0x1));
-    wb_dma_csr_s_prio_set(&csr, cfg.prio);
-    wb_dma_csr_s_sz_wb_set(&csr, cfg.sz_wb);
+    wb_dma_csr_s_src_sel_set(&csr, (cfg->src_if & 0x1));
+    wb_dma_csr_s_dst_sel_set(&csr, (cfg->dst_if & 0x1));
+    wb_dma_csr_s_inc_src_set(&csr, cfg->inc_src);
+    wb_dma_csr_s_inc_dst_set(&csr, cfg->inc_dst);
+    wb_dma_csr_s_mode_set(&csr, (cfg->mode & 0x1));
+    wb_dma_csr_s_prio_set(&csr, cfg->prio);
+    wb_dma_csr_s_sz_wb_set(&csr, cfg->sz_wb);
     /*
      * Capability-gated. Hardware silently ignores these on a channel built
      * without the capability, so decline rather than pretend they took.
      */
     if (_self->caps.ars) {
-        wb_dma_csr_s_ars_set(&csr, cfg.auto_restart);
-        wb_dma_csr_s_rest_en_set(&csr, cfg.hw_restart_en);
+        wb_dma_csr_s_ars_set(&csr, cfg->auto_restart);
+        wb_dma_csr_s_rest_en_set(&csr, cfg->hw_restart_en);
     }
-    wb_dma_csr_s_ine_done_set(&csr, cfg.int_on_done);
-    wb_dma_csr_s_ine_err_set(&csr, cfg.int_on_err);
-    wb_dma_csr_s_ine_chk_done_set(&csr, cfg.int_on_chunk);
+    wb_dma_csr_s_ine_done_set(&csr, cfg->int_on_done);
+    wb_dma_csr_s_ine_err_set(&csr, cfg->int_on_err);
+    wb_dma_csr_s_ine_chk_done_set(&csr, cfg->int_on_chunk);
     wb_dma_ch_regs_csr_write(_self, csr);
 }
 
@@ -696,7 +696,7 @@ void wb_dma_ch_transfer_list_start(wb_dma_ch_c *_self, pssc_addr_t head) {
  *
  * :param cfg: what to program before arming
  */
-void wb_dma_ch_transfer_single_start(wb_dma_ch_c *_self, wb_dma_ch_cfg_s cfg) {
+void wb_dma_ch_transfer_single_start(wb_dma_ch_c *_self, wb_dma_ch_cfg_s *cfg) {
     if (!(pssc_chan1_try_put(&_self->inflight, 1))) {
         pssc_message("wb_dma: transfer_single_start() on a channel that already has an operation in progress");
         return;
@@ -815,7 +815,7 @@ void wb_dma_configure_interrupt_routing(wb_dma_c *_self, wb_dma_int_bank_e bank,
         wb_dma_regs_int_msk_b_write(_self, vec);
         break;
     default:
-        pssc_message("wb_dma: unmatched match subject in configure_interrupt_routing");
+        pssc_message("error: wb_dma: unmatched match subject in configure_interrupt_routing");
         break;
     }
 }
@@ -900,14 +900,14 @@ uint16_t wb_dma_read_descriptor_residual(wb_dma_c *_self, pssc_addr_t desc_ptr) 
  * :param prev: the descriptor to link from; null/zero means "head of list"
  * :param desc: the descriptor contents; the caller's copy is not modified
  */
-pssc_addr_t wb_dma_write_descriptor(wb_dma_c *_self, pssc_addr_t at, pssc_addr_t prev, wb_dma_desc_s desc) {
+pssc_addr_t wb_dma_write_descriptor(wb_dma_c *_self, pssc_addr_t at, pssc_addr_t prev, wb_dma_desc_s *desc) {
     wb_dma_desc_s d = {0};
     uint32_t csr_word = 0;
     /*
      * Deep copy: `desc` is the caller's struct (aggregates pass by handle)
      * and we terminate this link ourselves.
      */
-    d = desc;
+    d = (*desc);
     wb_dma_desc_s_next_set(&d, 0);
     /*
      * This block is one call -- write_struct(at, d) -- once read_struct /
@@ -931,7 +931,7 @@ pssc_addr_t wb_dma_write_descriptor(wb_dma_c *_self, pssc_addr_t at, pssc_addr_t
      * usefully comparable.
      */
     if (prev != 0ull) {
-        pssc_w32(pssc_bus(_self), (prev + 12), (uint32_t)(at));
+        pssc_w32(pssc_bus(_self), (prev + 12), (at & 0xffffffffu));
     }
     return (at + 16);
 }

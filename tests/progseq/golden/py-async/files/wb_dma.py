@@ -481,6 +481,30 @@ class wb_dma_intsrc_s(_RegValue):
     )
 
 
+# ----- PSS run-time errors (LRM 21.3). -----
+
+
+class PssError(Exception):
+    """The model reported an error: `error()`, or a `match` nothing
+    matched."""
+
+
+class PssFatal(PssError):
+    """`fatal()`: the run stops, with the model's `status`."""
+
+    def __init__(self, status, text):
+        super().__init__(text)
+        self.status = status
+
+
+def _pss_error(text):
+    raise PssError(text)
+
+
+def _pss_fatal(status, text):
+    raise PssFatal(status, text)
+
+
 class WbDmaCh(object):
     """The per-channel MMIO operation model (§3).
 
@@ -1464,7 +1488,7 @@ class WbDma(object):
         elif _subject == wb_dma_int_bank_e.WB_DMA_INT_B:
             await self.regs_int_msk_b_write(vec)
         else:
-            raise ValueError('configure_interrupt_routing: unmatched match subject' + " (%r)" % (_subject,))
+            _pss_error('configure_interrupt_routing: unmatched match subject' + " (%r)" % (_subject,))
 
     async def notify_irq(self):
         for i in range(4):

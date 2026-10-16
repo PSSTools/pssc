@@ -297,7 +297,7 @@ uint16_t wb_dma_read_descriptor_residual(wb_dma_c *_self, pssc_addr_t desc_ptr);
  * :param prev: the descriptor to link from; null/zero means "head of list"
  * :param desc: the descriptor contents; the caller's copy is not modified
  */
-pssc_addr_t wb_dma_write_descriptor(wb_dma_c *_self, pssc_addr_t at, pssc_addr_t prev, wb_dma_desc_s desc);
+pssc_addr_t wb_dma_write_descriptor(wb_dma_c *_self, pssc_addr_t at, pssc_addr_t prev, wb_dma_desc_s *desc);
 
 void wb_dma_ch_init(wb_dma_ch_c *_self, int id, pssc_addr_t bank);
 
@@ -386,7 +386,7 @@ wb_dma_status_e wb_dma_ch_wait_completion(wb_dma_ch_c *_self);
  *
  * :param cfg: what to program before arming
  */
-wb_dma_status_e wb_dma_ch_transfer_single(wb_dma_ch_c *_self, wb_dma_ch_cfg_s cfg);
+wb_dma_status_e wb_dma_ch_transfer_single(wb_dma_ch_c *_self, wb_dma_ch_cfg_s *cfg);
 
 /*
  * Run a descriptor chain to completion and report how it ended.
@@ -510,7 +510,7 @@ wb_dma_status_e wb_dma_ch_check_completion(wb_dma_ch_c *_self);
  * :param cfg: what to program; capability-gated fields are skipped when the
  *             channel was built without the capability
  */
-void wb_dma_ch_configure_channel(wb_dma_ch_c *_self, wb_dma_ch_cfg_s cfg);
+void wb_dma_ch_configure_channel(wb_dma_ch_c *_self, wb_dma_ch_cfg_s *cfg);
 
 /*
  * Decode one read of CHn_CSR into a status. The unguarded primitive both
@@ -706,7 +706,7 @@ void wb_dma_ch_transfer_list_start(wb_dma_ch_c *_self, pssc_addr_t head);
  *
  * :param cfg: what to program before arming
  */
-void wb_dma_ch_transfer_single_start(wb_dma_ch_c *_self, wb_dma_ch_cfg_s cfg);
+void wb_dma_ch_transfer_single_start(wb_dma_ch_c *_self, wb_dma_ch_cfg_s *cfg);
 
 /*
  * Wait until the device may have progressed.

@@ -54,10 +54,6 @@ reason = "not an operation-model entry: the action has rand attributes (export_a
 verdict = "UNSUPPORTED"
 reason = "not an operation-model entry: the action has rand attributes (export_action.py)"
 
-[expected."types.string.match.001"]
-verdict = "UNSUPPORTED"
-reason = "op-model-sv gap: a user component function named get_offset_of_instance is taken for the reg_group_c method (matched by name in _fold_offset)"
-
 # --- activities, P0 slice (2026-09-30): an operation model has no activity ---
 
 [expected."act.atomic.body.001"]

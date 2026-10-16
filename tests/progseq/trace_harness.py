@@ -15,14 +15,24 @@ test: an address taken from a backend proves only that the backends agree.
 A refused model surfaces as the ``CompileError`` the CLI reports as a user
 error (exit 1). Anything else escaping ``compile`` is what the CLI calls an
 internal error, and is left to propagate.
+
+Generating is in-process and quick; building (a C or C++ compiler, Verilator)
+is what costs. So a run is two steps: `prepare` generates and returns a
+`Build` -- the commands still to run -- and `finish` runs them. `run_many`
+finishes many builds at once, one process each, which is how the construct
+matrix keeps its run time flat as it grows (`tests/progseq/matrix/`).
 """
 from __future__ import annotations
 
 import argparse
 import importlib
+import os
+import re
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from typing import Callable, List, NamedTuple, Sequence, Tuple
 
 from pssc import driver
 
@@ -58,9 +68,57 @@ def compile_model(tmp_path, pss, target, **opts):
     return out
 
 
+class Build(NamedTuple):
+    """A generated model's remaining work: each of ``steps`` must exit 0,
+    then ``run``'s output, through ``lines``, is the trace."""
+    steps: Sequence[Tuple[Sequence[str], str]]     # (argv, cwd)
+    run: Tuple[Sequence[str], str]
+    lines: Callable[[str], List[str]]
+
+
 def run(target, tmp_path, pss, args=(), mem=None):
     """The trace of ``pss_top.run()`` on ``target``."""
-    return _RUNNERS[target](tmp_path, pss, args, mem)
+    return finish(prepare(target, tmp_path, pss, args, mem))
+
+
+def prepare(target, tmp_path, pss, args=(), mem=None):
+    """Generate ``pss`` for ``target``. Returns a `Build`, or for Python
+    (nothing to build) the trace itself."""
+    return _PREPARE[target](tmp_path, pss, args, mem)
+
+
+def finish(build):
+    """Build and run what `prepare` returned; the trace."""
+    if not isinstance(build, Build):
+        return build
+    for argv, cwd in build.steps:
+        res = subprocess.run(list(argv), capture_output=True, text=True,
+                             cwd=cwd)
+        assert res.returncode == 0, res.stdout + res.stderr
+    argv, cwd = build.run
+    res = subprocess.run(list(argv), capture_output=True, text=True, cwd=cwd)
+    lines = build.lines(res.stdout)
+    # A run the model stopped with a reported error may exit nonzero (SV's
+    # `$error` and `$fatal` do); any other nonzero exit is a failure.
+    stopped = bool(lines) and lines[-1].startswith(("error: ", "fatal: "))
+    assert res.returncode == 0 or stopped, res.stdout + res.stderr
+    return lines
+
+
+def run_many(builds):
+    """`finish` each of ``builds`` concurrently. Returns, in order, each
+    trace or the exception finishing it raised."""
+    def one(b):
+        try:
+            return finish(b)
+        except BaseException as e:      # noqa: BLE001 -- handed back
+            return e
+    builds = list(builds)
+    if not builds:
+        return []
+    with ThreadPoolExecutor(max_workers=min(len(builds),
+                                            os.cpu_count() or 1)) as ex:
+        return list(ex.map(one, builds))
 
 
 def available(target):
@@ -86,9 +144,20 @@ def _run_py(tmp_path, pss, args=(), mem=None):
     bus = rt.MemoryBus()
     for a, v in (mem or {}).items():
         bus.mem[a] = v
-    mod.PssTop(bus, *args).run()
+    tail = []
+    try:
+        mod.PssTop(bus, *args).run()
+    except Exception as e:
+        # The model's own run-time error (`error()`, `fatal()`, an unmatched
+        # `match`): a trace line, as the other targets report it. Anything
+        # else is a defect in the generated code and propagates.
+        kind = {"PssFatal": "fatal", "PssError": "error"}.get(
+            type(e).__name__)
+        if kind is None:
+            raise
+        tail = [f"{kind}: {e}"]
     return [d if k == "message" else f"{k} {w} 0x{a:x} 0x{d:x}"
-            for k, w, a, d in bus.log]
+            for k, w, a, d in bus.log] + tail
 
 
 # --- C -----------------------------------------------------------------------
@@ -103,6 +172,8 @@ void pssc_message(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt); vprintf(fmt, ap); va_end(ap);
     printf("\n");
 }
+/* The `fatal: ` line is the trace's; the run ends here. */
+void pssc_fatal(int status) { (void)status; fflush(stdout); exit(0); }
 
 #define NMEM 256
 static pssc_addr_t mem_a[NMEM];
@@ -149,20 +220,22 @@ int main(void) {
 
 
 def _run_c(tmp_path, pss, args=(), mem=None):
+    return finish(_prepare_c(tmp_path, pss, args, mem))
+
+
+def _prepare_c(tmp_path, pss, args=(), mem=None):
     out = compile_model(tmp_path, pss, "c")
     preload = " ".join(f"*cell({a:#x}) = {v:#x}ull;" for a, v in
                        (mem or {}).items())
     (out / "main.c").write_text(
         _C_MAIN.replace("@PRELOAD@", preload).replace(
             "@ARGS@", "".join(f", {a:#x}ull" for a in args)))
-    build = subprocess.run(
-        [CC[0], "-std=c99", "-Wall", "-Wextra", "-Werror", "-I", str(out),
-         str(out / "main.c"), str(out / "pss_top.c"), "-o", str(out / "run")],
-        capture_output=True, text=True)
-    assert build.returncode == 0, build.stderr
-    res = subprocess.run([str(out / "run")], capture_output=True, text=True)
-    assert res.returncode == 0, res.stderr
-    return res.stdout.splitlines()
+    return Build(
+        steps=[([CC[0], "-std=c99", "-Wall", "-Wextra", "-Werror", "-I",
+                 str(out), str(out / "main.c"), str(out / "pss_top.c"),
+                 "-o", str(out / "run")], str(out))],
+        run=([str(out / "run")], str(out)),
+        lines=str.splitlines)
 
 
 # --- C++ ---------------------------------------------------------------------
@@ -171,12 +244,14 @@ _CPP_MAIN = r"""
 #include "pss_top.hpp"
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <map>
 namespace pssc {
 void message(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt); std::vprintf(fmt, ap); va_end(ap);
     std::printf("\n");
 }
+void fatal(int status) { (void)status; std::fflush(stdout); std::exit(0); }
 }
 struct mem : pssc::mem_if {
     std::map<pssc::addr_t, std::uint64_t> m;
@@ -211,20 +286,22 @@ int main() {
 
 
 def _run_cpp(tmp_path, pss, args=(), mem=None, cxx=None):
+    return finish(_prepare_cpp(tmp_path, pss, args, mem, cxx))
+
+
+def _prepare_cpp(tmp_path, pss, args=(), mem=None, cxx=None):
     out = compile_model(tmp_path, pss, "cpp")
     preload = " ".join(f"bus.m[{a:#x}] = {v:#x};" for a, v in
                        (mem or {}).items())
     (out / "main.cpp").write_text(
         _CPP_MAIN.replace("@PRELOAD@", preload).replace(
             "@ARGS@", "".join(f", {a:#x}" for a in args)))
-    build = subprocess.run(
-        [cxx or CXX[0], "-std=c++17", "-Wall", "-Wextra", "-Werror", "-I",
-         str(out), str(out / "main.cpp"), "-o", str(out / "run")],
-        capture_output=True, text=True)
-    assert build.returncode == 0, build.stderr
-    res = subprocess.run([str(out / "run")], capture_output=True, text=True)
-    assert res.returncode == 0, res.stderr
-    return res.stdout.splitlines()
+    return Build(
+        steps=[([cxx or CXX[0], "-std=c++17", "-Wall", "-Wextra", "-Werror",
+                 "-I", str(out), str(out / "main.cpp"), "-o",
+                 str(out / "run")], str(out))],
+        run=([str(out / "run")], str(out)),
+        lines=str.splitlines)
 
 
 # --- SystemVerilog (Verilator) -----------------------------------------------
@@ -271,6 +348,30 @@ endmodule
 
 
 def _run_sv(tmp_path, pss, args=(), mem=None):
+    return finish(_prepare_sv(tmp_path, pss, args, mem))
+
+
+#: `$error`/`$fatal` as Verilator prints them; the run stops there.
+_SV_REPORT = re.compile(
+    r"^\[\d+\] %(Error|Fatal): [^:]+:\d+: Assertion failed in [^:]+: (.*)$")
+
+
+def _sv_lines(stdout):
+    # Verilator's own report lines start with `- `; the model's never do.
+    out = []
+    for ln in stdout.splitlines():
+        if ln.startswith("- "):
+            continue
+        m = _SV_REPORT.match(ln)
+        if m:
+            # The model's run-time error, as the other targets report it.
+            out.append(f"{m.group(1).lower()}: {m.group(2)}")
+            break
+        out.append(ln)
+    return out
+
+
+def _prepare_sv(tmp_path, pss, args=(), mem=None):
     out = compile_model(tmp_path, pss, "sv")
     preload = " ".join(f"plat.m[64'h{a:x}] = 64'h{v:x};" for a, v in
                        (mem or {}).items())
@@ -279,16 +380,14 @@ def _run_sv(tmp_path, pss, args=(), mem=None):
             "@ARGS@", "".join(f", 64'h{a:x}" for a in args)))
     files = [str(out / "pssc_reg_pkg.sv"), str(out / "pss_top_pkg.sv"),
              str(out / "tb.sv")]
-    build = subprocess.run(
-        [VERILATOR, "--binary", "-Wno-fatal", "--top-module", "top", f"-I{out}",
-         "-Mdir", str(tmp_path / "obj"), "-o", "sim"] + files,
-        capture_output=True, text=True, cwd=tmp_path)
-    assert build.returncode == 0, build.stdout + build.stderr
-    res = subprocess.run([str(tmp_path / "obj" / "sim")],
-                         capture_output=True, text=True, cwd=tmp_path)
-    assert res.returncode == 0, res.stdout + res.stderr
-    # Verilator's own report lines start with `- `; the model's never do.
-    return [ln for ln in res.stdout.splitlines() if not ln.startswith("- ")]
+    # One make job per build: `run_many` runs one build per core already.
+    return Build(
+        steps=[([VERILATOR, "--binary", "-j", "1", "-Wno-fatal",
+                 "--top-module", "top", f"-I{out}", "-Mdir",
+                 str(tmp_path / "obj"), "-o", "sim"] + files, str(tmp_path))],
+        run=([str(tmp_path / "obj" / "sim")], str(tmp_path)),
+        lines=_sv_lines)
 
 
-_RUNNERS = {"c": _run_c, "cpp": _run_cpp, "py": _run_py, "sv": _run_sv}
+_PREPARE = {"c": _prepare_c, "cpp": _prepare_cpp, "py": _run_py,
+            "sv": _prepare_sv}

@@ -1,0 +1,13 @@
+# Construct coverage dispositions: what a construct-matrix case cannot say.
+#
+# Read by tests/progseq/matrix/test_coverage.py (see matrix/coverage.py). The
+# construct list itself is 01-lrm-inventory.md; a matrix case states what it
+# covers with `covers=`. An entry here records, per target (c, cpp, py, sv,
+# or `all`), one of:
+#
+#   status: elsewhere   -- proved by another test; `test:` names it
+#   status: n-a         -- meaningless on that target; `why:` says so
+#
+# A REFUSAL is never recorded here: it is a matrix case whose expectation is
+# `Refused(...)`, so the refusal itself is checked.
+dispositions: {}

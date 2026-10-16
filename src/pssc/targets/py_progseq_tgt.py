@@ -87,7 +87,8 @@ class PyProgSeqTarget(OpModelTarget):
     #: `legality_entries_for`.
     legality_entries = (
         _e("print", Disposition.UTILITY, BOTH, "21.1.2"),
-        _e("format",        Disposition.UTILITY, BOTH, "21.1.2", _NO_PY_FORMAT),
+        # A solve function (21.1.2), formatted by the module's `_pss_fmt`.
+        _e("format",        Disposition.UTILITY, SOLVE_ONLY, "21.1.2"),
         _e("format_string", Disposition.UTILITY, BOTH, "19", _NO_PY_FORMAT),
         _e("urandom",       Disposition.UTILITY, BOTH, "21.4", _NO_PY_PRNG),
         _e("urandom_range", Disposition.UTILITY, BOTH, "21.4", _NO_PY_PRNG),

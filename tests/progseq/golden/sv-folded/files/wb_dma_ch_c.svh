@@ -356,11 +356,11 @@
       // CH_EN is what arms the channel, so it must not ride along with the
       // configuration write.
       csr.ch_en = 0;
-      csr.src_sel = 1'(cfg.src_if);
-      csr.dst_sel = 1'(cfg.dst_if);
+      csr.src_sel = unsigned'(1'(cfg.src_if));
+      csr.dst_sel = unsigned'(1'(cfg.dst_if));
       csr.inc_src = cfg.inc_src;
       csr.inc_dst = cfg.inc_dst;
-      csr.mode = 1'(cfg.mode);
+      csr.mode = unsigned'(1'(cfg.mode));
       csr.prio = cfg.prio;
       csr.sz_wb = cfg.sz_wb;
       // Capability-gated. Hardware silently ignores these on a channel built

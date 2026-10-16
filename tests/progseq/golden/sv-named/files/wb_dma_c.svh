@@ -111,6 +111,7 @@
         WB_DMA_INT_BANK_WB_DMA_INT_B: begin
           regs.int_msk_b.write(vec);
         end
+        default: $error("configure_interrupt_routing: unmatched match subject");
       endcase
     endtask
 

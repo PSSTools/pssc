@@ -138,6 +138,8 @@ struct wb_dma_desc_csr_s {
     bool inc_src = {};
     bool eol = {};
     std::uint16_t reserved1 = {};
+    bool operator==(const wb_dma_desc_csr_s &o) const { return tot_sz == o.tot_sz && reserved0 == o.reserved0 && dst_sel == o.dst_sel && src_sel == o.src_sel && inc_dst == o.inc_dst && inc_src == o.inc_src && eol == o.eol && reserved1 == o.reserved1; }
+    bool operator!=(const wb_dma_desc_csr_s &o) const { return !(*this == o); }
 };
 
 struct wb_dma_desc_s {
@@ -145,6 +147,8 @@ struct wb_dma_desc_s {
     std::uint32_t adr0 = {};
     std::uint32_t adr1 = {};
     std::uint32_t next = {};
+    bool operator==(const wb_dma_desc_s &o) const { return csr == o.csr && adr0 == o.adr0 && adr1 == o.adr1 && next == o.next; }
+    bool operator!=(const wb_dma_desc_s &o) const { return !(*this == o); }
 };
 
 struct wb_dma_ch_caps_s {
@@ -152,6 +156,8 @@ struct wb_dma_ch_caps_s {
     bool ars = true;
     bool ed = true;
     bool cbuf = true;
+    bool operator==(const wb_dma_ch_caps_s &o) const { return present == o.present && ars == o.ars && ed == o.ed && cbuf == o.cbuf; }
+    bool operator!=(const wb_dma_ch_caps_s &o) const { return !(*this == o); }
 };
 
 struct wb_dma_ch_cfg_s {
@@ -173,6 +179,8 @@ struct wb_dma_ch_cfg_s {
     bool int_on_done = {};
     bool int_on_err = {};
     bool int_on_chunk = {};
+    bool operator==(const wb_dma_ch_cfg_s &o) const { return src == o.src && dst == o.dst && src_mask == o.src_mask && dst_mask == o.dst_mask && tot_sz == o.tot_sz && chk_sz == o.chk_sz && src_if == o.src_if && dst_if == o.dst_if && inc_src == o.inc_src && inc_dst == o.inc_dst && mode == o.mode && prio == o.prio && auto_restart == o.auto_restart && hw_restart_en == o.hw_restart_en && sz_wb == o.sz_wb && int_on_done == o.int_on_done && int_on_err == o.int_on_err && int_on_chunk == o.int_on_chunk; }
+    bool operator!=(const wb_dma_ch_cfg_s &o) const { return !(*this == o); }
 };
 
 // ----- Supplied by the PLATFORM: memory access. -----
@@ -303,7 +311,7 @@ struct wb_dma_ch_c_if {
      *
      * :param cfg: what to program before arming
      */
-    virtual wb_dma_status_e transfer_single(wb_dma_ch_cfg_s cfg) = 0;
+    virtual wb_dma_status_e transfer_single(wb_dma_ch_cfg_s &cfg) = 0;
 
     /**
      * Run a descriptor chain to completion and report how it ended.
@@ -427,7 +435,7 @@ struct wb_dma_ch_c_if {
      * :param cfg: what to program; capability-gated fields are skipped when the
      *             channel was built without the capability
      */
-    virtual void configure_channel(wb_dma_ch_cfg_s cfg) = 0;
+    virtual void configure_channel(wb_dma_ch_cfg_s &cfg) = 0;
 
     /**
      * Decode one read of CHn_CSR into a status. The unguarded primitive both
@@ -623,7 +631,7 @@ struct wb_dma_ch_c_if {
      *
      * :param cfg: what to program before arming
      */
-    virtual void transfer_single_start(wb_dma_ch_cfg_s cfg) = 0;
+    virtual void transfer_single_start(wb_dma_ch_cfg_s &cfg) = 0;
 
     /**
      * Wait until the device may have progressed.
@@ -783,7 +791,7 @@ struct wb_dma_c_if {
      * :param prev: the descriptor to link from; null/zero means "head of list"
      * :param desc: the descriptor contents; the caller's copy is not modified
      */
-    virtual pssc::addr_t write_descriptor(pssc::addr_t at, pssc::addr_t prev, wb_dma_desc_s desc) = 0;
+    virtual pssc::addr_t write_descriptor(pssc::addr_t at, pssc::addr_t prev, wb_dma_desc_s &desc) = 0;
 
     static constexpr std::size_t ch_count = 4;
     virtual wb_dma_ch_c_if &ch(std::size_t i) = 0;
@@ -922,7 +930,7 @@ public:
      *
      * :param cfg: what to program before arming
      */
-    wb_dma_status_e transfer_single(wb_dma_ch_cfg_s cfg) override {
+    wb_dma_status_e transfer_single(wb_dma_ch_cfg_s &cfg) override {
         this->transfer_single_start(cfg);
         return this->wait_completion();
     }
@@ -1078,7 +1086,7 @@ public:
      * :param cfg: what to program; capability-gated fields are skipped when the
      *             channel was built without the capability
      */
-    void configure_channel(wb_dma_ch_cfg_s cfg) override {
+    void configure_channel(wb_dma_ch_cfg_s &cfg) override {
         wb_dma_sz_s sz{};
         wb_dma_csr_s csr{};
         this->regs.adr0.write_val(cfg.src);
@@ -1356,7 +1364,7 @@ public:
      *
      * :param cfg: what to program before arming
      */
-    void transfer_single_start(wb_dma_ch_cfg_s cfg) override {
+    void transfer_single_start(wb_dma_ch_cfg_s &cfg) override {
         if (!(this->inflight.try_put(1))) {
             pssc::message("wb_dma: transfer_single_start() on a channel that already has an operation in progress");
             return;
@@ -1489,7 +1497,7 @@ public:
             this->regs.int_msk_b.write(vec);
             break;
         default:
-            pssc::message("wb_dma_c: unmatched match subject in configure_interrupt_routing");
+            pssc::message("error: wb_dma_c: unmatched match subject in configure_interrupt_routing");
             break;
         }
     }
@@ -1574,7 +1582,7 @@ public:
      * :param prev: the descriptor to link from; null/zero means "head of list"
      * :param desc: the descriptor contents; the caller's copy is not modified
      */
-    pssc::addr_t write_descriptor(pssc::addr_t at, pssc::addr_t prev, wb_dma_desc_s desc) override {
+    pssc::addr_t write_descriptor(pssc::addr_t at, pssc::addr_t prev, wb_dma_desc_s &desc) override {
         wb_dma_desc_s d{};
         std::uint32_t csr_word{};
         // Deep copy: `desc` is the caller's struct (aggregates pass by handle)
@@ -1599,7 +1607,7 @@ public:
         // handle comparison, because an address handle is opaque and not
         // usefully comparable.
         if (prev != 0ull) {
-            this->imp_.write32((prev + 12), static_cast<std::uint32_t>(at));
+            this->imp_.write32((prev + 12), (at & 0xffffffffu));
         }
         return (at + 16);
     }

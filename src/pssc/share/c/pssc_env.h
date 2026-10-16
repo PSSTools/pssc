@@ -20,6 +20,16 @@
  * formatted before the call (see PSS FORMATTING below), so a minimal printf
  * suffices.
  *
+ * A run-time ERROR is reported through it too, its text starting `error: `
+ * (`error()`, an unmatched `match`) or `fatal: ` (`fatal()`). Execution
+ * continues after an `error: ` -- LRM 21.3 lets an error continue.
+ *
+ *   void pssc_fatal(int status);
+ *
+ * Called after a `fatal: ` message, with the model's status (LRM 21.3: the
+ * run terminates and the status is returned to the calling environment). It
+ * must not return. Needed only by a model that calls `fatal()`.
+ *
  * The PSS `message(verbosity, fmt, ...)` VERBOSITY ARGUMENT IS DROPPED, exactly
  * as the SystemVerilog projection drops it. PSS verbosity levels are a
  * simulation-runtime concept with no counterpart here, and inventing a mapping
@@ -46,6 +56,9 @@ extern "C" {
  * is a compile error when it is missing, rather than an implicit declaration
  * that links to whatever `pssc_message` happens to be in scope. */
 void pssc_message(const char *fmt, ...);
+
+/* `fatal()` (LRM 21.3). Does not return. */
+void pssc_fatal(int status);
 
 /* Marks a point the model says cannot be reached (`--match-default
  * unreachable`). Deliberately NOT a no-op by default: an unmatched `match` is
@@ -157,6 +170,27 @@ PSSC_MAYBE_UNUSED static inline const char *pssc_enum_name(
     for (i = 0; i < n; i++)
         if (values[i] == v) return names[i];
     return pssc_fmt_int(buf, (unsigned long long)v, 64, 'd', 0, 0, -1);
+}
+
+/* `a ** b` (LRM 8.5.1, Table 13) on 64-bit patterns, for a power whose
+ * operands are not both constant. The generated code passes a signed base
+ * sign-extended and converts the result to the expression's own width; the
+ * product is modular, as PSS's is. A negative exponent gives 1 for a base
+ * of 1, +-1 for a base of -1, and 0 otherwise -- including 0 ** -n, which
+ * Table 13 leaves undefined. */
+static inline unsigned long long pssc_pow(unsigned long long a, long long b) {
+    unsigned long long r = 1;
+    if (b < 0) {
+        if (a == 1ull) return 1ull;
+        if (a == ~0ull) return (b & 1) ? ~0ull : 1ull;
+        return 0ull;
+    }
+    while (b) {
+        if (b & 1) r *= a;
+        a *= a;
+        b >>= 1;
+    }
+    return r;
 }
 
 #ifdef __cplusplus

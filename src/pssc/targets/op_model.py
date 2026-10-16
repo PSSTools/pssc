@@ -329,6 +329,7 @@ def elaborate(ctx, root, out_dir, *, ctor_names: Optional[FrozenSet[str]] = None
              else pm.current_ctor_names())
     from .comp_inherit import complete, problems
     complete(ctx)
+    pm.flatten_struct_bases(ctx)
     tree = pm.walk_tree(root, resolver(ctx))
     post = _post_order(tree)
     pre = _pre_order(tree)
@@ -465,6 +466,19 @@ class OpModelTarget(Target):
     #: refuses a function with one (`validate_calls.array_signatures`); C++'s
     #: `std::array` would compile, by value, and lose the callee's writes.
     supports_array_params: bool = False
+
+    #: Types this backend does not render, by IR class name, with the reason
+    #: a refusal gives (`unsupported_types`). Collections are refused on
+    #: every op-model target for now (ruling R4, 2026-10-16); a subclass
+    #: adds what it lacks (C and C++: `string`, R3).
+    unsupported_types: Dict[str, str] = {
+        "DataTypeList": "collections are not supported on op-model targets "
+                        "yet; ruling R4",
+        "DataTypeMap": "collections are not supported on op-model targets "
+                       "yet; ruling R4",
+        "DataTypeSet": "collections are not supported on op-model targets "
+                       "yet; ruling R4",
+    }
 
     #: Whether this backend delegates memory primitives -- and the register
     #: accesses built on them -- to the assigned executor's overrides (LRM
@@ -707,8 +721,10 @@ class OpModelTarget(Target):
         from .comp_inherit import complete
         from .export_action import entry_points
         # First: every reader below -- the entry-name clash check included --
-        # sees a derived component with what it inherits (`comp_inherit`).
+        # sees a derived component with what it inherits (`comp_inherit`),
+        # and a derived struct with its bases' members.
         complete(ctx)
+        pm.flatten_struct_bases(ctx)
         entries = entry_points(ctx, getattr(opts, "export_actions", None) or [])
         if entries and not self.supports_entries:
             raise ValueError(
@@ -761,7 +777,9 @@ class OpModelTarget(Target):
           interfaces with nothing in them. Nobody reads a warning printed by a
           successful build.
         """
+        from .unsupported_types import refuse
         from .validate_calls import gate
+        refuse(model, self.unsupported_types, self.language or self.name)
         gate(model.root, model.ctx, self.legality_target or self.name,
              self.language or self.name, model.ctor_names,
              entries=[(e.comp, fn) for e in model.entries

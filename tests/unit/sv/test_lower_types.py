@@ -4,6 +4,7 @@ import pytest
 from zuspec.dataclasses import ir
 from zuspec.be.sv.ir.sv_emit import SVEmitter
 
+from pssc.driver import CompileError
 from pssc.targets.sv.context import LoweringContext
 from pssc.targets.sv.lower_types import (
     lower_enum,
@@ -177,51 +178,26 @@ class TestLowerFlowObjects:
 
 
 class TestCollectionTypes:
-    def test_list_field(self, ctx, emitter):
-        dt = ir.DataTypeStruct(
-            name="WithList",
-            super=None,
-            fields=[
-                ir.Field(name="data", datatype=ir.DataTypeList(
-                    element_type=ir.DataTypeInt(bits=32, signed=False),
-                )),
-            ],
-        )
-        sv = lower_struct(ctx, dt)
-        text = emitter.emit_one(sv)
-        assert "bit [31:0] [$] data;" in text
-
-    def test_fixed_array_field(self, ctx, emitter):
-        dt = ir.DataTypeStruct(
-            name="WithArray",
-            super=None,
-            fields=[
-                ir.Field(name="buf", datatype=ir.DataTypeArray(
-                    element_type=ir.DataTypeInt(bits=8, signed=False),
-                    size=16,
-                )),
-            ],
-        )
-        sv = lower_struct(ctx, dt)
-        text = emitter.emit_one(sv)
-        # `buf` is an SV gate primitive (IEEE 1800 Annex B), so the field
-        # is renamed; `bit [7:0] [16] buf;` does not parse.
-        assert "bit [7:0] [16] _zsp_buf;" in text
-
-    def test_map_field(self, ctx, emitter):
-        dt = ir.DataTypeStruct(
-            name="WithMap",
-            super=None,
-            fields=[
-                ir.Field(name="lookup", datatype=ir.DataTypeMap(
-                    key_type=ir.DataTypeString(),
-                    value_type=ir.DataTypeInt(bits=32, signed=False),
-                )),
-            ],
-        )
-        sv = lower_struct(ctx, dt)
-        text = emitter.emit_one(sv)
-        assert "bit [31:0] [string] lookup;" in text
+    # A collection field cannot be declared by this target: its type string
+    # goes before the name, and SV puts a collection's dimension after it.
+    # It used to emit `bit [31:0] [$] data;`, which is not SV, and these
+    # tests asserted that text. Refused instead (ruling R9).
+    @pytest.mark.parametrize("dtype, kind", [
+        (ir.DataTypeList(element_type=ir.DataTypeInt(bits=32, signed=False)),
+         "list"),
+        (ir.DataTypeArray(element_type=ir.DataTypeInt(bits=8, signed=False),
+                          size=16), "array"),
+        (ir.DataTypeMap(key_type=ir.DataTypeString(),
+                        value_type=ir.DataTypeInt(bits=32, signed=False)),
+         "map"),
+        (ir.DataTypeSet(element_type=ir.DataTypeInt(bits=8, signed=False)),
+         "set"),
+    ])
+    def test_a_collection_field_is_refused(self, ctx, dtype, kind):
+        dt = ir.DataTypeStruct(name="WithColl", super=None,
+                               fields=[ir.Field(name="data", datatype=dtype)])
+        with pytest.raises(CompileError, match=f"cannot declare a {kind}"):
+            lower_struct(ctx, dt)
 
     def test_chandle_field(self, ctx, emitter):
         dt = ir.DataTypeStruct(

@@ -92,6 +92,13 @@ def emit_struct(struct_dtype) -> str:
     name = c_struct_name(struct_dtype)
     lines = [f"typedef struct {{"]
     for f in struct_dtype.fields:
+        if _dt_name(f.datatype) == "DataTypeArray":
+            # An array member: its bounds after its name (E7). A struct is
+            # assigned whole in C, embedded arrays included -- the value
+            # copy PSS means (8.1).
+            from .lower_progseq import c_declarator
+            lines.append(f"    {c_declarator(f.datatype, f.name, 'member')};")
+            continue
         lines.append(f"    {c_member_type(f.datatype)} {f.name};")
     lines.append(f"}} {name};")
     return "\n".join(lines)

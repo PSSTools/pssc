@@ -69,6 +69,41 @@ def _initializers():
 _INITIALIZERS = _initializers()
 
 
+
+def _chan_value(f, arg: str) -> str:
+    """A channel field's value: a `Chan1`, or a list of them for an array of
+    channels (E10)."""
+    from ..progseq_model import channel_count
+    n = channel_count(f)
+    return (f"Chan1({arg})" if n is None
+            else f"[Chan1({arg}) for _ in range({n})]")
+
+
+#: What `emit_errors` puts in a module that reports a run-time error.
+_ERRORS_SOURCE = '''# ----- PSS run-time errors (LRM 21.3). -----
+
+
+class PssError(Exception):
+    """The model reported an error: `error()`, or a `match` nothing
+    matched."""
+
+
+class PssFatal(PssError):
+    """`fatal()`: the run stops, with the model's `status`."""
+
+    def __init__(self, status, text):
+        super().__init__(text)
+        self.status = status
+
+
+def _pss_error(text):
+    raise PssError(text)
+
+
+def _pss_fatal(status, text):
+    raise PssFatal(status, text)
+'''
+
 class PyOpModelBackend(object):
     """Turns an `OpModel` into the text of one Python module."""
 
@@ -113,6 +148,7 @@ class PyOpModelBackend(object):
             ("value_types", self.emit_value_types),
             ("formatting", self.emit_formatting),
             ("integers", self.emit_integers),
+            ("errors", self.emit_errors),
             ("functions", self.emit_functions),
             ("executors", self.emit_executors),
             ("components", self.emit_components),
@@ -329,6 +365,16 @@ class PyOpModelBackend(object):
             return ""
         return ("# ----- PSS integer arithmetic (LRM 8.5.1, 8.7). -----\n\n"
                 + inline_source(used))
+
+    def emit_errors(self, model) -> str:
+        """`PssError`/`PssFatal` and the two calls that raise them -- only if
+        a body reports an error: `error()`, `fatal()` (LRM 21.3) or a
+        `match` nothing matched (20.7.10 g). Carried by the module, as the
+        formatter is; the platform catches `PssError` (and so `PssFatal`)."""
+        text = self._bodies_text(model)
+        if "_pss_error(" not in text and "_pss_fatal(" not in text:
+            return ""
+        return _ERRORS_SOURCE
 
     def emit_components(self, model) -> str:
         """One class per component, CHILDREN FIRST.
@@ -662,7 +708,8 @@ class PyOpModelBackend(object):
             self._check_channel(f)
             arg = (f"self.{IMPORTS_ATTR}.event"
                    if self.await_style == "async" else "")
-            lines.append(f"        self.{mangle(f.name)} = Chan1({arg})")
+            lines.append(f"        self.{mangle(f.name)} = "
+                         f"{_chan_value(f, arg)}")
         storage = self._storage_map(model, comp)
         init = self._initializer_emitter(comp, model)
         for f in self._data_members(view):
@@ -829,7 +876,8 @@ class PyOpModelBackend(object):
             # `share/py/pssc_rt_async.py`.
             arg = (f"{IMPORTS_PARAM}.event" if self.await_style == "async"
                    else "")
-            lines.append(f"        self.{mangle(f.name)} = Chan1({arg})")
+            lines.append(f"        self.{mangle(f.name)} = "
+                         f"{_chan_value(f, arg)}")
         init = self._initializer_emitter(comp, model)
         for f in self._data_members(comp):
             lines.append(f"        self.{mangle(f.name)} = "
@@ -1147,7 +1195,8 @@ class PyOpModelBackend(object):
 
     @staticmethod
     def _check_channel(f) -> None:
-        dt = f.datatype
+        from ..progseq_model import channel_dtype
+        dt = channel_dtype(f)
         depth = int(getattr(dt, "depth", 1) or 1)
         if depth != 1:
             raise ValueError(

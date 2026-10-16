@@ -35,6 +35,12 @@ namespace pssc {
 // whatever else is in scope.
 void message(const char *fmt, ...);
 
+// `fatal()` (LRM 21.3): called after a `fatal: ` message with the model's
+// status. Does not return. A run-time ERROR is a `message` whose text starts
+// `error: ` (`error()`, an unmatched `match`), after which execution goes on.
+// Needed only by a model that calls `fatal()`.
+void fatal(int status);
+
 // PSS FORMATTING (LRM 21.1.1). A PSS format is not a printf format: `%d`
 // prints a value at its PSS width (an unsigned value converted to signed, rule
 // c), `%b` exists, and `%n` prints an enum's item name -- where printf's `%n`
@@ -120,6 +126,24 @@ inline fmt_buf<N> enum_name(long long v, std::initializer_list<enum_item> items)
         }
     }
     return fmt_int<N>(static_cast<unsigned long long>(v), 64, 'd', 0, 0, -1);
+}
+
+// `a ** b` (LRM 8.5.1, Table 13) on 64-bit patterns, as C's `pssc_pow`:
+// modular, the result converted to the expression's width by the caller; a
+// negative exponent gives 1 for a base of 1, +-1 for -1, and 0 otherwise.
+inline unsigned long long ipow(unsigned long long a, long long b) {
+    unsigned long long r = 1;
+    if (b < 0) {
+        if (a == 1ull) return 1ull;
+        if (a == ~0ull) return (b & 1) ? ~0ull : 1ull;
+        return 0ull;
+    }
+    while (b) {
+        if (b & 1) r *= a;
+        a *= a;
+        b >>= 1;
+    }
+    return r;
 }
 
 }  // namespace pssc

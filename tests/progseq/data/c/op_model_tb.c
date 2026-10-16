@@ -74,7 +74,7 @@ static void case_transfer_on_channel_2(wb_dma_c *dma)
     om_init(&mock, BASE);
     wb_dma_init(dma, &BUS, BASE);
 
-    st = wb_dma_ch_transfer_single(wb_dma_ch(dma, CH), cfg);
+    st = wb_dma_ch_transfer_single(wb_dma_ch(dma, CH), &cfg);
 
     CHECK(st == WB_DMA_STATUS_WB_DMA_DONE, "transfer_single returned %d, expected DONE", st);
 
@@ -124,7 +124,7 @@ static void case_every_channel_is_distinct(wb_dma_c *dma)
 
     for (i = 0; i < OM_CH_COUNT; i++) {
         cfg.src = 0x1000u + (unsigned)i * 0x100u;
-        (void)wb_dma_ch_transfer_single(wb_dma_ch(dma, i), cfg);
+        (void)wb_dma_ch_transfer_single(wb_dma_ch(dma, i), &cfg);
     }
     for (i = 0; i < OM_CH_COUNT; i++)
         CHECK(om_last_write(&mock, om_ch_reg(&mock, i, R_ADR0))
@@ -145,7 +145,7 @@ static void case_stop_is_an_error(wb_dma_c *dma)
     om_init(&mock, BASE);
     wb_dma_init(dma, &BUS, BASE);
 
-    wb_dma_ch_transfer_single_start(wb_dma_ch(dma, CH), cfg);
+    wb_dma_ch_transfer_single_start(wb_dma_ch(dma, CH), &cfg);
     st = wb_dma_ch_stop_channel(wb_dma_ch(dma, CH));
 
     CHECK(st == WB_DMA_STATUS_WB_DMA_ERROR,

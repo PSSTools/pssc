@@ -164,25 +164,18 @@ class LoweringContext:
         if isinstance(dtype, ir.DataTypeBool) if hasattr(ir, 'DataTypeBool') else False:
             return "bit"
 
-        if isinstance(dtype, ir.DataTypeList):
-            elem = self.pss_type_to_sv_type_str(dtype.element_type) if dtype.element_type else "int"
-            return f"{elem} [$]"
-
-        if isinstance(dtype, ir.DataTypeArray):
-            elem = self.pss_type_to_sv_type_str(dtype.element_type) if dtype.element_type else "int"
-            if dtype.size > 0:
-                return f"{elem} [{dtype.size}]"
-            return f"{elem} [$]"
-
-        if isinstance(dtype, ir.DataTypeMap):
-            key = self.pss_type_to_sv_type_str(dtype.key_type) if dtype.key_type else "string"
-            val = self.pss_type_to_sv_type_str(dtype.value_type) if dtype.value_type else "int"
-            return f"{val} [{key}]"
-
-        if isinstance(dtype, ir.DataTypeSet):
-            # SV has no native set; use associative array with dummy value
-            elem = self.pss_type_to_sv_type_str(dtype.element_type) if dtype.element_type else "int"
-            return f"bit [{elem}]"
+        if isinstance(dtype, (ir.DataTypeList, ir.DataTypeArray,
+                              ir.DataTypeMap, ir.DataTypeSet)):
+            # A type string goes BEFORE the declared name, and every SV form
+            # of a collection puts its dimension AFTER it (`bit [7:0] x[16]`,
+            # `x[$]`, `x[string]`). `bit [7:0] [16] x;` is not SV. Refused
+            # rather than emitted (ruling R9); op-model-sv renders arrays.
+            from ...driver import CompileError
+            kind = type(dtype).__name__[len("DataType"):].lower()
+            raise CompileError(
+                f"this SV target cannot declare a {kind} (only op-model-sv "
+                f"renders collections); see "
+                f"docs/design/construct-test-audit/00-plan.md, ruling R9")
 
         if isinstance(dtype, ir.DataTypeRef):
             # Resolve through sv_name_map to get the canonical mangled class name.

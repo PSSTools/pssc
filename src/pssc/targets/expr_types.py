@@ -206,6 +206,11 @@ class ExprTypes:
         hook = getattr(self, "_" + _dt_name(e), None)
         return hook(e) if hook is not None else None
 
+    def _ExprNull(self, e):
+        """`null` (7.7): a chandle, which every op-model target holds as an
+        address (`addr_handle_t` is a `typedef chandle`)."""
+        return U64
+
     def _ExprConstant(self, e):
         enum = self.enum_of_item(e)
         if enum is not None:

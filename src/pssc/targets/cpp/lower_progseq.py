@@ -32,7 +32,9 @@ from typing import Dict, List, Optional, Set
 import zuspec.ir.core as ir
 
 from .. import comp_inherit as ci
-from ..body_walker import match_values
+from ..body_walker import (match_values, foreach_parts, assigns_local,
+                           in_as_compare, match_needs_chain,
+                           match_arm_test)
 
 from ..comments import LINE, append_trailing, blank_line, comment_lines, doc_block
 from ..array_literal import is_literal
@@ -45,9 +47,10 @@ from ..c.lower_progseq import (
     Prefixes, regular_nodes, post_order, c_string_literal, _array_size,
     _builtin_name, _str_const, func_kind_name, parse_prefix_map,
     c_select_read, c_select_write, CIntSemantics, _c_carrier,
+    _c_unbracket, _has_call, by_handle_params, _prefixed, with_defaults,
 )
 from ..expr_types import (CONTEXT_BINARY, CONTEXT_UNARY, LEFT_TYPED,
-                          INT, RELATIONAL, is_integral)
+                          INT, PssType, RELATIONAL, is_integral)
 from ..c.lower_reg_model import c_struct_name, _prim_bits, _strip_pkg
 
 _DT_STRUCT = "DataTypeStruct"
@@ -90,7 +93,7 @@ _MEM_PRIMS = frozenset({"read8", "read16", "read32", "read64",
 #: PSS built-ins this target claims a rendering for. Its half of the contract in
 #: `targets/call_legality.py`: every name claimed there must be rendered here.
 CPP_BUILTINS = frozenset({
-    "message", "print", "make_handle_from_handle", "addr_value",
+    "message", "print", "error", "fatal", "make_handle_from_handle", "addr_value",
 }) | _MEM_PRIMS
 
 
@@ -315,6 +318,9 @@ _UNOP = {
 
 
 class _BodyEmitter(CIntSemantics):
+    #: The seam's integer power (`pssc_env.hpp`).
+    POW_FN = "pssc::ipow"
+
     """Translate one operation body to C++ lines.
 
     Integers are carried out at their PSS types by `CIntSemantics`, which C++
@@ -470,6 +476,8 @@ class _BodyEmitter(CIntSemantics):
         it if it is an integer type (8.7.2), named if it is an enum."""
         if is_literal(e) and _dt_name(dtype) == _DT_ARRAY:
             return self._literal(e, dtype)
+        if _dt_name(e) == "ExprStructLiteral" and dtype is not None:
+            return self.struct_literal_text(e, self.types.resolve(dtype))
         if dtype is not None and _dt_name(dtype) != _DT_ENUM:
             target = self.types.of_datatype(dtype)
             if target is not None and target.kind == "int":
@@ -528,8 +536,9 @@ class _BodyEmitter(CIntSemantics):
         """A call's arguments, each rendered in its parameter's type."""
         fn = self._callee(call)
         params = list(fn.args.args) if (fn is not None and fn.args) else []
+        args = with_defaults(call.args, fn) if params else call.args
         out = []
-        for i, a in enumerate(call.args):
+        for i, a in enumerate(args):
             want = params[i].annotation if i < len(params) else None
             out.append(self._coerce(a, want))
         return out
@@ -703,8 +712,11 @@ class _BodyEmitter(CIntSemantics):
         if not chain:
             return None
         if len(chain) == 1:
-            return (self._self_member(chain[0][0])
-                    if chain[0][0] in self.chan_fields else None)
+            if chain[0][0] not in self.chan_fields:
+                return None
+            recv = self._self_member(chain[0][0])
+            idx = chain[0][1]
+            return recv if idx is None else f"{recv}[{self.expr(idx)}]"
         if len(chain) == 2 and chain[0][0] in self.subs:
             sub = self.subs[chain[0][0]]
             if chain[1][0] in {f.name for f in channel_fields(sub.dtype)}:
@@ -761,10 +773,22 @@ class _BodyEmitter(CIntSemantics):
         if name == "addr_value":
             return self.expr(args[0])
         if name in _MEM_PRIMS:
-            rendered = ", ".join(self.expr(a) for a in args)
-            return f"this->{_IMP}.{name}({rendered})"
+            parts = [self.expr(a) for a in args]
+            if name.startswith("write") and len(args) == 2:
+                width = int(name[len("write"):])
+                # Converted to the primitive's `bit[width]` (8.7.2; W8).
+                parts[1] = self.convert_to(args[1],
+                                           PssType("int", width, False))
+            return f"this->{_IMP}.{name}({', '.join(parts)})"
         if name in ("message", "print"):
             return self._message_call(name, args)
+        if name in ("error", "fatal"):
+            rest = args[1:] if name == "fatal" else args
+            text = self._message_call("print", _prefixed(name, rest))
+            if name == "error":
+                return text
+            # `pssc::fatal` does not return (21.3; ruling R2).
+            return f"({text}, pssc::fatal({self.expr(args[0])}))"
         raise ValueError(f"built-in '{name}' is claimed by the C++ target but "
                          f"has no rendering; see targets/cpp/lower_progseq.py")
 
@@ -777,6 +801,12 @@ class _BodyEmitter(CIntSemantics):
         if not rest:
             raise ValueError(f"'{name}' needs a format string")
         fmt_e, vals = rest[0], rest[1:]
+        if name == "print" and _dt_name(fmt_e) == "ExprConstant" and \
+                isinstance(fmt_e.value, str) and fmt_e.value.endswith("\n"):
+            # `print` adds no newline (21.1.2) and ends its own line with
+            # `\n`; the message seam is line-oriented and ends every call's
+            # line itself, so the format's last newline is that one.
+            fmt_e = ir.ExprConstant(value=fmt_e.value[:-1])
         fmt = getattr(fmt_e, "value", None)
         if _dt_name(fmt_e) != "ExprConstant" or not isinstance(fmt, str):
             raise ValueError(
@@ -788,6 +818,40 @@ class _BodyEmitter(CIntSemantics):
         parts = lower_format(name, fmt, vals, self.types, self.expr,
                              CppFormat(), c_string_literal)
         return f"pssc::message({', '.join(parts)})"
+
+    def struct_literal_text(self, e, dtype) -> str:
+        """Aggregate initialisation, every member in declaration order (C++17
+        has no designated initializers): one the PSS literal leaves out has
+        its default (E5)."""
+        from .lower_api_types import _cpp_const, cpp_first_item
+        parts = []
+        for f, v in self.struct_literal_members(e, dtype):
+            if v is not None:
+                parts.append(self._coerce(v, f.datatype))
+                continue
+            iv = getattr(f, "initial_value", None)
+            parts.append(_cpp_const(iv, f.datatype, self.types._tm)
+                         if iv is not None
+                         else cpp_first_item(f.datatype) or "{}")
+        return f"{cpp_type(dtype)}{{{', '.join(parts)}}}"
+
+    def _offset_fold(self, call) -> Optional[str]:
+        """`g.get_offset_of_instance("R")` / `..._array("A", i)`: a register
+        group's offset, folded at generation time (21.14.6) -- in an
+        operation as in a constructor (E9). ``None`` for any other call."""
+        func = call.func
+        if _dt_name(func) != "ExprAttribute" or func.attr not in (
+                "get_offset_of_instance", "get_offset_of_instance_array"):
+            return None
+        chain = self._chain(func.value)
+        if not chain or len(chain) != 1 or chain[0][0] not in self.reg_groups:
+            return None
+        group = self.reg_groups[chain[0][0]]
+        m, args = func.attr, call.args
+        if m == "get_offset_of_instance":
+            return f"0x{scalar_offset(group, _str_const(args[0], m)):x}u"
+        base, stride = array_base_stride(group, _str_const(args[0], m))
+        return f"(0x{base:x}u + 0x{stride:x}u * {self._operand(args[1])})"
 
     def _sub_op_call(self, call) -> Optional[str]:
         """`ch[i].probe_status()` -- an operation of a SUB-component.
@@ -888,6 +952,14 @@ class _BodyEmitter(CIntSemantics):
 
     def expr(self, e) -> str:
         cn = _dt_name(e)
+        if cn == "ExprIn":
+            # `v in [...]` (8.5.9), as the comparisons it means (E3).
+            return self.expr(in_as_compare(e, self.types,
+                                           getattr(self.fn, "name", "?")))
+        if cn == "ExprNull":
+            # `null` (7.7): the empty chandle, an address here as
+            # `addr_handle_t` (a `typedef chandle`) is (E12).
+            return "0"
         if cn == "ExprConstant":
             from .lower_api_types import cpp_enum_constant
             item = cpp_enum_constant(e, self.types._tm)
@@ -960,7 +1032,7 @@ class _BodyEmitter(CIntSemantics):
                     _dt_name(e.func.value) == "TypeExprRefSuper":
                 return self._super_call(e)
             for handler in (self._reg_call, self._chan_call, self._sub_op_call,
-                            self._builtin_call):
+                            self._builtin_call, self._offset_fold):
                 out = handler(e)
                 if out is not None:
                     return out
@@ -1008,10 +1080,35 @@ class _BodyEmitter(CIntSemantics):
                 value = self._coerce(s.value, self._expr_type(tgt))
             return [f"{pad}{self.expr(tgt)} = {value};"]
         if cn == "StmtAugAssign":
+            # `x op= e` is `x = x op e` (8.3), converted back to x's type --
+            # as C's `stmt_aug_assign` does, and for the same reason: C++'s
+            # own `op=` keeps the carry a `bit[4]` must lose (W1).
             op = _BINOP.get(s.op.name)
             if op is None:
                 raise ValueError(f"unsupported augmented-assign op {s.op.name}")
-            return [f"{pad}{self.expr(s.target)} {op}= {self.expr(s.value)};"]
+            whole = ir.ExprBin(lhs=s.target, op=s.op, rhs=s.value)
+            if bit_select(s.target, self.types) is not None:
+                # A select is written by read-modify-write (W17).
+                return self._stmt_lines(
+                    ir.StmtAssign(targets=[s.target], value=whole), ind)
+            target = self.types.type_of(s.target)
+            if target is None or target.kind != "int" \
+                    or not is_integral(self.types.type_of(whole)):
+                return [f"{pad}{self.expr(s.target)} {op}= "
+                        f"{self.expr(s.value)};"]
+            tgt = self.expr(s.target)
+            value = self.convert_to(whole, target)
+            head = f"{tgt} {op} "
+            if value.startswith(head):
+                return [f"{pad}{tgt} {op}= "
+                        f"{_c_unbracket(value[len(head):])};"]
+            if _has_call(s.target):
+                raise ValueError(
+                    f"in '{getattr(self.fn, 'name', '?')}': `{tgt} {op}= "
+                    f"...` needs its result converted back to the target's "
+                    f"type, which evaluates the target twice, and the target "
+                    f"contains a call. Read the index into a local first.")
+            return [f"{pad}{tgt} = {value};"]
         if cn == "StmtExpr":
             return [f"{pad}{self.expr(s.expr)};"]
         if cn == "StmtReturn":
@@ -1120,17 +1217,48 @@ class _BodyEmitter(CIntSemantics):
         element.
         """
         pad = "    " * ind
-        idx = mangle(getattr(getattr(s, "target", None), "name", None) or "i")
         coll = self.expr(s.iter)
-        n = _array_size(self._iter_dtype(s))
+        dtype = self._iter_dtype(s)
+        n = _array_size(dtype)
         if n is None:
             raise ValueError(
                 f"cannot lower `foreach` over '{coll}': its size is not known "
                 "at generation time.")
-        lines = [f"{pad}for (std::size_t {idx} = 0; {idx} < {n}u; ++{idx}) {{"]
-        lines += self.stmts(s.body, ind + 1)
-        lines.append(f"{pad}}}")
-        return lines
+        index, it = foreach_parts(s)
+        if index is not None:
+            idx = mangle(index.name)
+        else:
+            self._tmp_k = getattr(self, "_tmp_k", -1) + 1
+            idx = f"_pssc_i{self._tmp_k}"
+        head = [f"{pad}for (std::size_t {idx} = 0; {idx} < {n}u; ++{idx}) {{"]
+        if it is None:
+            return head + self.stmts(s.body, ind + 1) + [f"{pad}}}"]
+        # `foreach (v : a[i])`: v is the ELEMENT (20.7.8), as C binds it.
+        elem = getattr(dtype, "element_type", None)
+        if elem is None or self.types.of_datatype(elem) is None or \
+                assigns_local(s.body, it.name):
+            raise ValueError(
+                f"cannot lower `foreach ({it.name} : {coll})`: "
+                + ("its body assigns the iterator, which aliases the element "
+                   "(LRM 20.7.8 c); assign the element by index"
+                   if elem is not None else
+                   "the iterator form is lowered over an array of data only; "
+                   "use the index form"))
+        names = {it.name: self.types.of_datatype(elem)}
+        if index is not None:
+            names[index.name] = INT
+        saved = {k: self.types.loop_vars.get(k) for k in names}
+        self.types.loop_vars.update(names)
+        try:
+            body = self.stmts(s.body, ind + 1)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    self.types.loop_vars.pop(k, None)
+                else:
+                    self.types.loop_vars[k] = v
+        bind = f"{pad}    {cpp_type(elem)} {mangle(it.name)} = {coll}[{idx}];"
+        return head + [bind] + body + [f"{pad}}}"]
 
     def _iter_dtype(self, s):
         """Declared type of a `foreach` collection: a field, a local, an
@@ -1145,6 +1273,9 @@ class _BodyEmitter(CIntSemantics):
         change the model's meaning into C++'s.
         """
         pad = "    " * ind
+        if match_needs_chain(s):
+            unmatched = [ln.strip() for ln in self._default_arm("")[1:-1]]
+            return self._match_chain(s, ind, unmatched)
         lines = [f"{pad}switch ({self.expr(s.subject)}) {{"]
         saw_default = False
         for case in s.cases:
@@ -1162,6 +1293,58 @@ class _BodyEmitter(CIntSemantics):
         lines.append(f"{pad}}}")
         return lines
 
+    def _match_chain(self, s, ind: int, unmatched) -> List[str]:
+        """A `match` as an `if` chain (`match_needs_chain`): a range is two
+        comparisons, and a `break` in an arm leaves the enclosing loop, as
+        PSS means. The subject is read once per arm, so one containing a
+        call is first held in a local. ``unmatched`` is what no arm and no
+        `default` matching does (the `switch` form's default arm)."""
+        import zuspec.ir.core as ir
+        pad = "    " * ind
+        lines: List[str] = []
+        subj, inner = s.subject, ind
+        t = self.types.type_of(subj)
+        held = None
+        if _has_call(subj):
+            if t is None or t.kind not in ("int", "enum", "bool"):
+                raise ValueError(
+                    f"in '{getattr(self.fn, 'name', '?')}': a `match` on a "
+                    f"call's value needs its subject held in a local")
+            held = f"_pssc_m{self._next_match()}"
+            ct = "int64_t" if t.as_int().signed else "uint64_t"
+            lines += [f"{pad}{{",
+                      f"{pad}    {ct} {held} = {self.expr(subj)};"]
+            subj, inner = ir.ExprRefLocal(name=held), ind + 1
+            self.types.loop_vars[held] = t
+        ipad = "    " * inner
+        kw, default = "if", None
+        for case in s.cases:
+            vals = match_values(case.pattern)
+            if not vals:
+                default = case
+                continue
+            test = self.expr(match_arm_test(subj, vals))
+            lines.append(f"{ipad}{kw} ({test}) {{")
+            lines += self.stmts(case.body, inner + 1)
+            kw = "} else if"
+        tail = (self.stmts(default.body, inner + 1) if default is not None
+                else ["    " * (inner + 1) + ln for ln in unmatched])
+        if kw == "if":                      # only a default arm
+            lines += ["    " * inner + ln.strip() for ln in tail]
+        else:
+            if tail:
+                lines.append(f"{ipad}}} else {{")
+                lines += tail
+            lines.append(f"{ipad}}}")
+        if held is not None:
+            self.types.loop_vars.pop(held, None)
+            lines.append(f"{pad}}}")
+        return lines
+
+    def _next_match(self) -> int:
+        self._match_k = getattr(self, "_match_k", -1) + 1
+        return self._match_k
+
     def _default_arm(self, pad: str) -> List[str]:
         """What an unmatched subject does when the model states no default.
 
@@ -1173,8 +1356,8 @@ class _BodyEmitter(CIntSemantics):
             return []
         out = [f"{pad}default:"]
         if self.match_default == "message" and self.message_style != "none":
-            out.append(f'{pad}    pssc::message("{self.cls}: unmatched match '
-                       f'subject in {self.fn.name}");')
+            out.append(f'{pad}    pssc::message("error: {self.cls}: unmatched '
+                       f'match subject in {self.fn.name}");')
         elif self.match_default == "unreachable":
             out.append(f"{pad}    PSSC_UNREACHABLE();")
         out.append(f"{pad}    break;")
@@ -1233,11 +1416,9 @@ class _CtorEmitter(_BodyEmitter):
             gt = _strip_pkg(group.name)
             return (f"{self._self_member(field)} = "
                     f"{gt}(this->{_IMP}, {self.expr(args[0])})")
-        if m == "get_offset_of_instance":
-            return f"0x{scalar_offset(group, _str_const(args[0], m)):x}u"
-        if m == "get_offset_of_instance_array":
-            base, stride = array_base_stride(group, _str_const(args[0], m))
-            return f"(0x{base:x}u + 0x{stride:x}u * {self._operand(args[1])})"
+        folded = self._offset_fold(call)
+        if folded is not None:
+            return folded
         raise ValueError(
             f"unsupported register-group method '{m}'. The C++ target folds "
             f"group offsets at generation time; a method it does not know "
@@ -1270,7 +1451,12 @@ class _CtorEmitter(_BodyEmitter):
 # --- declarations -----------------------------------------------------------
 
 def _params(fn) -> str:
-    return ", ".join(f"{cpp_type(a.annotation)} {mangle(a.arg)}"
+    """A by-handle struct parameter (LRM 20.3.2; `by_handle_params`) is a
+    reference, so the callee's writes are the caller's; a `const` one is a
+    value."""
+    handle = by_handle_params(fn)
+    return ", ".join(f"{cpp_type(a.annotation)} "
+                     f"{'&' if a.arg in handle else ''}{mangle(a.arg)}"
                      for a in fn.args.args)
 
 
@@ -1384,8 +1570,10 @@ def emit_import_api(imports, ns: str, *, yield_mode: str = "none") -> str:
 # --- the class --------------------------------------------------------------
 
 def _chan_member(f) -> str:
-    """One channel member, after checking the backend can implement it."""
-    dt = f.datatype
+    """One channel member, after checking the backend can implement it. An
+    array of channels is a `std::array` of them (E10)."""
+    from ..progseq_model import channel_count, channel_dtype
+    dt = channel_dtype(f)
     depth = int(getattr(dt, "depth", 1) or 1)
     if depth != 1:
         raise ValueError(
@@ -1395,7 +1583,11 @@ def _chan_member(f) -> str:
     elem = getattr(dt, "element_type", None)
     if elem is None:
         raise ValueError(f"channel '{f.name}' has no element type")
-    return f"pssc::chan1<{cpp_type(elem)}> {mangle(f.name)};"
+    t = f"pssc::chan1<{cpp_type(elem)}>"
+    n = channel_count(f)
+    if n is not None:
+        t = f"std::array<{t}, {n}>"
+    return f"{t} {mangle(f.name)};"
 
 
 def _data_member(f) -> str:
