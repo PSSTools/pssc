@@ -37,6 +37,10 @@ class ProgSeqTarget(OpModelTarget):
     # run by `pss_do_init()` after the root's constructor (design D3, D4).
     supports_init_blocks = True
 
+    # `s.size()`, `s.find(...)`, `s.lower()`, ... and `s[a..b]` (LRM 7.6):
+    # SV's string methods, and `pssc_reg_pkg`'s `pssc_str_find[_last]`.
+    supports_string_methods = True
+
     # An exported action (`--export-action`) is a task of the component it
     # runs in, called by the factory's method of the action's name.
     supports_entries = True

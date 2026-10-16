@@ -23,6 +23,7 @@ from ..bit_select import bit_select
 from ..expr_types import is_integral
 from ..body_walker import (BodyWalker, assigns_local, foreach_parts,
                            in_as_compare, match_values)
+from ..string_methods import method_of as string_method, substring
 from ..validate_calls import callee_name, is_core_call
 from ..array_literal import is_literal
 from ..progseq_model import (channel_count, channel_dtype, enum_first_item, func_kind, FuncKind, field_is_reg_group, _dt_name,
@@ -632,6 +633,19 @@ class _BodyEmitter(BodyWalker):
             raise ValueError(f"'%n' takes a bool or an enum; '{x}' is {kind}")
         # An integer conversion. A bool or enum formats as its value.
         signed = t.signed if (t is not None and kind == "int") else kind == "enum"
+        if kind == "int" and t is not None and _dt_name(v) in (
+                "ExprBin", "ExprUnary", "ExprIfExp", "ExprCast") \
+                and self._block is not None and self._prefix is not None:
+            # A message argument is self-determined (8.7.2, Table 23), as in
+            # SV, and is held in a temporary of its PSS type first, which
+            # IEEE 1800 makes the same value. Verilator 5.052 evaluates some
+            # self-determined `$display` arguments too wide: an 8-bit
+            # -2 ** 3 printed `fa0bf8`, even under a size cast (W27), and
+            # `4'(w) + 4'(15)` lost the size cast on w (W28). An assignment
+            # to a variable of the width is right in both.
+            tmp = self._temp(_sv_of(t))
+            self._emit_prefix([f"{tmp} = {x};"], "a message argument")
+            x = tmp
         if kind in ("bool", "enum"):
             x = f"int'({x})"
         if conv == "d":
@@ -753,15 +767,7 @@ class _BodyEmitter(BodyWalker):
         if isinstance(v, bool):
             return str(int(v))
         if isinstance(v, int):
-            # An unsized SV literal is 32 bits: `81985529216486895` is
-            # truncated before anything sees it. A wider value is sized.
-            if -(1 << 31) <= v < (1 << 31):
-                return str(v)
-            if 0 <= v < (1 << 64):
-                return f"64'd{v}"
-            if -(1 << 63) <= v < 0:
-                return f"-64'sd{-v}"
-            raise ValueError(f"integer literal {v} is wider than 64 bits")
+            return _sv_int_literal(e)
         if isinstance(v, str):
             # NOT repr(): Python prefers single quotes, and 'x' in
             # SystemVerilog is the start of a based literal, not a string.
@@ -802,7 +808,37 @@ class _BodyEmitter(BodyWalker):
             return e.attr
         return f"{self.expr(base)}.{e.attr}"
 
+    def _string_method(self, call, m: str) -> str:
+        """A string method (7.6.3): SV's own, and `pssc_reg_pkg`'s
+        `pssc_str_find[_last]` for the two it lacks."""
+        s = self._string_receiver(call.func.value)
+        args = [self.expr(a) for a in call.args]
+        if m == "size":
+            return f"{s}.len()"
+        if m in ("lower", "upper"):
+            return f"{s}.to{m}()"
+        return f"pssc_str_{m}({', '.join([s] + args)})"
+
+    def _string_receiver(self, e) -> str:
+        """A string a method is called on. SV calls a method on a variable,
+        not on a literal or a call's result, so anything else is held in a
+        temporary first."""
+        text = self._operand(e)
+        if _is_path(e):
+            return text
+        tmp = self._temp("string")
+        self._emit_prefix([f"{tmp} = {text};"], "a string method")
+        return tmp
+
     def expr_subscript(self, e) -> str:
+        sub = substring(e, self.types)
+        if sub is not None:
+            # `s[a..b]` (8.6.3): `substr(a, b)`, both positions included.
+            s, lo, hi = sub
+            st = self._string_receiver(s)
+            lo_t = self.expr(lo) if lo is not None else "0"
+            hi_t = self.expr(hi) if hi is not None else f"{st}.len() - 1"
+            return f"{st}.substr({lo_t}, {hi_t})"
         sel = bit_select(e, self.types)
         if sel is None:
             return f"{self.expr(e.value)}[{self.expr(e.slice)}]"
@@ -837,6 +873,25 @@ class _BodyEmitter(BodyWalker):
                 + ["  " + ln for ln in pre]
                 + [f"  {t} = ({rhs}) ? 1'b1 : 1'b0;", "end"], f"'{op}'")
             return t
+        if op in ("==", "!=") and _dt_name(e.rhs) == "ExprStructLiteral":
+            # `s == {...}` (8.5.3, Example 33): the literal is typed by the
+            # struct it is compared with (E13).
+            t = self.types.type_of(e.lhs)
+            return (f"{self._operand(e.lhs)} {op} "
+                    f"{self.value_of(t.dtype if t is not None else None, e.rhs)}")
+        if op == "/" and self._signed_int(e) and not (
+                _dt_name(e.rhs) == "ExprConstant"
+                and getattr(e.rhs, "value", -1) != -1):
+            # The most negative value divided by -1 wraps to itself in PSS
+            # (8.5.1, 8.7), as `-x` does in SV; Verilator's `/` gives 0 (W29).
+            lhs = self._operand(e.lhs)
+            rhs = self._operand(e.rhs)
+            if _ir_has_call(e.rhs):
+                t = self.types.type_of(e.rhs)
+                tmp = self._temp(_sv_of(t))
+                self._emit_prefix([f"{tmp} = {rhs};"], "a signed '/'")
+                rhs = tmp
+            return f"(({rhs}) == -1 ? -({lhs}) : {lhs} / {rhs})"
         if op == ">>":
             # PSS `>>` on a signed operand is arithmetic (8.5.7); SV's `>>`
             # is always logical, and `>>>` follows the operand's sign.
@@ -844,6 +899,10 @@ class _BodyEmitter(BodyWalker):
             if t is not None and t.kind == "int" and t.signed:
                 op = ">>>"
         return f"{self._operand(e.lhs)} {op} {self._operand(e.rhs)}"
+
+    def _signed_int(self, e) -> bool:
+        t = self.types.type_of(e)
+        return t is not None and t.kind == "int" and bool(t.signed)
 
     def expr_if_exp(self, e) -> str:
         """`c ? a : b` (8.5.8). Only the chosen arm is evaluated, in both."""
@@ -892,6 +951,9 @@ class _BodyEmitter(BodyWalker):
 
     def expr_call(self, e) -> str:
         callee = e.func
+        m = string_method(e, self.types)
+        if m is not None:
+            return self._string_method(e, m)
         if is_core_call(callee):
             # `std_pkg::message(...)` names the function `message(...)` does,
             # so it takes the form an unqualified call has. The spelling only
@@ -1335,8 +1397,10 @@ class _BodyEmitter(BodyWalker):
         if cn == "ExprRefLocal":
             return self.local_types.get(target.name)
         t = self.types.type_of(target)
-        if t is not None and t.kind == "array":
-            return t.dtype      # a field: an array literal needs its shape
+        if t is not None and t.kind in ("array", "struct"):
+            # A field or an element: an array literal needs its shape, a
+            # struct literal its type (E14).
+            return t.dtype
         return None
 
     def value_of(self, dtype, e) -> str:
@@ -1694,8 +1758,12 @@ def _has_range(pattern) -> bool:
 #: `addr_handle_t` is an opaque handle in PSS and a plain address here, so
 #: deriving a handle from another is an offset add.
 _ADDR_BUILTINS = {
-    "make_handle_from_handle":
-        lambda be, e: f"({be.expr(e.args[0])} + {be.expr(e.args[1])})",
+    # `sub` (21.13.4.2) subtracts the offset; it was ignored (W33).
+    "make_handle_from_handle": lambda be, e: (
+        f"({be.expr(e.args[0])} + {be.expr(e.args[1])})" if len(e.args) < 3
+        else f"(({be.expr(e.args[2])}) ? ({be.expr(e.args[0])} - "
+             f"{be.expr(e.args[1])}) : ({be.expr(e.args[0])} + "
+             f"{be.expr(e.args[1])}))"),
     # A handle IS the address here, so extracting its value is the identity.
     "addr_value": lambda be, e: be.expr(e.args[0]),
 }
@@ -1811,6 +1879,38 @@ def sv_declarator(dtype, name: str, what: str = "array", consts=None) -> str:
         dims += f"[{bound or n}]"
         dt = dt.element_type
     return f"{sv_type(dt)} {name}{dims}"
+
+
+def _sv_int_literal(e) -> str:
+    """An integer constant, spelled with its PSS type (Table 21): an SV
+    unsized decimal is a signed 32-bit `int`, which only `int` constants are.
+    `8'hFF` is 8 bits, `'d12` and `0x10` unsigned, `4'sd12` a signed 4-bit
+    -4; written as plain decimals, `-'d12 / 3` divided signed and
+    `8'hFF + 1` did not wrap."""
+    from zuspec.ir.core.expr import int_literal_type
+    v = e.value
+    w, signed = int_literal_type(e)
+    if signed and w == 32 and -(1 << 31) <= v < (1 << 31):
+        return str(v)
+    if signed:
+        v = v - (1 << w) if (v >> (w - 1)) & 1 and v > 0 else v
+        return f"-{w}'sd{-v}" if v < 0 else f"{w}'sd{v}"
+    v &= (1 << w) - 1
+    return f"{w}'d{v}" if v < 16 else f"{w}'h{v:x}"
+
+
+def _ir_has_call(e) -> bool:
+    """Whether IR expression *e* contains a call."""
+    if _dt_name(e) in ("ExprCall", "ExprMemberCall"):
+        return True
+    if not dc.is_dataclass(e):
+        return False
+    for f in dc.fields(e):
+        v = getattr(e, f.name, None)
+        for x in (v if isinstance(v, (list, tuple)) else (v,)):
+            if dc.is_dataclass(x) and _ir_has_call(x):
+                return True
+    return False
 
 
 def _nodes_of(e):

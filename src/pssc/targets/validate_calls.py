@@ -293,7 +293,8 @@ def validate_calls(root, ctx, target: str, *, report_only: bool = False,
                    ctor_names=None, entries=(),
                    pkg_functions: bool = False,
                    init_blocks: bool = False,
-                   extra_components=(), native: bool = False) -> List[str]:
+                   extra_components=(), native: bool = False,
+                   string_methods: bool = False) -> List[str]:
     """Classify every call in the component tree rooted at ``root``.
 
     ``entries`` is ``[(component, function)]`` for the exported actions
@@ -303,6 +304,10 @@ def validate_calls(root, ctx, target: str, *, report_only: bool = False,
     ``pkg_functions`` says whether the target lowers package-scope functions.
     If it does, each one the model reaches is checked too, in the context it
     runs in (`pkg_functions.py`); if not, a call to one is refused by name.
+
+    ``string_methods`` says whether it lowers the string methods
+    (`string_methods.RESULTS`). A call to one is recognised by its
+    receiver's type, before its name is classified (E1).
 
     ``init_blocks`` says whether it lowers `exec init_down`/`init_up`. If it
     does, their bodies are checked in solve context; if not, each is refused
@@ -368,11 +373,30 @@ def validate_calls(root, ctx, target: str, *, report_only: bool = False,
         calls: List[object] = []
         _walk_calls(getattr(fn, "body", None), calls)
         in_pkg = comp is None
+        types = None
         for call in calls:
             func = getattr(call, "func", None)
             name = callee_name(func)
             if name is None:
                 continue
+            if _dt_name(func) == "ExprAttribute":
+                from .expr_types import ExprTypes
+                from .string_methods import LISTS, method_of
+                types = types or ExprTypes(fn, comp, ctx)
+                m = method_of(call, types)
+                if m in LISTS:
+                    msgs.append(
+                        f"{_site(comp, fn, call)}cannot lower call: the string "
+                        f"method '{m}' returns a list, which '{target}' does "
+                        f"not hold (ruling R4)")
+                    continue
+                if m is not None:
+                    if not string_methods:
+                        msgs.append(
+                            f"{_site(comp, fn, call)}cannot lower call: "
+                            f"'{m}' is a string method (PSS 7.6.3), which "
+                            f"'{target}' does not lower")
+                    continue
             dirs = import_dirs.get(name)
             if dirs:
                 p, d = next(iter(dirs.items()))
@@ -440,7 +464,8 @@ def array_signatures(comps) -> List[str]:
 def gate(root, ctx, target: str, language: str, ctor_names=None,
          entries=(), pkg_functions: bool = False,
          init_blocks: bool = False, extra_components=(),
-         native: bool = False, array_params: bool = False) -> None:
+         native: bool = False, array_params: bool = False,
+         string_methods: bool = False) -> None:
     """Run :func:`validate_calls` and raise if anything is unlowerable.
 
     Every operation-model backend calls this as its first act, BEFORE any file
@@ -473,7 +498,8 @@ def gate(root, ctx, target: str, language: str, ctor_names=None,
     bad = validate_calls(root, ctx, target, ctor_names=ctor_names,
                          entries=entries, pkg_functions=pkg_functions,
                          init_blocks=init_blocks,
-                         extra_components=extra_components, native=native)
+                         extra_components=extra_components, native=native,
+                         string_methods=string_methods)
     if bad:
         raise CompileError(
             f"{len(bad)} call(s) cannot be lowered to {language}", bad)

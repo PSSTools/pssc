@@ -330,6 +330,8 @@ def elaborate(ctx, root, out_dir, *, ctor_names: Optional[FrozenSet[str]] = None
     from .comp_inherit import complete, problems
     complete(ctx)
     pm.flatten_struct_bases(ctx)
+    from .array_methods import lower as lower_array_methods
+    lower_array_methods(ctx)
     tree = pm.walk_tree(root, resolver(ctx))
     post = _post_order(tree)
     pre = _pre_order(tree)
@@ -466,6 +468,12 @@ class OpModelTarget(Target):
     #: refuses a function with one (`validate_calls.array_signatures`); C++'s
     #: `std::array` would compile, by value, and lose the callee's writes.
     supports_array_params: bool = False
+
+    #: Whether this backend renders the string methods that return a scalar
+    #: or a string (LRM 7.6.3, `string_methods.RESULTS`) and the sub-string
+    #: operator. One that does not refuses a call to one by name; a backend
+    #: with no strings at all refuses the type first (`unsupported_types`).
+    supports_string_methods: bool = False
 
     #: Types this backend does not render, by IR class name, with the reason
     #: a refusal gives (`unsupported_types`). Collections are refused on
@@ -787,6 +795,7 @@ class OpModelTarget(Target):
              pkg_functions=self.supports_package_functions,
              init_blocks=self.supports_init_blocks,
              array_params=self.supports_array_params,
+             string_methods=self.supports_string_methods,
              extra_components=model.base_classes,
              native=self.native_inheritance)
         self.check_executors(model)

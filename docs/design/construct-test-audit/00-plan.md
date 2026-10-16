@@ -9,7 +9,11 @@ call gate classifies by name and cannot yet type a receiver) and W24 (a
 Verilator limitation; declaration-site workaround open). P0+P1 committed
 (`e2c801f`). **P2 done** (`tests/unit/ir/`, 180 tests, §8): the
 expression and data-type kind registries, the ast2ir None catch-alls, W18,
-and six new IR defects found and fixed (I6-I11). Next: P3.
+and six new IR defects found and fixed (I6-I11). **P3 done** (§8): the
+expression grid (194 rows, pairwise, against an independent 8.7 oracle),
+~70 hand-written cases, the WB DMA operations traced on all four targets,
+string methods on py/sv (E1 closed), and 16 new defects, 14 fixed (W25-W33,
+E13-E16, E18) and two pinned as strict xfails (W31, E17). Next: P4.
 
 ## 0. What is in this directory
 
@@ -134,6 +138,21 @@ Sources are in brackets.
 | W23 | c, cpp | `break` in a `match` arm inside a loop | **silently wrong**: the `switch` it lowers to swallows the `break`, so the loop goes on (IP-1; found by the P1 case, no test covered it) | P1 |
 | W24 | sv (Verilator) | default of an array member of a struct (`array<bit[8],2> d = {3, 4};`) | the generated SV dropped it (fixed: `'{3, 4}`); Verilator 5.052 then ignores an unpacked array member's default (IEEE 1800 allows it), so a local still reads 0. Strict xfail; workaround = declaration-site initialisation | P1 |
 | W22 | cpp | struct `==` / `!=` | does not compile: generated structs declare no `operator==` (found by P1 "struct equality") | P1 |
+| W25 | c, cpp | `w[63:0] = x ** y`: the source of a part-select assignment | evaluated at its own width, not the select's (8.7.2): `bit[4] 3 ** 7` gave 0xb, not 0x88b | P3 grid |
+| W26 | cpp | assignment to an array element | not converted to the element type (8.7.2): no width propagated in, `bool` storage for `bit` | P3 grid |
+| W27 | sv (Verilator) | a compound integer `message` argument (`x ** y`, `4'(w) + 4'(15)`) | Verilator 5.052 evaluates it too wide in `$display`, even under a size cast; held in a temporary of its PSS type now (IEEE-identical) | P3 grid |
+| W28 | sv | an unsigned or sized literal (`'d12`, `8'hFF`, `0x10`) | rendered as a plain decimal, a signed 32-bit `int` in SV: `-'d12 / 3` divided signed | P3 |
+| W29 | c, cpp, sv | the most negative value `/ -1`, `% -1` | C: undefined behaviour (x86 traps); SV (Verilator): 0. PSS wraps: -2**31 and 0 | P3 |
+| W30 | c, cpp | a comparison its operands' ranges decide (`-x < 0`, x unsigned) | did not compile: `-Werror=type-limits` | P3 |
+| W31 | c, cpp, sv (assignment); all (parameter) | a derived struct where its base is expected (8.3, 20.3.2) | C/C++/SV flatten struct inheritance, so the types are unrelated; Python copies a derived struct's members into a base one. **Open** (strict xfail) | P3 |
+| W32 | py | `continue` in `repeat ... while` | jumped past the bottom-tested condition: the loop ran on (20.7.11 d) | P3 |
+| W33 | c, cpp, py, sv | `make_handle_from_handle(h, off, sub)` | C/C++: a computed offset rendered unbracketed, so the 32-bit mask covered the whole address; all four ignored `sub` | P3 |
+| E13 | all | a struct literal on the right of `==`/`!=` (8.5.3, Example 33) | internal error: nothing typed it from the left side | P3 |
+| E14 | sv | a struct literal assigned to an array element | "needs a struct type from its context" | P3 |
+| E15 | all | array `size()`/`sum()` (7.9.2.2) | refused by the call gate as unknown names | P3 |
+| E16 | all | `in` over an array slice (`v in a[lo..hi]`) | internal error | P3 |
+| E17 | c, py | `try_get` into a field or an array element (IP-54) | refused with an unlocated ValueError ("must be a local variable"). **Open** (strict xfail) | P3 |
+| E18 | cpp | an operation two components down (`dma.ch[1].f()`) | "has no lowering in the C++ target" | P3 (WB DMA) |
 | I5 | ast2ir | `bool` is `bit[1]` in the IR; `(bool)x` is `Cast(bit[1], x)` | a bool cast truncates to the low bit (7.12.1 b: nonzero is true). Root of W14 (c, sv) and W15 (py) | P2 |
 | I6 | ast2ir | open domain bound (`bit[4] in [6..]`, `int in [..2]`); an enum domain (`e_e in [A..B]`) | **silently wrong**: `[6..]` constrained to the single value 6, `[..2]` vanished; an enum domain failed as "Failed to translate field type", no line | P2 |
 | I7 | ast2ir | triple-quoted string with mustache expressions (4.7.1) in a body | **silently wrong**: the raw text (`v={{n}}`) reached every target | P2 |
@@ -576,7 +595,8 @@ construct is implemented and its refusal test becomes an executed case.
 
 | Feature | Targets refusing | Ruling | Refusal test | Note |
 |---|---|---|---|---|
-| `string` locals, fields, params, results | op-model-c, op-model-cpp | R3 | `test_m_strings.py` (both cases, `refused=`) | refused by type (`unsupported_types`); sv/py render `==`, `!=`, `match`; string METHODS are unimplemented on sv/py too (E1, strict xfail) |
+| `string` locals, fields, params, results | op-model-c, op-model-cpp | R3 | `test_m_strings.py` (every case, `refused=`) | refused by type (`unsupported_types`); sv/py render `==`, `!=`, `match`, sub-strings and the methods `size/find/find_last/lower/upper` (E1, closed in P3) |
+| string methods returning a list (`find_all`, `split`, `chars`) | op-model-py, op-model-sv (C/C++ refuse the type) | R4 | `test_m_strings.py` "string methods that return a list" | refused by the call gate as returning a list |
 | list / map / set | all op-model targets | R4 | `test_m_refusals.py` "a list", "a map", "a set" | refused by type, naming each use; **a support strategy is wanted soon** (user, 2026-10-16) |
 | `float32` / `float64` | all (refused in ast2ir) | R5 | `test_m_refusals.py` "floating point", "a floating-point parameter ..."; `tests/unit/ir/test_ir_expressions.py` | located (`line N:`) |
 | `ref T` parameter, `type T` parameter | all (refused in ast2ir) | (I2) | `test_ir_expressions.py::test_a_parameter_is_never_dropped` | was dropped from the signature |
@@ -849,4 +869,64 @@ Newest last. Each entry names what changed and the test that proves it.
   - `Field.is_const` is set for `const`/`static const` (was always False).
   - `bool` is still `bit[1]` in the IR (I5's root); the cast is fixed, and
     `test_ir_types.py` pins the representation.
-
+* 2026-10-16 — **P3 done.** 188 matrix cases (was 98), 12 strict-xfail
+  target cells. The matrix covers 52-53 of the 100 interaction patterns per
+  target (`python -m progseq.matrix.coverage` from `tests/`).
+  - **The expression grid** (§4.3): `matrix/grid.py` generates 194 rows
+    covering every pair of values of five axes (operator × left type × right
+    type × context × target type; 14 operators, 10 types, 11 contexts),
+    grouped one case per operator in `test_m_grid.py`. Expected values come
+    from `matrix/ref8_7.py`, an arbitrary-precision model of 8.7 that imports
+    nothing from pssc and is itself checked against LRM Examples 42-45
+    (`test_ref8_7.py`). Two choices make it sharp: operand values are chosen
+    so the LRM's answer differs from a "compute in 64 bits" and a "never
+    propagate a width" host, and a stored result is printed widened to 64
+    bits, since `%x` prints at the PSS width and re-masked a wrong store.
+    **Calibration:** re-introducing W1 (C++ `op=`) or W3 (C shift guard)
+    fails the grid; before the two choices, W1 passed it.
+  - **Hand-written cases** in every area file (ints, bool/enum/cast,
+    struct, array, control, match, functions, library, channels, strings,
+    refusals) -- the P3 table's list and the P4 "matrix now" patterns that
+    fall in those areas, each tagged with sub-construct and IP IDs.
+  - **WB DMA** (`test_m_wb_dma.py`): `write_descriptor`,
+    `read_descriptor_residual`, `transfer_list`, `check_completion` (both
+    paths), `configure_interrupt_routing` and `set_software_pointer` of the
+    real model, driven from a `pss_top` through the matrix harness and held to
+    one hand-worked trace on c, cpp, py and sv. `transfer_single` was already
+    executed by the C/C++ behaviour tests.
+  - **Fixed** (§2): W25-W30, W32, W33, E13-E16, E18. Shared lowerings, so
+    every target gets them at once: `targets/array_methods.py` rewrites a
+    fixed array's `size()`/`sum()` before the call gate (E15);
+    `body_walker.in_as_compare` reads a slice (E16);
+    `targets/string_methods.py` recognises a string method by its receiver's
+    type for `ExprTypes` and the call gate (E1), with
+    `OpModelTarget.supports_string_methods` (py, sv), Python helpers in
+    `py/pss_str.py` emitted only when used, and SV's `pssc_str_find[_last]`
+    in `pssc_reg_pkg.sv`. No golden snapshot changed.
+  - **Open, pinned:** W31 (a derived struct as its base: needs the struct
+    base chain kept past `flatten_struct_bases` and a copy-in/out or a cast
+    per target) and E17 (`try_get` into a field or element on C and Python:
+    a typed helper in C, a cell write-back in Python). W24 unchanged.
+  - **pssparser defect, fixed at source (pssparser 65f6471, branch chained-method-calls):**
+    a method of a built-in method's result (`s.lower().size()`,
+    `s.split(",").size()`) reported PSS042 ("'size' was left unbound by
+    pssparser"): `TaskResolveRefs::visitExprRefPathContext` stopped the path
+    at the first string method. It now continues from the method's
+    prototype's result: a string's methods are signature-checked, a
+    `list<T>`'s name-checked, and a scalar's member is PSS004. Tests in
+    pssparser's `test_string_method_signatures.py` (calibrated: six fail
+    without the fix). pssc needed no change: `test_m_strings.py` "chained
+    string method calls" runs on py and sv, and a chain on `split` is
+    refused under R4. The same stop hit a member of a *collection* method's
+    result (`l.to_list().size()`, `ls.front().x`); collection methods have
+    no prototypes yet, so their results are classified
+    (`collectionMethodResult`): a collection of the same elements (its
+    methods name-checked), an element (typed by the collection's element
+    parameter: a struct's members, a string's methods, a nested
+    collection's methods), or nothing with members (PSS004). Tests in
+    pssparser's `test_chained_collection_methods.py`. Collections remain
+    refused on the op-model targets (R4).
+  - Not done here: the R6/R7/R8/R10-dependent cases (enum ranges and
+    relational, `urandom` beyond a one-value range, argument evaluation
+    order); `test_m_refusals.py` patterns still name `comp::function`, not
+    `file:line`, for gate refusals (the P1 location finding, P5).

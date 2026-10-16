@@ -80,6 +80,23 @@ component pss_top {""" + ONE + """
 }""", ["write 32 0x1004 0x1", "write 32 0x1004 0x1", "write 32 0x1004 0x2",
        "write 32 0x1004 0x3", "write 32 0x1004 0x2"],
         covers=("ST-MATCH",)),
+
+    # --- P3: arms with several values (20.7.10) -------------------------------
+    # An arm lists values and ranges; the first arm holding the subject runs.
+    "arms with several values and ranges, in a loop": Case("""
+component pss_top {""" + ONE + """
+  target function void run() {
+    repeat (i : 9) {
+      match (i) {
+        [0, 2, 4]: message(LOW, "%d even", i);
+        [1, 3, 5..7]: { if (i == 6) { continue; } message(LOW, "%d odd", i); }
+        default: { message(LOW, "%d big", i); break; }
+      }
+    }
+  }
+}""", ["0 even", "1 odd", "2 even", "3 odd", "4 even", "5 odd", "7 odd",
+       "8 big"],
+        covers=("ST-MATCH", "ST-BRK", "ST-REPEAT")),
 }
 
 test_construct = define_tests(CASES)

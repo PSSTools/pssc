@@ -105,11 +105,15 @@ def c_select_read(sel, render) -> str:
     return f"(({base} >> {_select_lo(sel, render)}) & {mask})"
 
 
-def c_select_write(sel, render, value, where: str) -> str:
+def c_select_write(sel, render, value: str, where: str) -> str:
     """The whole value after `x[hi:lo] = v` (8.5.x), in C or C++: the
     selected bits replaced by `v`, truncated to the select's width, and the
     rest kept. `x` is read as well as written, so a path with a call in it is
-    refused rather than evaluated twice."""
+    refused rather than evaluated twice.
+
+    *value* is `v` already rendered as the source of an assignment to the
+    select's `bit[N]` (8.7.2, `select_type`): a select wider than `v` widens
+    it before it is evaluated."""
     if _has_call(sel.base) or (sel.lo_const is None and _has_call(sel.lo)):
         raise ValueError(
             f"in '{where}': an assignment to a bit select of a value with a "
@@ -118,11 +122,63 @@ def c_select_write(sel, render, value, where: str) -> str:
     sfx = "ull" if sel.base_width > 32 else "u"
     mask = f"0x{sel.mask:x}{sfx}"
     base = render(sel.base)
-    v = f"(({render(value)}) & {mask})"
+    v = f"(({value}) & {mask})"
     if sel.lo_const == 0:
         return f"({base} & ~{mask}) | {v}"
     lo = _select_lo(sel, render)
     return f"({base} & ~({mask} << {lo})) | ({v} << {lo})"
+
+
+#: A call in rendered C or C++ (a name and its argument list).
+_C_CALL = re.compile(r"[A-Za-z_]\w*\s*\(")
+
+
+def _cmp_decided(op: str, a: _Val, b: _Val) -> Optional[bool]:
+    """The result of comparing *a* with *b* if their ranges decide it."""
+    op = {"Le": "LtE", "Ge": "GtE", "Ne": "NotEq"}.get(op, op)
+    if None in (a.lo, a.hi, b.lo, b.hi):
+        return None
+    if op == "Lt":
+        return True if a.hi < b.lo else False if a.lo >= b.hi else None
+    if op == "LtE":
+        return True if a.hi <= b.lo else False if a.lo > b.hi else None
+    if op == "Gt":
+        return True if a.lo > b.hi else False if a.hi <= b.lo else None
+    if op == "GtE":
+        return True if a.lo >= b.hi else False if a.hi < b.lo else None
+    if op == "Eq":
+        if a.hi < b.lo or a.lo > b.hi:
+            return False
+        return True if a.lo == a.hi == b.lo == b.hi else None
+    if op == "NotEq":
+        if a.hi < b.lo or a.lo > b.hi:
+            return True
+        return False if a.lo == a.hi == b.lo == b.hi else None
+    return None
+
+
+def handle_from_handle(em, args) -> str:
+    """`make_handle_from_handle(h, offset, sub = false)` (21.13.4.2) in C or
+    C++, where a handle is its address: `h + offset`, or `h - offset` when
+    `sub` is true. The offset is a `bit[64]` parameter, so it is converted to
+    that (8.7.2) -- rendered on its own, `0x20 + 4 * i` came out masked to
+    32 bits after the add, truncating the address (W33)."""
+    h = em.expr(args[0])
+    off = (em.expr(args[1]) if _dt_name(args[1]) == "ExprConstant"
+           else em.convert_to(args[1], PssType("int", 64, False)))
+    off = off if _c_atomic(off) else f"({off})"
+    plus, minus = f"({h} + {off})", f"({h} - {off})"
+    if len(args) < 3:
+        return plus
+    sub = args[2]
+    if _dt_name(sub) == "ExprConstant" and isinstance(sub.value, (bool, int)):
+        return minus if sub.value else plus
+    return f"(({em.expr(sub)}) ? {minus} : {plus})"
+
+
+def select_type(sel):
+    """The type a select is assigned as: `bit[N]`, N its width (Table 21)."""
+    return PssType("int", sel.width, False)
 
 
 def _select_lo(sel, render) -> str:
@@ -1214,11 +1270,49 @@ class CIntSemantics(IntSemantics):
         return f"({big} ? 0 : {_br(a)} {_BINOP[op]} {_br(b)})"
 
     def int_signed_div_text(self, op: str, a: _Val, b: _Val) -> str:
-        # C's `/` and `%` truncate toward zero, which is PSS's (8.5.1).
-        return f"({_br(a)} {_BINOP[op]} {_br(b)})"
+        """C's `/` and `%` truncate toward zero, which is PSS's (8.5.1). But
+        the most negative value of C's type divided by -1 overflows it, which
+        C leaves undefined (x86 traps), where PSS wraps: -2**31 / -1 is
+        -2**31 and the remainder 0 (W29). Where that pair can occur, a 32-bit
+        dividend is divided in 64 bits -- the quotient is then wrapped like
+        any value outside its type -- and a 64-bit one is tested for -1."""
+        plain = f"({_br(a)} {_BINOP[op]} {_br(b)})"
+        if b.lo is not None and b.hi is not None and not b.lo <= -1 <= b.hi:
+            return plain
+        if a.lo is not None and a.lo > -(1 << 63) and (
+                a.lo > -(1 << 31) or a.lo < -(1 << 31)):
+            return plain
+        if a.lo == -(1 << 31) and a.hi is not None and a.hi < (1 << 31):
+            wide = self.int_cast_text(self.int_type_name("int64_t"),
+                                      a.text, a.atom)
+            return f"({wide} {_BINOP[op]} {_br(b)})"
+        if _C_CALL.search(b.text):
+            raise ValueError(
+                f"in '{getattr(self.fn, 'name', '?')}': a 64-bit signed "
+                f"`{_BINOP[op]}` whose divisor may be -1 tests the divisor "
+                f"first, so the divisor would be evaluated twice, and it "
+                f"contains a call. Read it into a local first.")
+        if op == "Mod":
+            return f"({_br(b)} == -1 ? 0 : {plain})"
+        neg = self.int_cast_text(
+            self.int_type_name("int64_t"),
+            f"0ull - {self.int_cast_text(self.int_type_name('uint64_t'), a.text, a.atom)}",
+            False)
+        return f"({_br(b)} == -1 ? {neg} : {plain})"
 
     def int_cmp_text(self, op: str, a: _Val, b: _Val) -> str:
-        return f"{_br(a)} {_BINOP[op]} {_br(b)}"
+        """A comparison whose result the operands' ranges decide is that
+        result: `-x < 0` of an unsigned x is false, and C's
+        `-Werror=type-limits` refuses to compile it spelled out (W30). An
+        operand with a call is still evaluated."""
+        known = _cmp_decided(op, a, b)
+        if known is None:
+            return f"{_br(a)} {_BINOP[op]} {_br(b)}"
+        side = [x.text for x in (a, b) if _C_CALL.search(x.text)]
+        if not side:
+            return str(int(known))
+        return ("(" + ", ".join(f"(void)({t})" for t in side)
+                + f", {int(known)})")
 
     def int_leaf_text(self, e, s, t) -> str:
         """A primary, in the C type its operation is carried out in
@@ -1765,7 +1859,8 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         return c_select_read(sel, self.expr)
 
     def _select_assign_value(self, sel, value) -> str:
-        return c_select_write(sel, self.expr, value,
+        return c_select_write(sel, self.expr,
+                              self.convert_to(value, select_type(sel)),
                               getattr(self.fn, "name", "?"))
 
     def expr_bin(self, e) -> str:
@@ -1832,7 +1927,11 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             else:
                 leaves.append(f"{a} == {b}")
 
-        walk(dtype, self.expr(e.lhs), self.expr(e.rhs))
+        # `s == {...}` (8.5.3, Example 33): the literal is typed by the struct
+        # it is compared with (E13); a compound literal's member is readable.
+        rhs = (self.convert_to(e.rhs, self.types.type_of(e.lhs))
+               if _dt_name(e.rhs) == "ExprStructLiteral" else self.expr(e.rhs))
+        walk(dtype, self.expr(e.lhs), rhs)
         if len(leaves) > self._EQ_LEAVES:
             raise ValueError(
                 f"in '{getattr(self.fn, 'name', '?')}': an aggregate `==` of "
@@ -1986,7 +2085,7 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             return None
         args = call.args
         if name == "make_handle_from_handle":
-            return f"({self.expr(args[0])} + {self.expr(args[1])})"
+            return handle_from_handle(self, args)
         if name == "addr_value":
             # The handle IS the address here, so this is the identity.
             return self.expr(args[0])

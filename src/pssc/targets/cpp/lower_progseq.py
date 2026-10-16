@@ -46,7 +46,8 @@ from ..bit_select import bit_select
 from ..c.lower_progseq import (
     Prefixes, regular_nodes, post_order, c_string_literal, _array_size,
     _builtin_name, _str_const, func_kind_name, parse_prefix_map,
-    c_select_read, c_select_write, CIntSemantics, _c_carrier,
+    c_select_read, c_select_write, select_type, CIntSemantics, _c_carrier,
+    handle_from_handle,
     _c_unbracket, _has_call, by_handle_params, _prefixed, with_defaults,
 )
 from ..expr_types import (CONTEXT_BINARY, CONTEXT_UNARY, LEFT_TYPED,
@@ -452,6 +453,12 @@ class _BodyEmitter(CIntSemantics):
         if cn == "ExprCall":
             fn = self._callee(e)
             return getattr(fn, "returns", None) if fn is not None else None
+        if cn == "ExprSubscript":
+            # An array element: its element type, so an assignment to one
+            # is converted to it (8.7.2) as to any other target (W26).
+            base = self.types.resolve(self._expr_type(e.value))
+            if _dt_name(base) == _DT_ARRAY:
+                return base.element_type
         return None
 
     def _literal(self, lst, dtype) -> str:
@@ -527,10 +534,21 @@ class _BodyEmitter(CIntSemantics):
             return _fn_named(self.comp, func.attr) or self.imports.get(func.attr)
         if _dt_name(func.value) == "TypeExprRefSuper":
             return _fn_named(self.super_base, func.attr)
-        chain = self._chain(func.value)
-        if chain and len(chain) == 1 and chain[0][0] in self.subs:
-            return _fn_named(self.subs[chain[0][0]].dtype, func.attr)
-        return None
+        dt = self._chain_comp(self._chain(func.value))
+        return _fn_named(dt, func.attr) if dt is not None else None
+
+    def _chain_comp(self, chain):
+        """The component type a self-rooted path of sub-components names
+        (`dma.ch[i]`, any depth), or None if the path is not one."""
+        if not chain:
+            return None
+        dt = self.comp
+        for name, _ in chain:
+            sub = {s.name: s for s in sub_components(dt)}.get(name)
+            if sub is None:
+                return None
+            dt = sub.dtype
+        return dt
 
     def _call_args(self, call) -> List[str]:
         """A call's arguments, each rendered in its parameter's type."""
@@ -769,7 +787,7 @@ class _BodyEmitter(CIntSemantics):
         if name == "make_handle_from_handle":
             # A handle is opaque in PSS and an address here, so deriving one
             # from another is an add rather than a call.
-            return f"({self.expr(args[0])} + {self.expr(args[1])})"
+            return handle_from_handle(self, args)
         if name == "addr_value":
             return self.expr(args[0])
         if name in _MEM_PRIMS:
@@ -864,11 +882,22 @@ class _BodyEmitter(CIntSemantics):
         func = call.func
         if _dt_name(func) != "ExprAttribute":
             return None
+        # A sub-component at any depth (`dma.ch[1].f()`, E18): every step is
+        # the MEMBER of the concrete class, not the accessor of the same name.
         chain = self._chain(func.value)
-        if not chain or len(chain) != 1 or chain[0][0] not in self.subs:
+        if self._chain_comp(chain) is None:
             return None
         args = ", ".join(self._call_args(call))
-        return f"{self.expr(func.value)}.{mangle(func.attr)}({args})"
+        if len(chain) == 1:
+            return f"{self.expr(func.value)}.{mangle(func.attr)}({args})"
+        dt, path = self.comp, "this->"
+        for k, (name, idx) in enumerate(chain):
+            sub = {s.name: s for s in sub_components(dt)}[name]
+            path += ("" if k == 0 else ".") + _sub_member(sub)
+            if idx is not None:
+                path += f"[{self.expr(idx)}]"
+            dt = sub.dtype
+        return f"{path}.{mangle(func.attr)}({args})"
 
     def _super(self) -> str:
         if self.super_cls is None:
@@ -931,6 +960,12 @@ class _BodyEmitter(CIntSemantics):
         integer) compares in the enum's type: an `enum class` compares with
         nothing else."""
         lhs, rhs = e.lhs, e.rhs
+        if e.op.name in ("Eq", "NotEq", "Ne") \
+                and _dt_name(rhs) == "ExprStructLiteral":
+            # `s == {...}` (8.5.3, Example 33): the literal is typed by the
+            # struct it is compared with (E13).
+            return (f"{self._operand(lhs)} {op} "
+                    f"{self.convert_to(rhs, self.types.type_of(lhs))}")
         if e.op.name in self._COMPARISONS:
             lt, rt = self._enum_type(lhs), self._enum_type(rhs)
             lt_is, rt_is = lt is not None, rt is not None
@@ -1070,8 +1105,9 @@ class _BodyEmitter(CIntSemantics):
             tgt = s.targets[0]
             sel = bit_select(tgt, self.types)
             if sel is not None:
-                value = c_select_write(sel, self.expr, s.value,
-                                       getattr(self.fn, "name", "?"))
+                value = c_select_write(
+                    sel, self.expr, self.convert_to(s.value, select_type(sel)),
+                    getattr(self.fn, "name", "?"))
                 return [f"{pad}{self.expr(sel.base)} = {value};"]
             if self._int_storage(tgt) and self._enum_type(s.value) is not None:
                 # An enum into a register value field: its integer value.

@@ -169,6 +169,80 @@ component pss_top {""" + ONE + """
   target function void run() { go(6); go(8); }
 }""", ["write 32 0x1004 0x1", "write 32 0x1004 0x0"],
         covers=("EX-IN", "DT-ARR")),
+
+    # --- P3: arrays as values ----------------------------------------------------
+    # An array assignment copies (7.9.2.1, IP-41), a row of a two-dimensional
+    # array is itself an array value (DT-ARR.2, IP-42), and both copies keep
+    # their values when the source changes afterwards.
+    "array copies and rows of a two-dimensional array": Case("""
+component pss_top {""" + ONE + """
+  target function void run() {
+    array<bit[8], 3> a = {1, 2, 3};
+    array<bit[8], 3> b = a;
+    array<array<bit[8], 2>, 2> m = {{1, 2}, {3, 4}};
+    array<array<bit[8], 2>, 2> n;
+    a[0] = 9;
+    n[1] = m[0];
+    m[0][1] = 7;
+    message(LOW, "%d %d %d %d %d %d", b[0], a[0], n[1][0], n[1][1], m[0][1],
+            n[0][0]);
+  }
+}""", ["1 9 1 2 7 0"],
+        covers=("DT-ARR.2", "DT-ARR.5", "EX-ASSIGN.8", "IP-41", "IP-42")),
+
+    # `size()` is the element count; `sum()` of an integer array is an `int`
+    # (7.9.2.2, Table 8), so 200 + 100 of bit[8] elements is 300.
+    "size and sum of an array": Case("""
+component pss_top {""" + ONE + """
+  target function void run() {
+    array<bit[8], 3> a = {200, 100, 0};
+    array<int, 2> b = {-5, 2};
+    message(LOW, "%d %d %d", a.size(), a.sum(), b.sum());
+  }
+}""", ["3 300 -3"], covers=("DT-ARR.9", "DT-ARR.10")),
+
+    # Nested `foreach` with `continue` in the inner loop; an index named like
+    # an outer local is a new variable, and the outer one is unchanged after
+    # the loop (20.7.8 e, IP-24).
+    "nested foreach and an index named like a local": Case("""
+component pss_top {""" + ONE + """
+  target function void run() {
+    array<bit[8], 2> a = {1, 2};
+    array<bit[8], 3> b = {10, 20, 30};
+    int i = 99;
+    foreach (x : a[i]) {
+      foreach (y : b[j]) {
+        if (j == 1) { continue; }
+        message(LOW, "%d %d %d %d", i, j, x, y);
+      }
+    }
+    message(LOW, "%d", i);
+  }
+}""", ["0 0 1 10", "0 2 1 30", "1 0 2 10", "1 2 2 30", "99"],
+        covers=("ST-FOREACH", "ST-BRK", "ST-BLOCK", "IP-24")),
+
+    # `in` over a slice of an array (8.5.9.1): `a[1..2]` holds 2 and 3; a
+    # slice whose bounds cross is empty.
+    "in over an array slice": Case("""
+component pss_top {""" + ONE + """
+  target function void go(int v, int lo, int hi) {
+    array<int, 4> a = {1, 2, 3, 4};
+    if (v in a[lo..hi]) { message(LOW, "%d in", v); }
+    else { message(LOW, "%d out", v); }
+  }
+  target function void run() { go(2, 1, 2); go(1, 1, 2); go(3, 2, 1); }
+}""", ["2 in", "1 out", "3 out"], covers=("DT-ARR.8", "EX-IN.4")),
+
+    # A `static const` array is read like any other (DT-ARR.16).
+    "a static const array": Case("""
+component pss_top {""" + ONE + """
+  static const array<bit[8], 3> TBL = {5, 6, 7};
+  target function void run() {
+    bit[8] t = 0;
+    foreach (v : TBL) { t += v; }
+    message(LOW, "%d %d", TBL[1], t);
+  }
+}""", ["6 18"], covers=("DT-ARR.16", "DT-CONST", "ST-FOREACH")),
 }
 
 test_construct = define_tests(CASES)

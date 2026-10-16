@@ -182,6 +182,37 @@ def in_as_compare(e, types, where: str = "?"):
                     lhs=ir.ExprBin(lhs=v, op=ir.BinOp.GtE, rhs=r.lower),
                     op=ir.BinOp.And,
                     rhs=ir.ExprBin(lhs=v, op=ir.BinOp.LtE, rhs=r.upper)))
+    elif _dt_name(cont) == "ExprSubscript" \
+            and _dt_name(cont.slice) == "ExprSlice":
+        # `v in a[lo..hi]` (8.5.9.1): an element whose index the slice
+        # holds; a slice whose bounds cross holds none (E16).
+        base, sl = cont.value, cont.slice
+        t = types.type_of(base)
+        size = getattr(types.resolve(getattr(t, "dtype", None)), "size", None)
+        if t is None or t.kind != "array" or not isinstance(size, int):
+            raise ValueError(
+                f"in '{where}': `in` over a slice of a "
+                f"{getattr(t, 'kind', 'value')} is not lowered; a slice of a "
+                f"fixed-size array is")
+        if any(_dt_name(n) == "ExprCall"
+               for x in (base, sl.lower, sl.upper) if x is not None
+               for n in _walk(x)):
+            raise ValueError(
+                f"in '{where}': the array and bounds of an `in` over a slice "
+                f"are read once per element, and they contain a call")
+        for i in range(size):
+            idx = ir.ExprConstant(value=i)
+            term = ir.ExprBin(lhs=v, op=ir.BinOp.Eq,
+                              rhs=ir.ExprSubscript(value=base, slice=idx))
+            if sl.upper is not None:
+                term = ir.ExprBin(lhs=ir.ExprBin(lhs=idx, op=ir.BinOp.LtE,
+                                                 rhs=sl.upper),
+                                  op=ir.BinOp.And, rhs=term)
+            if sl.lower is not None:
+                term = ir.ExprBin(lhs=ir.ExprBin(lhs=sl.lower,
+                                                 op=ir.BinOp.LtE, rhs=idx),
+                                  op=ir.BinOp.And, rhs=term)
+            terms.append(term)
     else:
         t = types.type_of(cont)
         size = getattr(getattr(t, "dtype", None), "size", None)
@@ -210,24 +241,29 @@ def in_as_compare(e, types, where: str = "?"):
 _LOOPS = ("StmtWhile", "StmtFor", "StmtForeach", "StmtRepeatWhile")
 
 
-def _breaks_out(stmts) -> bool:
-    """Whether *stmts* hold a `break` that leaves the loop around them (one
-    not inside a loop of their own)."""
+def _breaks_out(stmts, kind: str = "StmtBreak") -> bool:
+    """Whether *stmts* hold a `break` (or a statement of *kind*) that acts on
+    the loop around them: one not inside a loop of their own."""
     for st in stmts or ():
         cn = _dt_name(st)
-        if cn == "StmtBreak":
+        if cn == kind:
             return True
         if cn in _LOOPS:
             continue
         for f in dc.fields(st):
             v = getattr(st, f.name, None)
             if isinstance(v, list) and v and _dt_name(v[0]).startswith("Stmt"):
-                if _breaks_out(v):
+                if _breaks_out(v, kind):
                     return True
             if cn == "StmtMatch" and f.name == "cases":
-                if any(_breaks_out(c.body) for c in v):
+                if any(_breaks_out(c.body, kind) for c in v):
                     return True
     return False
+
+
+def continues_out(stmts) -> bool:
+    """Whether *stmts* hold a `continue` that acts on the loop around them."""
+    return _breaks_out(stmts, "StmtContinue")
 
 
 def match_needs_chain(s) -> bool:

@@ -200,6 +200,10 @@ op-model targets (`trace_harness.py` builds and runs C, C++, Python and SV;
 a module's builds run together, one per core). A case a target cannot handle
 yet is a strict xfail naming its defect. Each case's `covers=` names the
 constructs it exercises (`docs/design/construct-test-audit/taxonomy.md`).
+`test_m_grid.py` is generated (`matrix/grid.py`): integer operators × types ×
+contexts, pairwise, its values from `matrix/ref8_7.py`, a model of LRM 8.7
+that must never import pssc -- it is what the shared `IntSemantics` is held
+to, not a copy of it.
 
 ## The Python backend
 

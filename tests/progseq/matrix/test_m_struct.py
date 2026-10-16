@@ -4,8 +4,13 @@ See `_matrix` for what a case is and how it is run.
 """
 from __future__ import annotations
 
-from ._matrix import Case, define_tests, on, ONE
+from ._matrix import ALL, Case, define_tests, on, ONE
 
+
+#: A derived struct used where its base is expected (8.3, 20.3.2): C, C++
+#: and SV declare a derived struct flattened, with no relation to its base,
+#: and Python copies a derived struct's members into a base one.
+W31 = "W31: a derived struct is not usable as its base (8.3, 20.3.2)"
 
 CASES = {
     # --- A struct's defaults, wherever a value of it is -------------------------
@@ -166,6 +171,171 @@ component pss_top {""" + ONE + """
   }
 }""", ["write 32 0x1004 0x2", "write 32 0x1004 0x8"],
         covers=("DT-STRUCT", "EX-LIT", "FN-PARAM")),
+
+    # --- P3: a struct is a value (8.3) -----------------------------------------
+    # Assignment copies every member, nested ones too; changing the source
+    # afterwards leaves the copy (DT-STRUCT.4).
+    "a struct copy is a value": Case("""
+struct pt_s { bit[8] x; bit[8] y; }
+struct box_s { pt_s lo; pt_s hi; }
+component pss_top {""" + ONE + """
+  target function void run() {
+    pt_s p;
+    box_s bx;
+    p.x = 1;
+    p.y = 2;
+    pt_s q = p;
+    p.x = 9;
+    message(LOW, "%d %d %d", q.x, q.y, p.x);
+    bx.hi = p;
+    bx.hi.y = 7;
+    message(LOW, "%d %d", p.y, bx.hi.y);
+    box_s c = bx;
+    c.hi.x = 3;
+    message(LOW, "%d %d", bx.hi.x, c.hi.x);
+  }
+}""", ["1 2 9", "2 7", "9 3"],
+        covers=("DT-STRUCT.2", "DT-STRUCT.4", "EX-ASSIGN.8")),
+
+    # A struct result is returned by value (DT-STRUCT.11), and a call's
+    # member is read directly (IP-74).
+    "a struct returned by a function": Case("""
+struct pt_s { bit[8] x; bit[8] y; }
+component pss_top {""" + ONE + """
+  target function pt_s mk(bit[8] v) { pt_s p; p.x = v; p.y = v + 1; return p; }
+  target function void run() {
+    pt_s q = mk(4);
+    message(LOW, "%d %d %d", q.x, q.y, mk(7).y);
+  }
+}""", ["4 5 8"], covers=("DT-STRUCT.11", "FN-CALL", "IP-74")),
+
+    # Struct parameters are handles (20.3.2): a callee's whole-struct
+    # assignments swap the caller's structs (IP-38, Example 291).
+    "swapping structs through their handles": Case("""
+struct pt_s { bit[8] x; bit[8] y; }
+component pss_top {""" + ONE + """
+  target function void swap(pt_s a, pt_s b) { pt_s t = a; a = b; b = t; }
+  target function void run() {
+    pt_s p;
+    pt_s q;
+    p.x = 1;
+    q.x = 2;
+    q.y = 3;
+    swap(p, q);
+    message(LOW, "%d %d %d %d", p.x, p.y, q.x, q.y);
+  }
+}""", ["2 3 1 0"], covers=("DT-STRUCT.10", "FN-PARAM", "IP-38")),
+
+    # Every level of a recursion holds the caller's struct, so its writes
+    # accumulate, while each frame's local is its own (IP-10).
+    "recursion with a struct parameter": Case("""
+struct acc_s { int n; }
+component pss_top {""" + ONE + """
+  target function void bump(acc_s a, int d) {
+    int mine = d;
+    a.n = a.n + d;
+    if (d > 0) { bump(a, d - 1); }
+    message(LOW, "%d %d", mine, a.n);
+  }
+  target function void run() {
+    acc_s s;
+    bump(s, 2);
+    message(LOW, "%d", s.n);
+  }
+}""", ["0 3", "1 3", "2 3", "3"],
+        covers=("DT-STRUCT.10", "FN-CALL", "ST-VAR", "IP-10")),
+
+    # A derived struct is a base (8.3): assigned to a base variable it gives
+    # its base members, and compares with a base literal (IP-40).
+    "a derived struct assigned to a base": Case("""
+struct b_s { bit[8] a; }
+struct d_s : b_s { bit[8] e; }
+component pss_top {""" + ONE + """
+  target function void run() {
+    d_s d;
+    d.a = 5;
+    d.e = 2;
+    b_s b = d;
+    b_s c;
+    c = d;
+    if (b == {.a = 5}) { message(LOW, "eq %d", c.a); }
+    else { message(LOW, "ne"); }
+  }
+}""", ["eq 5"], xfail=on(("c", "cpp", "sv"), W31),
+        covers=("DT-STRUCT.3", "DT-STRUCT.5", "EX-EQ.6", "IP-40")),
+
+    # Passed for a base parameter, it is the caller's struct: the callee's
+    # assignment copies base members only (20.3.2, IP-39).
+    "a derived struct passed for a base parameter": Case("""
+struct b_s { bit[8] a; }
+struct d_s : b_s { bit[8] e; }
+component pss_top {""" + ONE + """
+  target function void setb(b_s p) { b_s q; q.a = 5; p = q; }
+  target function void run() {
+    d_s d;
+    d.a = 1;
+    d.e = 2;
+    setb(d);
+    message(LOW, "%d %d", d.a, d.e);
+  }
+}""", ["5 2"], xfail=on(ALL, W31),
+        covers=("DT-STRUCT.10", "FN-PARAM", "IP-39")),
+
+    # `==` against a literal compares what the literal leaves out with its
+    # default (8.4.2, Example 33; IP-91).
+    "struct equality with a partial literal": Case("""
+struct pt_s { bit[8] x; bit[8] y; }
+component pss_top {""" + ONE + """
+  target function void run() {
+    pt_s p;
+    p.x = 3;
+    if (p == {.x = 3}) { message(LOW, "eq"); } else { message(LOW, "ne"); }
+    p.y = 1;
+    if (p == {.x = 3}) { message(LOW, "eq"); } else { message(LOW, "ne"); }
+    if (p != {.y = 1, .x = 3}) { message(LOW, "ne"); }
+    else { message(LOW, "eq"); }
+  }
+}""", ["eq", "ne", "eq"],
+        covers=("DT-STRUCT.6", "DT-STRUCT.7", "EX-EQ.4", "EX-EQ.6",
+                "IP-91")),
+
+    # A literal assigned to a struct is the whole struct (IP-15): what it
+    # leaves out returns to its default, nested members too; and into an
+    # array element (IP-14).
+    "a struct literal overwrites every member": Case("""
+struct in_s { bit[8] x = 7; }
+struct out_s { bit[8] a; in_s inn; bit[8] b = 9; }
+component pss_top {""" + ONE + """
+  target function void run() {
+    out_s o;
+    array<out_s, 3> arr;
+    o.a = 1;
+    o.inn.x = 2;
+    o.b = 3;
+    o = {.a = 4};
+    message(LOW, "%d %d %d", o.a, o.inn.x, o.b);
+    arr[1].b = 0;
+    arr[2] = {.a = 1, .inn = {.x = 2}};
+    message(LOW, "%d %d %d %d", arr[2].a, arr[2].inn.x, arr[2].b, arr[1].b);
+  }
+}""", ["4 7 9", "1 2 9 0"],
+        covers=("DT-STRUCT.1", "DT-STRUCT.7", "EX-LIT.14", "EX-LIT.15",
+                "IP-14", "IP-15")),
+
+    # `?:` chooses between struct values (8.5.8; IP-31).
+    "a conditional of struct values": Case("""
+struct pt_s { bit[8] x; bit[8] y; }
+component pss_top {""" + ONE + """
+  target function void go(bool c) {
+    pt_s p;
+    pt_s q;
+    p.x = 1;
+    q.x = 2;
+    pt_s r = c ? p : q;
+    message(LOW, "%d", r.x);
+  }
+  target function void run() { go(true); go(false); }
+}""", ["1", "2"], covers=("EX-COND.3", "DT-STRUCT", "IP-31")),
 }
 
 test_construct = define_tests(CASES)

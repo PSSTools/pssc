@@ -47,9 +47,10 @@ from .. import pkg_functions as pf
 from ..bit_select import bit_select
 from ..int_semantics import IntSemantics, _Val, _br
 from ..body_walker import (BodyWalker, CallDispatch, match_values,
-                           in_as_compare,
+                           in_as_compare, continues_out,
                            scan_output_locals)
 from ..call_legality import Ctx
+from ..string_methods import method_of as string_method, substring
 from ..validate_calls import callee_name, is_super_call
 from ..comments import HASH
 from .. import executors as xtr
@@ -333,6 +334,7 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
         #: the leading underscore keeps them clear of PSS locals, whose names
         #: come from the model and do not start with one.
         self._tmp_n = 0
+        self._rw_n = 0
         #: The one call node that must NOT be hoisted, because the statement
         #: being rendered already is that call. See `_no_hoist_for`.
         self._no_hoist: Optional[int] = None
@@ -567,6 +569,13 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
         return f"{self.expr(base)}.{e.attr}"
 
     def expr_subscript(self, e) -> str:
+        sub = substring(e, self.types)
+        if sub is not None:
+            # `s[a..b]` (8.6.3) includes position b.
+            s, lo, hi = sub
+            lo_t = self.expr(lo) if lo is not None else ""
+            hi_t = f"({self.expr(hi)}) + 1" if hi is not None else ""
+            return f"{self._operand(s)}[{lo_t}:{hi_t}]"
         sel = bit_select(e, self.types)
         if sel is None:
             return f"{self.expr(e.value)}[{self.expr(e.slice)}]"
@@ -617,6 +626,31 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
                 return self._int_root(e, t.as_int()).text
         return self._untyped_bin(e)
 
+    def _handle_from_handle(self, args) -> str:
+        """`make_handle_from_handle(h, offset, sub = false)` (21.13.4.2): a
+        handle is its address, so `h + offset`, or `h - offset` -- wrapped to
+        64 bits -- when `sub` is true. `sub` was ignored (W33)."""
+        h = self.expr(args[0])
+        off = (self.expr(args[1]) if _dt_name(args[1]) == "ExprConstant"
+               else self.convert_to(args[1], PssType("int", 64, False)))
+        off = off if _atomic(off) else f"({off})"
+        plus = f"({h} + {off})"
+        minus = f"(({h} - {off}) & 0xFFFFFFFFFFFFFFFF)"
+        if len(args) < 3:
+            return plus
+        sub = args[2]
+        if _dt_name(sub) == "ExprConstant" and isinstance(sub.value, (bool, int)):
+            return minus if sub.value else plus
+        return f"({minus} if {self.expr(sub)} else {plus})"
+
+    def _literal_operand(self, e) -> Optional[str]:
+        """The right side of `s == {...}` (8.5.3, Example 33): a struct
+        literal is typed by the struct it is compared with (E13)."""
+        if e.op.name not in ("Eq", "NotEq", "Ne") \
+                or _dt_name(e.rhs) != "ExprStructLiteral":
+            return None
+        return self.convert_to(e.rhs, self.types.type_of(e.lhs))
+
     def _untyped_bin(self, e) -> str:
         """An operator whose operands this backend cannot type, or that is not
         integer arithmetic at all (`&&`, `==` on strings or structs)."""
@@ -625,7 +659,7 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
             raise ValueError(f"unsupported binop {e.op.name}")
         lhs = self._operand(e.lhs)
         mark = len(self._pending)
-        rhs = self._operand(e.rhs)
+        rhs = self._literal_operand(e) or self._operand(e.rhs)
         if op in ("and", "or") and len(self._pending) > mark:
             # REFUSED rather than lowered, and this is the one place this
             # backend gives up something the sync form can do.
@@ -823,7 +857,21 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
         func = getattr(call, "func", None)
         if is_super_call(func) and func.attr not in _MEM_PRIMS:
             return self._super_call(call)
+        m = string_method(call, self.types)
+        if m is not None:
+            return self._string_method(call, m)
         return super().expr_call(call)
+
+    def _string_method(self, call, m: str) -> str:
+        """A string method (7.6.3): Python's own, but for `find` and
+        `find_last`, whose empty sub-string differs (`pss_str.py`)."""
+        s = self._operand(call.func.value)
+        args = [self.expr(a) for a in call.args]
+        if m == "size":
+            return f"len({s})"
+        if m in ("lower", "upper"):
+            return f"{s}.{m}()"
+        return f"_pss_{m}({', '.join([s] + args)})"
 
     def _super_call(self, call) -> str:
         """`super.f(args)`: the base's `f`, statically -- Python's `super()`.
@@ -1129,7 +1177,7 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
             return None
         args = call.args
         if name == "make_handle_from_handle":
-            return f"({self.expr(args[0])} + {self.expr(args[1])})"
+            return self._handle_from_handle(args)
         if name == "addr_value":
             return self.expr(args[0])
         if name in ("add_region", "add_nonallocatable_region"):
@@ -1688,6 +1736,8 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
         """
         pad = self.pad(ind)
         inner = self.pad(ind + 1)
+        if continues_out(s.body):
+            return self._repeat_while_top(s, ind)
         lines = [f"{pad}while True:"]
         lines += self.block(s.body, ind + 1)
         cond = self.expr(s.condition)
@@ -1699,6 +1749,31 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
         lines.append(f"{inner}if not ({cond}):")
         lines.append(f"{inner}{self.indent}break")
         return lines
+
+    def _repeat_while_top(self, s, ind: int) -> List[str]:
+        """`repeat ... while` whose body has a `continue`: that goes to the
+        CONDITION (20.7.11 d), where Python's goes to the top of the loop,
+        past a test at the bottom (W32). So the test is at the top, skipped
+        the first time:
+
+            _pss_rw0 = False
+            while True:
+                if _pss_rw0:
+                    if not (c): break
+                _pss_rw0 = True
+                ...
+        """
+        pad, inner = self.pad(ind), self.pad(ind + 1)
+        deeper = self.pad(ind + 2)
+        flag = f"_pss_rw{self._rw_n}"
+        self._rw_n += 1
+        cond = self.expr(s.condition)
+        pre = [f"{self.indent}{self.indent}{h}" for h in self._take_pending()]
+        return ([f"{pad}{flag} = False", f"{pad}while True:",
+                 f"{inner}if {flag}:"] + pre
+                + [f"{deeper}if not ({cond}):", f"{deeper}{self.indent}break",
+                   f"{inner}{flag} = True"]
+                + self.block(s.body, ind + 1))
 
     def stmt_for(self, s, ind: int) -> List[str]:
         """`repeat ([i :] n) { ... }` (LRM 20.7.6) -> `for i in range(n):`.

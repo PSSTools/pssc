@@ -258,6 +258,8 @@ class ExprTypes:
 
     def _ExprSubscript(self, e):
         base = self.type_of(e.value)
+        if base is not None and base.kind == "string":
+            return STRING                   # a sub-string (8.6.3)
         if base is not None and base.kind == "int":
             # A bit or part select (Table 21): unsigned, as wide as it selects.
             from .bit_select import bit_select
@@ -329,6 +331,9 @@ class ExprTypes:
             recv = (PssType("comp", dtype=self.comp)
                     if _dt_name(func.value) == "TypeExprRefSelf"
                     else self.type_of(func.value))
+            if recv is not None and recv.kind == "string":
+                from .string_methods import RESULTS
+                return RESULTS.get(name)
             # `super.f(...)` is typed by the base's `f`.
             if recv is not None and recv.dtype is not None:
                 t = self._method_result(recv.dtype, name)

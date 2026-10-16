@@ -148,6 +148,7 @@ class PyOpModelBackend(object):
             ("value_types", self.emit_value_types),
             ("formatting", self.emit_formatting),
             ("integers", self.emit_integers),
+            ("strings", self.emit_strings),
             ("errors", self.emit_errors),
             ("functions", self.emit_functions),
             ("executors", self.emit_executors),
@@ -364,6 +365,17 @@ class PyOpModelBackend(object):
         if not used:
             return ""
         return ("# ----- PSS integer arithmetic (LRM 8.5.1, 8.7). -----\n\n"
+                + inline_source(used))
+
+    def emit_strings(self, model) -> str:
+        """The PSS string-method helpers the bodies call (`pss_str.py`) --
+        only those, decided from the generated text as `_pss_fmt` is."""
+        from .pss_str import HELPERS, inline_source
+        text = self._bodies_text(model)
+        used = [n for n in HELPERS if f"{n}(" in text]
+        if not used:
+            return ""
+        return ("# ----- PSS string methods (LRM 7.6.3). -----\n\n"
                 + inline_source(used))
 
     def emit_errors(self, model) -> str:

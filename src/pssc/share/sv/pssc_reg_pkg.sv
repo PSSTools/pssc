@@ -9,6 +9,8 @@
 //   * reg_c           -- generic register handle (address folded at build,
 //                        width-based transaction sizing)
 //   * channel_c       -- PSS `sync_pkg::channel_c<Te, DEPTH>` (§21.9.1)
+//   * pssc_str_find, pssc_str_find_last -- PSS string `find`/`find_last`
+//                        (§7.6.3), which SV's `string` has no method for
 //
 // Design: docs/design/pss-programming-seq-gen-design.md (§5).
 
@@ -245,5 +247,28 @@ package pssc_reg_pkg;
       return m_mbx.num();
     endfunction
   endclass
+
+  // ----- PSS string methods SV's `string` lacks (§7.6.3). -----
+  // Where `sub` first starts at or after `first`, or -1; an empty `sub` is
+  // at 0.
+  function automatic int pssc_str_find(string s, string sub, int first = 0);
+    if (sub.len() == 0) return 0;
+    for (int i = first; i + sub.len() <= s.len(); i++)
+      if (s.substr(i, i + sub.len() - 1) == sub) return i;
+    return -1;
+  endfunction
+
+  // Where `sub` last starts at or before `first` (the end if -1), or -1; an
+  // empty `sub` is at the string's size.
+  function automatic int pssc_str_find_last(string s, string sub,
+                                            int first = -1);
+    int start;
+    if (sub.len() == 0) return s.len();
+    start = s.len() - sub.len();
+    if (first >= 0 && first < start) start = first;
+    for (int i = start; i >= 0; i--)
+      if (s.substr(i, i + sub.len() - 1) == sub) return i;
+    return -1;
+  endfunction
 
 endpackage
