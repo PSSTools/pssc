@@ -39,6 +39,7 @@ pssparser, the E/M rows, H1, then P6.
 | `03-c-cpp-tests.md` | op-model-c / op-model-cpp (and the older c-host family). Per-file catalog, construct-matrix status, what the emitters handle, refuse, crash on or **miscompile** (from probing ~75 models). |
 | `04-sv-py-tests.md` | op-model-sv / op-model-py (and sv-native/sv-oo/sv-pure). Same structure; silently-wrong list S1–S13. |
 | `05-compliance-corpus.md` | The pss-corpus executable tier: every test's constructs and its verdict on bc, py and sv. Corpus holes. What a C/C++ runner would need. The construct-matrix mechanism. |
+| `06-front-end-checks.md` | F1–F32, the front-end checks pssparser does not make: a self-contained brief for implementing them in `packages/pssparser` and verifying against pssc. |
 | `00-plan.md` | This file: consolidated findings (§1–§3), test strategy (§4), phased plan (§5), construct → planned-test map (§6), rulings needed (§7). |
 
 The two probes (02 §4, 03 §3.5) were ad-hoc scripts that are not checked in.
@@ -249,7 +250,10 @@ Sources are in brackets.
 | M6 | all | `size()` of an array-typed `foreach` iterator (a row) | refused as an unknown function; `m[0].size()` works | P5.3 |
 | H1 | harness | user import functions | the trace harness supplies none (py `MemoryBus`, C/C++/SV mains implement the core seam only), so no case can call an import: DT-CHND.3, DT-INT.8 (sv), FN-IMPORT executed | P5.3 |
 
-**Front-end checks missing (F).** The LRM makes each of these an error;
+**Front-end checks missing (F).** Brief for implementing them in
+`packages/pssparser`, with reproducers and the pssc cases each one flips:
+[`06-front-end-checks.md`](06-front-end-checks.md). The LRM makes each of
+these an error;
 pssparser accepts it, and pssc then runs it, generates it, or refuses it for
 an unrelated reason. Per the fix-at-source rule these go to pssparser (a
 request list like `pssc-requests-2026-10-01.md`); a pssc gate check is a
