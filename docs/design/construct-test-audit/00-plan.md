@@ -23,9 +23,11 @@ against an emitter-kind registry, E20/E22/E23 fixed, E21 pinned. **P5.3
 done** (§8): coverage is enforcing -- all 596 sub-constructs mapped on every
 target (530-539 proved per target), 239 -> 442 matrix cases, a new
 `test_m_neg.py` for LRM errors, and ~75 new defects pinned (I13-I18,
-W46-W66, E24-E42, M1-M6, F1-F32, H1); rulings R14-R16 needed. Next: fix the
-silently-wrong ones (I13, I14, I15, W46-W50, W53, W55, W63), file F1-F32
-with pssparser, then P6.
+W46-W66, E24-E42, M1-M6, F1-F32, H1); rulings R14-R16 needed. **The
+silently-wrong ones are done** (2026-10-17, §8): I13, I14 (with pssparser
+b52f1d2), I15 (ruling R17), W46, W47, W49, W50, W53, W55, W63 fixed, W48
+refused with a location; E24, W54 fell out. Next: file F1-F32 with
+pssparser, the E/M rows, H1, then P6.
 
 ## 0. What is in this directory
 
