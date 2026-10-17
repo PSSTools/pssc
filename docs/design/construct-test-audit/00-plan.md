@@ -182,7 +182,7 @@ Sources are in brackets.
 | W35 | c, cpp, py, **bc** | `%d`/`%u`/`%x` of a `bool` | printed -1: formatted as a one-bit value, which `%d` reads as signed (7.12 b: true is 1). Fixed in pssc's two formatters and in zuspec-be-bc's `interp/fmt.py` (which `_pss_fmt` is held equal to) | P4 |
 | W36 | c, cpp, py, sv | `foreach (c : comps[i])`, an iterator over an array of components | c/cpp/sv: internal error ("unsupported type for DataTypeComponent"); py: refused. Fixed: `targets/comp_foreach.py` rewrites it to the index form | P4 |
 | W37 | py, sv | a sub-string past the end (`s[4..3]` of `"abcd"`) | empty string, no error (8.6.3 makes the positions a "shall"). **Open** (strict xfail), waiting on R12 | P4 (IP-70) |
-| W38 | py, sv | `s + "c"` on strings | accepted (8.4 Table 10 has no string `+`): Python concatenates, SV emits a `+` Verilator rejects. pssparser does not check operand types. **Open** (strict xfail), for pssparser | P4 (IP-71) |
+| W38 | py, sv | `s + "c"` on strings | accepted (8.4 Table 10 has no string `+`): Python concatenates, SV emits a `+` Verilator rejects. pssparser does not check operand types. **Fixed** with F1 (pssparser fb0eabc): PSS131 | P4 (IP-71) |
 | W39 | c, cpp | a call argument with side effects (`message("%d %d", ch.try_put(1), ch.try_put(2))`) | evaluated right to left (C leaves the order unspecified); Python and SV go left to right. Waiting on R10; no case pins it yet | P4 |
 | W40 | all | a `const` struct parameter passed to a non-const formal (20.2.3) | accepted; the callee writes the caller's struct. pssparser does not check it. **Fixed** (pssparser 00b0eba): PSS006, "argument N of 'f' is const parameter 'p'..." | P4 (IP-65) |
 | W41 | c, sv | `%d` of a channel's `try_put`/`try_get` | c: "cannot determine its PSS type"; sv: -1. `ExprTypes` now types them `bool` | P4 (IP-55) |
@@ -262,7 +262,7 @@ members of this class.
 
 | ID | Construct (LRM) | Today |
 |---|---|---|
-| F1 | operand and condition types (8.4 Table 10, 8.5.2, 20.7.7 a, 20.7.9): relational on bool/string, chained `a < b < c`, bitwise on bool, chandle arithmetic and `c == 1`, a non-bool `if`/`while`/`?:` condition, `int x = null`, `%` on a float | accepted and run (W38's root) |
+| F1 | operand and condition types (8.4 Table 10, 8.5.2, 20.7.7 a, 20.7.9): relational on bool/string, chained `a < b < c`, bitwise on bool, chandle arithmetic and `c == 1`, a non-bool `if`/`while`/`?:` condition, `int x = null`, `%` on a float | **Fixed** (pssparser fb0eabc): PSS131 operands, PSS132 conditions, PSS133 `null` to a value. Enum operands not judged (7.5.1 says only "may be used" in assignment/equality); a chandle with `null` not judged. Was: accepted and run (W38's root) |
 | F2 | enum values (7.5.1 c/e/j): duplicates, outside the base type, negative with an unsigned base, implicit past the base's max, a base with a domain, a variable of an itemless enum | accepted; a duplicate makes `%n` print the other name |
 | F3 | an unqualified enum item where the expected type is not the enum: `(int)BLUE` (Ex 37), `M1 == e`, `M1 in [...]` | **Fixed** (pssparser 5780a63): PSS130, by **R22** (LINT101 and PSS045 retired; the left of `==` takes no expected type). Was: LINT101 warning only; `M1 == e` accepted |
 | F4 | casts (7.12.1 a): from a chandle, struct or string; to a struct | **Fixed** (pssparser a199765): PSS126. Was: accepted; `(p_s)3` crashed py at run time |
@@ -1437,3 +1437,16 @@ Newest last. Each entry names what changed and the test that proves it.
   the left of ==". Three pssc unit tests whose models used an unqualified
   item where no enum is expected now qualify it. Compliance: no corpus
   model rejected.
+* 2026-10-17 -- **F1 and W38 fixed** (pssparser fb0eabc): PSS131
+  (Table 10/9 operand types, 7.7 chandle comparison), PSS132 (non-Boolean
+  conditions), PSS133 (`null` to a value). Found on the way: `a in l && b
+  in m` parsed as `a in (l && (b in m))` -- `in`'s collection was a whole
+  expression -- fixed in the grammar (pssparser a7bc8c4). Matrix: the F1
+  and W38 xfails removed and tightened; `coverage.yaml` IP-71's `open,
+  W38` dispositions dropped (the matrix case covers it on all four).
+  pssc test models that were illegal by Table 10: three did arithmetic on
+  an `addr_handle_t` (`base + 0x40`; it is `typedef chandle`, 21.13, so
+  7.7 allows only `==`/`!=`) and now use `make_handle_from_handle`; two
+  unit models used `!` on a `bit`; bc's own refusals of `"a" < "b"` and
+  struct arithmetic now meet pssparser's message first. Compliance: no
+  corpus model rejected.

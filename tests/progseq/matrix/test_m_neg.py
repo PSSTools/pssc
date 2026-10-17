@@ -18,8 +18,6 @@ from __future__ import annotations
 
 from ._matrix import ALL, Case, define_tests, on, ONE, Refused
 
-F1 = ("F1: operand types are not checked (8.4 Table 10): a bool compared "
-      "with a number, a bitwise operator on bool")
 F5 = "F5: `rand chandle` is accepted (7.1, 7.7)"
 F6 = "F6: access protection is not checked (20.4 b)"
 F11 = "F11: a varargs parameter of a PSS-bodied function is accepted (20.2.5)"
@@ -206,7 +204,8 @@ component pss_top {""" + ONE + """
     int x = 1; int y = 2; int z = 3;
     if (x < y < z) { a.STS.write_val(1); }
   }
-}""", Refused([r"bool"]), xfail=on(ALL, F1), covers=("EX-REL.5",)),
+}""", Refused([r"m\.pss:\d+:\d+: error: operator '<' takes numeric operands, not bool "
+               r"\(LRM 8\.4 Table 10, 8\.5\.2\)"]), covers=("EX-REL.5",)),
 
     # Bitwise operators take integers (8.4 Table 10), not bool.
     "a bitwise and of bools": Case("""
@@ -216,7 +215,8 @@ component pss_top {""" + ONE + """
     bool r = p & q;
     if (r) { a.STS.write_val(1); }
   }
-}""", Refused([r"bool"]), xfail=on(ALL, F1), covers=("EX-BIT.4",)),
+}""", Refused([r"m\.pss:\d+:\d+: error: operator '&' takes integer operands, not bool "
+               r"\(LRM 8\.4 Table 10, 8\.5\.5\)"]), covers=("EX-BIT.4",)),
 
     "a bitwise not of a bool": Case("""
 component pss_top {""" + ONE + """
@@ -225,7 +225,8 @@ component pss_top {""" + ONE + """
     bool r = ~p;
     if (r) { a.STS.write_val(1); }
   }
-}""", Refused([r"bool"]), xfail=on(ALL, F1), covers=("EX-BIT.4",)),
+}""", Refused([r"m\.pss:\d+:\d+: error: operator '~' takes integer operands, not bool "
+               r"\(LRM 8\.4 Table 10, 8\.5\.5\)"]), covers=("EX-BIT.4",)),
 
     # A private attribute is accessible only from its declaring element
     # (20.4 b, 17.4).

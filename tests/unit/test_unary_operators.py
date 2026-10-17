@@ -36,13 +36,15 @@ def _body(ctx, comp="c_c", fn="g"):
 
 _MODEL = """
 component c_c {
-    bit f;
+    bool f;
+    bit w;
+    bit y;
     int n;
     function void g() {
-        bit x;
+        bool x;
         x = !f;
         n = -n;
-        x = ~f;
+        y = ~w;
     }
 }
 """
@@ -80,7 +82,7 @@ def test_negated_guard_is_not_the_guard():
     """
     ctx = translate("""
         component c_c {
-            bit caps;
+            bool caps;
             function void g() { if (!caps) { return; } }
         }
     """)

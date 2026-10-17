@@ -82,7 +82,7 @@ component pss_top {
 
   exec init_down {
     slow.initialize(base);
-    fast.initialize(base + 0x100);
+    fast.initialize(make_handle_from_handle(base, 0x100));
   }
 
   target function void run() {

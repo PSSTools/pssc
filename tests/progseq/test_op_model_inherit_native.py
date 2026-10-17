@@ -126,7 +126,7 @@ component der_c : base_c {
   regs_c more;
   solve function void initialize(addr_handle_t base) {
     super.initialize(base);
-    more.set_handle(base + 0x40);
+    more.set_handle(make_handle_from_handle(base, 0x40));
     id = id + 10;
   }
   target function void poke2() { more.R.write_val(id); }

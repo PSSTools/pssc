@@ -125,7 +125,7 @@ component sub_c {
 component pss_top {
   sub_c s[2];
   solve function void initialize(addr_handle_t base) {
-    foreach (s[i]) { s[i].initialize(base + 0x100 * i); }
+    foreach (s[i]) { s[i].initialize(make_handle_from_handle(base, 0x100 * i)); }
   }
   target function void run() {
     s[1].poke();

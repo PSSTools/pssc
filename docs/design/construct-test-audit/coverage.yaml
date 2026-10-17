@@ -34,9 +34,6 @@ dispositions:
   IP-70:
     py: {status: open, defect: W37, ruling: R12}
     sv: {status: open, defect: W37, ruling: R12}
-  IP-71:
-    py: {status: open, defect: W38}
-    sv: {status: open, defect: W38}
 
   # --- action-level patterns: proved on bc or through --export-action ----------
   IP-61:

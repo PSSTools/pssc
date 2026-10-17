@@ -7,6 +7,7 @@ would compare indices, so both are located errors, as is an import that would
 pass a string to the platform.
 """
 import pytest
+from pssparser.parser import ParseException
 
 from zuspec.be.bc.lower.errors import LoweringError, PssSemanticError
 
@@ -58,7 +59,8 @@ def test_match_on_a_string_takes_the_equal_arm_or_the_default():
 
 
 @pytest.mark.parametrize("body,exc,match", [
-    ('bool r = "a" < "b";', PssSemanticError, "only with == and !="),
+    # pssparser reports it (PSS131, Table 10) before bc's own check.
+    ('bool r = "a" < "b";', ParseException, "operator '<' takes numeric operands, not string"),
     ('bool r = mine == 1;', PssSemanticError, "only with a string"),
     ('match (mine) { ["a".."c"]: { } default: { } }', LoweringError,
      "range pattern on a string"),

@@ -10,6 +10,7 @@ Also here: an attribute's declared initial value (``bit[4] g = 3;``) is
 applied. Nothing applied it, so it read 0.
 """
 import pytest
+from pssparser.parser import ParseException
 
 from zuspec.be.bc.lower.errors import LoweringError
 from zuspec.ir.core.xf.validate import UnsupportedConstructError
@@ -137,13 +138,16 @@ def test_a_rand_struct_attribute_solves_each_leaf_under_its_types_constraints():
 
 # -- refusals -----------------------------------------------------------------
 
-@pytest.mark.parametrize("body,match", [
-    ('desc_s a; desc_s b; bool r = (a < b);', "compare only with == and !="),
-    ('desc_s a; message(NONE, "%u", a);', "used where a scalar is needed"),
-    ('desc_s a; int x = a + 1;', "used where a scalar is needed"),
+@pytest.mark.parametrize("body,exc,match", [
+    # pssparser reports these two (PSS131, Table 10) before bc's own check.
+    ('desc_s a; desc_s b; bool r = (a < b);', ParseException,
+     "operator '<' takes numeric operands, not struct desc_s"),
+    ('desc_s a; message(NONE, "%u", a);', LoweringError, "used where a scalar is needed"),
+    ('desc_s a; int x = a + 1;', ParseException,
+     r"operator '\+' takes numeric operands, not struct desc_s"),
 ])
-def test_a_struct_where_a_scalar_is_needed_is_an_error(body, match):
-    with pytest.raises(LoweringError, match=match):
+def test_a_struct_where_a_scalar_is_needed_is_an_error(body, exc, match):
+    with pytest.raises(exc, match=match):
         _run(body)
 
 

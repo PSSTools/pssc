@@ -9,8 +9,6 @@ from ._matrix import Case, define_tests, ERROR, on, ONE, Refused
 
 W37 = ("W37: an out-of-range sub-string is not an error "
        "(8.6.3; ruling R12 open)")
-W38 = ("W38: `+` on strings is accepted (8.4, Table 10): pssparser does not "
-       "check an operator's operand types")
 M3 = "M3: array join / str_from_chars are refused as unknown names (7.9.2.2)"
 E27 = ("E27: an import signature type (20.4.1 c) is an internal error, not "
        "a located refusal")
@@ -155,8 +153,8 @@ component pss_top {""" + ONE + """
         covers=("EX-SUBSTR", "ST-REPEAT", "IP-70", "EX-SUBSTR.3")),
 
     # `+` is not a string operator (8.4, Table 10; IP-71): `format()` or a
-    # template string joins strings. pssparser accepts it, Python
-    # concatenates, and SV emits a `+` Verilator rejects (W38).
+    # template string joins strings. pssparser reports it (PSS131; was W38:
+    # Python concatenated, and SV emitted a `+` Verilator rejects).
     "string concatenation with +": Case("""
 component pss_top {""" + ONE + """
   target function void run() {
@@ -164,9 +162,8 @@ component pss_top {""" + ONE + """
     string t = s + "c";
     message(LOW, "%s", t);
   }
-}""", Refused([r"\+", r"string"]),
-        refused=on(("c", "cpp"), Refused([r": a string", r"ruling R3"])),
-        xfail=on(("py", "sv"), W38),
+}""", Refused([r"m\.pss:\d+:\d+: error: operator '\+' takes numeric operands, not string "
+               r"\(LRM 8\.4 Table 10, 8\.5\.1\)"]),
         covers=("DT-STR", "EX-ARITH", "IP-71", "DT-STR.1")),
 
     # --- P5.3: defaults, literals, arrays of strings, imports ----------------------

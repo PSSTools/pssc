@@ -6,8 +6,6 @@ from __future__ import annotations
 
 from ._matrix import ALL, Case, define_tests, on, ONE, Refused
 
-F1 = ("F1: operand types are not checked (8.5.2): a relational operator on "
-      "bools is accepted")
 F2 = ("F2: enum values are not checked (7.5.1 e/j, 17.2.4): a duplicate "
       "value, or a variable of an itemless enum, is accepted")
 
@@ -156,7 +154,8 @@ component pss_top {""" + ONE + """
     if (p < q) { message(LOW, "lt"); } else { message(LOW, "ge"); }
   }
   target function void run() { go(false, true); }
-}""", Refused([r"<", r"bool"]), xfail=on(ALL, F1), covers=("DT-BOOL.4",)),
+}""", Refused([r"m\.pss:\d+:\d+: error: operator '<' takes numeric operands, not bool "
+               r"\(LRM 8\.4 Table 10, 8\.5\.2\)"]), covers=("DT-BOOL.4",)),
 
     # The base type sets an item's width and sign (7.5.1): M is an int[4] -1,
     # so cast to bit[8] it is sign-extended to 0xFF; U is a bit[4] 15, so it
