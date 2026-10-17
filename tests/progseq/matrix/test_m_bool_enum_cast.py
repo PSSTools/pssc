@@ -12,8 +12,6 @@ F2 = ("F2: enum values are not checked (7.5.1 e/j, 17.2.4): a duplicate "
       "value, or a variable of an itemless enum, is accepted")
 F3 = ("F3: an unqualified enum item is resolved where the expected type is "
       "not the enum (`(int)BLUE`, Example 37)")
-F4 = ("F4: illegal casts are accepted (7.12.1 a): from a chandle, struct or "
-      "string, or to a struct")
 
 
 CASES = {
@@ -289,7 +287,11 @@ component pss_top {""" + ONE + """
     p_s w = (p_s)3;
     message(LOW, "%d %d %d", x, y, w.a);
   }
-}""", Refused([r"cast"]), xfail=on(ALL, F4),
+}""", Refused([r"m\.pss:\d+:\d+: error: a cast from chandle: only a numeric, Boolean or "
+               r"enumeration value, or a reference, can be cast \(LRM 7\.12\)",
+               r"m\.pss:\d+:\d+: error: a cast from struct p_s: only a numeric",
+               r"m\.pss:\d+:\d+: error: a cast to struct p_s: a casting type shall be a numeric, "
+               r"Boolean, enumeration or reference type \(LRM 7\.12\.1\)"]),
         covers=("DT-CAST.7", "DT-CHND.4")),
 
     # `(chandle)` is not a casting_type at all (Syntax 18).
@@ -305,9 +307,9 @@ component pss_top {""" + ONE + """
     int x = (int)s;
     message(LOW, "%d", x);
   }
-}""", Refused([r"cast"]),
-        refused=on(("c", "cpp"), Refused([r": a string", r"ruling R3"])),
-        xfail=on(("py", "sv"), F4), covers=("DT-CAST.7",)),
+}""", Refused([r"m\.pss:\d+:\d+: error: a cast from string: only a numeric, Boolean or "
+               r"enumeration value, or a reference, can be cast \(LRM 7\.12\)"]),
+        covers=("DT-CAST.7",)),
 
     # A typedef names its type in a cast (7.12.1): 0x1F is 15 as a bit[4]
     # and -1 as an int[4] (8.7.2: truncated to the low four bits).

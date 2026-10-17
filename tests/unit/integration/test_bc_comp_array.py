@@ -10,6 +10,7 @@ import pytest
 
 from zuspec.be.bc.interp.vm import VMError
 from zuspec.be.bc.lower.errors import LoweringError, PssSemanticError
+from pssparser.parser import ParseException
 
 from .test_activity_bc_runs import trace
 
@@ -75,7 +76,9 @@ def test_an_index_out_of_bounds_is_a_run_time_error():
 
 
 @pytest.mark.parametrize("init,exc,match", [
-    ("foreach (ch[i]) { i = 2; }", PssSemanticError, "foreach variable 'i' is read-only"),
+    # pssparser reports it (PSS123) before bc's own check is reached.
+    ("foreach (ch[i]) { i = 2; }", ParseException,
+     "foreach index variable 'i' is read-only"),
     ("int a; foreach (c : ch) { a = c; }", PssSemanticError, "is a component instance"),
 ])
 def test_refused(init, exc, match):

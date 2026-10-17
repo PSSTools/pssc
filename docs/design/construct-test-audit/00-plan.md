@@ -184,7 +184,7 @@ Sources are in brackets.
 | W37 | py, sv | a sub-string past the end (`s[4..3]` of `"abcd"`) | empty string, no error (8.6.3 makes the positions a "shall"). **Open** (strict xfail), waiting on R12 | P4 (IP-70) |
 | W38 | py, sv | `s + "c"` on strings | accepted (8.4 Table 10 has no string `+`): Python concatenates, SV emits a `+` Verilator rejects. pssparser does not check operand types. **Open** (strict xfail), for pssparser | P4 (IP-71) |
 | W39 | c, cpp | a call argument with side effects (`message("%d %d", ch.try_put(1), ch.try_put(2))`) | evaluated right to left (C leaves the order unspecified); Python and SV go left to right. Waiting on R10; no case pins it yet | P4 |
-| W40 | all | a `const` struct parameter passed to a non-const formal (20.2.3) | accepted; the callee writes the caller's struct. pssparser does not check it. **Open** (strict xfail), for pssparser | P4 (IP-65) |
+| W40 | all | a `const` struct parameter passed to a non-const formal (20.2.3) | accepted; the callee writes the caller's struct. pssparser does not check it. **Fixed** (pssparser 00b0eba): PSS006, "argument N of 'f' is const parameter 'p'..." | P4 (IP-65) |
 | W41 | c, sv | `%d` of a channel's `try_put`/`try_get` | c: "cannot determine its PSS type"; sv: -1. `ExprTypes` now types them `bool` | P4 (IP-55) |
 | W42 | all | a part select with non-constant bounds (`v[4*i+3:4*i]`) | 8.6.1 requires constant bounds; pssparser accepts it, and pssc refuses it with an unlocated ValueError (an internal error) | P4 |
 | W43 | bc | a solve function reached from `exec body` through an unqualified function | runs; 20.2.1.3 makes it an error (the op-model gate refuses it). **Open** (strict xfail in `test_bc_interaction_patterns.py`) | P4 (IP-97) |
@@ -211,7 +211,7 @@ Sources are in brackets.
 | W58 | c, cpp, py, sv | division / modulus by zero, a negative shift amount, at run time (8.5.1, 8.5.7) | py: an uncaught `ZeroDivisionError`/`ValueError`, not an `error:` line; C/C++ undefined. Waiting on **R14**; constant forms in F31 | P5.3 |
 | W59 | c, cpp, py, sv | a read of a WRITEONLY / write of a READONLY register (21.14.1) | not refused by the gate: c an unlocated `LegalityError`, cpp/sv render it, py calls an accessor it never defines | P5.3 |
 | W60 | c, cpp, py, sv | a target function whose short name some unrelated component uses for a solve function (Ex 297) | refused from target code: solve-ness is classified by short name across the model | P5.3 |
-| W61 | c, cpp, sv | a write of a `foreach` index (20.7.8 g) | accepted and generated (py refuses it) | P5.3 |
+| W61 | c, cpp, sv | a write of a `foreach` index (20.7.8 g) | **Fixed** (pssparser 00b0eba): PSS123 on every target. Was: accepted and generated (py refused it) | P5.3 |
 | W62 | c, cpp | a comparison its operand's range decides (`u == -1`, `u` a `bit[8]` parameter) | folded to a constant (rightly), leaving the parameter unused: `-Werror=unused-parameter` fails the build (W30's sibling) | P5.3 |
 | W63 | sv | a root-scope name, `::G`, with a local `G` in the same task | **silently wrong**: spelled `G`, and the local (hoisted to the top of the task) hides the `localparam` for every read, even before its declaration: `0`, `1 1` instead of `7`, `1 7` **Fixed**: a local named like a declared constant is spelled `<name>_l` (`sv/lower_progseq.expr_ref_local`, `SvConstants.declared`) | P5.3 |
 | W64 | sv (Verilator) | `%d` of a field of a non-constant packed struct (`$signed(v.x)`, `x` the 7-bit field at bits 7:1) | Verilator 5.052 evaluates it from the wrong bits (0 prints 128); the generated SV is right (a standalone 20-line SV file reproduces it). Workaround as W27: hold the field in a temporary of its PSS type. Pinned by `test_m_channels.py` "channels of a struct, an enum and a bool" (a struct taken from a mailbox: `q.x` prints the whole value 0x43; probably the same bug, not reduced further); "a bool field of a register value" prints with `%x` instead | P5.3 |
@@ -225,7 +225,7 @@ Sources are in brackets.
 | E29 | sv | `sized_addr_handle_s` in a struct | unlocated "unsupported SV struct member type DataTypeChandle" | P5.3 |
 | E30 | all | a `typedef` inside a struct, used there | refused with a location, plus a second UNLOCATED "unresolved type reference" | P5.3 |
 | E31 | py | `{}` assigned to a fixed-size array | internal error ("defines no expr_list()"); the element-count gate misses an empty literal | P5.3 |
-| E32 | c, cpp, sv | a function returning a component without `ref` (F13), even uncalled | unlocated "unsupported C type for DataTypeComponent" | P5.3 |
+| E32 | c, cpp, sv | a function returning a component without `ref` (F13), even uncalled | **Fixed** with F13 (pssparser a199765): pssparser refuses it first (PSS129). Was: unlocated "unsupported C type for DataTypeComponent" | P5.3 |
 | E33 | c, py | a call on a base instance of a function only a derived type defines (20.2.7) | unlocated ValueError (cpp/sv generate code) | P5.3 |
 | E34 | all | `channel_c` with `DEPTH` 0 | refused, but unlocated | P5.3 |
 | E35 | c, cpp, py; sv | `set_handle` on a sub-group (21.14.3) | internal errors; sv accepts it | P5.3 |
@@ -265,24 +265,24 @@ members of this class.
 | F1 | operand and condition types (8.4 Table 10, 8.5.2, 20.7.7 a, 20.7.9): relational on bool/string, chained `a < b < c`, bitwise on bool, chandle arithmetic and `c == 1`, a non-bool `if`/`while`/`?:` condition, `int x = null`, `%` on a float | accepted and run (W38's root) |
 | F2 | enum values (7.5.1 c/e/j): duplicates, outside the base type, negative with an unsigned base, implicit past the base's max, a base with a domain, a variable of an itemless enum | accepted; a duplicate makes `%n` print the other name |
 | F3 | an unqualified enum item where the expected type is not the enum: `(int)BLUE` (Ex 37), `M1 == e`, `M1 in [...]` | `(int)BLUE`, `M1 in [...]`: LINT101 warning only; `M1 == e` accepted. Error by **R22** |
-| F4 | casts (7.12.1 a): from a chandle, struct or string; to a struct | accepted; `(p_s)3` crashes py at run time |
+| F4 | casts (7.12.1 a): from a chandle, struct or string; to a struct | **Fixed** (pssparser a199765): PSS126. Was: accepted; `(p_s)3` crashed py at run time |
 | F5 | `rand chandle`, `rand float64` (7.1, 7.7); `randomize` of a chandle | accepted (float later refused by R5); the `randomize` form is an error by **R18** |
 | F6 | access protection (17.4, 20.4): a private/protected field written or read from outside | accepted |
 | F7 | `bit[0]` (7.2.1 c) | accepted; error by **R19** (pssc refuses it, I13) |
-| F8 | assignment to a `static const` (scalar, element, member) (7.1, 7.9 a) | accepted; py renders `5 = 2` in a target function and really modifies it in a constructor |
-| F9 | assignment to a sub-string, `s[0] = "x"` (7.6.2) | accepted; py raises TypeError at run time, sv emits it |
-| F10 | assignment to a `const` scalar parameter (20.2.3) | accepted and run (W40 is the struct case) |
+| F8 | assignment to a `static const` (scalar, element, member) (7.1, 7.9 a) | **Fixed** (pssparser 00b0eba): PSS121. Was: accepted; py rendered `5 = 2` in a target function and really modified it in a constructor |
+| F9 | assignment to a sub-string, `s[0] = "x"` (7.6.2) | **Fixed** (pssparser 00b0eba): PSS122. Was: accepted; py raised TypeError at run time, sv emitted it |
+| F10 | assignment to a `const` scalar parameter (20.2.3) | **Fixed** (pssparser 00b0eba): PSS121 (W40, the struct passed on, is PSS006) |
 | F11 | a varargs or generic (`type`, `struct`, `numeric`) parameter of a PSS-bodied function (20.2.5) | varargs accepted (py TypeError at run time); generic refused only as "not supported". Error for any user-written function by **R23** |
-| F12 | an array argument of another size than the formal (8.3) | accepted; py runs it |
-| F13 | a function returning a component without `ref` (20.2.2) | accepted (then E32) |
+| F12 | an array argument of another size than the formal (8.3) | **Fixed** (pssparser a199765): PSS006. Was: accepted; py ran it |
+| F13 | a function returning a component without `ref` (20.2.2) | **Fixed** (pssparser a199765): PSS129, for parameters too (the same 20.2.2 "shall not"). Was: accepted (then E32) |
 | F14 | a `target` declaration with a `solve` definition (20.2.1.3) | accepted |
 | F15 | declaration/definition and override consistency: `const` and default mismatches, a non-pure function made `pure`, an override with another signature, an instance function shadowed by a static one (20.2.3 c, 20.2.4 c, 20.2.6) | accepted (PSS009 checks defaults on a redeclaration only); sv E38 |
-| F16 | `break`/`continue` outside a loop (20.7.11 b) | accepted; py writes a module that does not import |
-| F17 | modifying the collection a `foreach` iterates (20.7.8 g) | accepted and run |
-| F18 | two `default` arms in a `match` (20.7.10 f) | accepted; py runs the second |
+| F16 | `break`/`continue` outside a loop (20.7.11 b) | **Fixed** (pssparser 00b0eba): PSS124. Was: accepted; py wrote a module that does not import |
+| F17 | modifying the collection a `foreach` iterates (20.7.8 g) | **Fixed** (pssparser 00b0eba): PSS123 for the index, the iterator written whole, the collection replaced whole and its changing methods (a member of the iterator may be written: it aliases the element, 20.7.8 c, as pssc already held; narrowed in a199765). An element write (`w[0] = 5`) is NOT reported: Ex 291 assigns `dst[i]` in `foreach (dst[i])` -- a reading for the user to confirm |
+| F18 | two `default` arms in a `match` (20.7.10 f) | **Fixed** (pssparser 00b0eba): PSS125 (procedural and activity). Was: accepted; py ran the second |
 | F19 | a type-scope constant in a `compile if` condition (19.1.3 b) | accepted |
 | F20 | `yield` in a solve function (20.7.14 a) | accepted; error by **R20** |
-| F21 | `return expr;` in an exec block (20.7.5) | accepted silently; error by **R21** |
+| F21 | `return expr;` in an exec block (20.7.5) | **Fixed** (pssparser 00b0eba): PSS007, by **R21** |
 | F22 | exec placements: `pre_solve`/`body` in a component (20.1.2), a target-template exec of a solve kind (20.5), solve-only `file_*` from target code (21.2), memory/channel calls from solve code, a target-template function called from an init exec (20.1.2) | accepted; pssc refuses them as unsupported (M5) |
 | F23 | collection Negs: `k in m` on a map, a subscript or slice of a set, `rand map`/`set`, a modifying collection method in a constraint, a `ref` field in a struct, `const ref`, a cast to a typedef of a struct, `instance` on a non-ref | accepted (all refused on op-model under R4 / `ref`) |
 | F24 | a method of a string-array element, `s[1].size()` | PSS002 "the enclosing scope is unknown" (a resolution bug, not a check) |
@@ -290,8 +290,8 @@ members of this class.
 | F26 | import/export parameter types (20.4.1 c, 20.4.2.1): `bit[65]`, `list<string>`, a non-const struct to an export | accepted (then E27) |
 | F27 | a `reg_c` outside a `reg_group_c`; `extend component reg_group_c` (21.14.1) | accepted (py E39) |
 | F28 | `channel_c<string>` (21.9.1) | accepted (py) |
-| F29 | a struct on the left of `in` with a range list (8.5.9.1) | accepted; py evaluates false |
-| F30 | `==` / assignment of component arrays (7.9.2) | accepted; py runs it |
+| F29 | a struct on the left of `in` with a range list (8.5.9.1) | **Fixed** (pssparser a199765): PSS127 (also an aggregate literal on the left). Was: accepted; py evaluated false |
+| F30 | `==` / assignment of component arrays (7.9.2) | **Fixed** (pssparser a199765): PSS128. Was: accepted; py ran it |
 | F31 | a constant zero divisor, a constant negative shift amount (8.5.1, 8.5.7) | accepted |
 | F32 | `error()`/`fatal()` with a string not known at solve time, in target code (21.3) | **Refused by pssc** (R15, `targets/error_strings.py`); a front-end check would be earlier |
 
@@ -1407,3 +1407,25 @@ Newest last. Each entry names what changed and the test that proves it.
   parameter, a non-constant field or a call. LIB-ERR.3 is now two matrix
   cases (constant strings pass on py/sv; run-time ones are refused; C/C++
   refuse strings, R3). R16: unary `+` stays the identity.
+* 2026-10-17 -- **Front-end checks, step 0 and groups 1-2** (06 brief),
+  in pssparser on `front-end-checks`. Step 0 (1675c3a): the expression
+  typer `TaskExprTypeCat::typeOf` -- the type of `a.b`, `a[i]`, `s[i..j]`,
+  bit selects, a call's result -- with its own tests through a private
+  hook. Groups 1-2 (00b0eba), a new pass `TaskCheckProcedural`: F8 and F10
+  (PSS121), W40 (PSS006), F9 (PSS122), F17 and W61 (PSS123), F16 (PSS124),
+  F18 (PSS125), F21 (PSS007). Matrix: the strict xfails on F8, F10, F9,
+  F17, W40, W61 removed and every `Refused` tightened to the message; new
+  `test_m_neg` cases for F16 (break, continue), F18 and F21. F17's case now
+  replaces the collection whole: an element write is left legal because
+  the LRM's own Ex 291 makes one inside `foreach (dst[i])` (reading to
+  confirm). Compliance: no corpus model rejected.
+* 2026-10-17 -- **Front-end checks, group 3 less F3** (pssparser
+  a199765, new pass `TaskCheckOperands` on the typer): F4 (PSS126), F29
+  (PSS127; also an aggregate literal on the left), F30 (PSS128), F12
+  (PSS006), F13 (PSS129, parameters too; E32 goes with it). Matrix: their
+  strict xfails (and E32's) removed, `Refused` tightened, including "an
+  aggregate literal on the left of in" (was pssc's wording). PSS123
+  narrowed so a member of a foreach iterator may be written (pssc's own
+  reading, `test_a_foreach_iterator_aliases_its_element`); pssc's tests
+  of its foreach refusals (`test_op_model_py_int`, `test_bc_comp_array`)
+  now expect pssparser's message, which comes first.

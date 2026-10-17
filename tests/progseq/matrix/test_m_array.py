@@ -7,8 +7,6 @@ from __future__ import annotations
 
 from ._matrix import Case, define_tests, ERROR, on, ONE, Refused
 
-F12 = ("F12: an array argument of another size than the formal is accepted "
-       "(8.3): pssparser does not check it")
 W65 = ("W65: the bounds check of an index narrower than the array's size "
        "(bit[1], bit[2] for 4) fails the build with -Werror=type-limits")
 E41 = ("E41: a foreach iterator over a two-dimensional array (a row) is an "
@@ -421,10 +419,8 @@ component pss_top {""" + ONE + """
     w[1] = 3;
     message(LOW, "%d", sum(w));
   }
-}""", Refused([r"array"]),
-        refused=on(("c", "cpp", "sv"),
-                   Refused([r"pss_top::sum: an array parameter 'v'"])),
-        xfail=on(("py",), F12),
+}""", Refused([r"m\.pss:\d+:\d+: error: argument 1 of 'sum' is an array of 3 elements, but "
+               r"parameter 'v' is an array of 2 \(LRM 8\.3\)"]),
         covers=("FN-PARAM.13",)),
 
     # The iterator over a two-dimensional array is a row, itself an array

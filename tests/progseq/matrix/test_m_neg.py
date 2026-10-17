@@ -24,17 +24,9 @@ F3 = ("F3: an unqualified enum item where the expected type is not the enum "
       "is accepted")
 F5 = "F5: `rand chandle` is accepted (7.1, 7.7)"
 F6 = "F6: access protection is not checked (20.4 b)"
-F8 = "F8: assignment to a `static const` is accepted (7.1, 7.9 a)"
-F10 = "F10: assignment to a `const` scalar parameter is accepted (20.2.3)"
 F11 = "F11: a varargs parameter of a PSS-bodied function is accepted (20.2.5)"
-F17 = ("F17: modifying the collection a `foreach` iterates is accepted "
-       "(20.7.8 g)")
 F26 = ("F26: import/export parameter types are not checked (20.4.1 c, "
        "20.4.2.1)")
-F29 = ("F29: a struct on the left of `in` with a range list is accepted "
-       "(8.5.9.1)")
-F8_E26 = F8 + "; E26 (a `static const` struct) fails first on c/cpp"
-W61 = "W61: a write of a `foreach` index is accepted (20.7.8 g)"
 F5_RAND = ("F5: `randomize` of a chandle is accepted (7.1); pssc refuses every "
            "randomize, so the error goes unsaid")
 F11_GENERIC = ("F11: a generic parameter of a PSS-bodied function is accepted "
@@ -86,7 +78,8 @@ component pss_top {""" + ONE + """
 component pss_top {""" + ONE + """
   static const int C = 5;
   target function void run() { C = 2; a.STS.write_val(C); }
-}""", Refused([r"\bC\b", r"const"]), xfail=on(ALL, F8),
+}""", Refused([r"m\.pss:\d+:\d+: error: constant 'C' cannot be assigned: a constant "
+               r"cannot appear on the left of an assignment \(LRM 7\.1\)"]),
         covers=("DT-CONST.2", "ST-ASSIGN.6")),
 
     "assigning an element of a static const array": Case("""
@@ -98,7 +91,8 @@ component pss_top {
     A[0] = 7;
   }
   target function void run() { a.STS.write_val(A[0]); }
-}""", Refused([r"\bA\b", r"const"]), xfail=on(ALL, F8),
+}""", Refused([r"m\.pss:\d+:\d+: error: an element or member of constant 'A' cannot be "
+               r"assigned"]),
         covers=("DT-CONST.2", "ST-ASSIGN.6")),
 
     "assigning a member of a static const struct": Case("""
@@ -111,8 +105,8 @@ component pss_top {
     P.x = 9;
   }
   target function void run() { a.STS.write_val(P.x); }
-}""", Refused([r"\bP\b", r"const"]),
-        xfail={**on(("py", "sv"), F8), **on(("c", "cpp"), F8_E26)},
+}""", Refused([r"m\.pss:\d+:\d+: error: an element or member of constant 'P' cannot be "
+               r"assigned"]),
         covers=("DT-CONST.2", "ST-ASSIGN.6")),
 
     # Static-const initializers are evaluated in source order, over the
@@ -167,7 +161,8 @@ component pss_top {""" + ONE + """
   target function void run() {
     if ({1, 2} in [1]) { a.STS.write_val(1); }
   }
-}""", Refused([r"an aggregate literal \(`\{\.\.\.\}`\) as an operand"]),
+}""", Refused([r"m\.pss:\d+:\d+: error: the left side of 'in' shall not be "
+               r"an aggregate literal \(LRM 8\.5\.9\.1\)"]),
         covers=("EX-IN.7",)),
 
     "an unqualified enum item on the left of in": Case("""
@@ -185,7 +180,9 @@ component pss_top {""" + ONE + """
     p_s p;
     if (p in [1]) { a.STS.write_val(1); }
   }
-}""", Refused([r"\bp\b", r"\bin\b"]), xfail=on(ALL, F29),
+}""", Refused([r"m\.pss:\d+:\d+: error: the left side of 'in' is struct p_s, not a scalar, "
+               r"so the right side shall be a collection, not a range list "
+               r"\(LRM 8\.5\.9\.1\)"]),
         covers=("EX-IN.7",)),
 
     # Relational operators take numbers (8.4 Table 10): `a < b` is a bool,
@@ -283,7 +280,8 @@ component pss_top {""" + ONE + """
 component pss_top {""" + ONE + """
   function int f(const int x) { x = 2; return x; }
   target function void run() { a.STS.write_val(f(1)); }
-}""", Refused([r"\bx\b", r"const"]), xfail=on(ALL, F10),
+}""", Refused([r"m\.pss:\d+:\d+: error: parameter 'x' is const, so its value cannot be "
+               r"changed in the function body \(LRM 20\.2\.3\)"]),
         covers=("ST-ASSIGN.6",)),
 
     # --- P5.3: exec blocks and library placement -----------------------------
@@ -333,7 +331,9 @@ component pss_top {""" + ONE + """
     foreach (v : w) { v = 1; }
     a.STS.write_val(w[0]);
   }
-}""", Refused([r"assigns the iterator"]), covers=("ST-FOREACH.6",
+}""", Refused([r"m\.pss:\d+:\d+: error: foreach iterator variable 'v' is read-only and "
+               r"cannot be changed in the foreach body \(LRM 20\.7\.8 g\)"]),
+        covers=("ST-FOREACH.6",
                                                   "ST-ASSIGN.6")),
 
     "a foreach writing its index": Case("""
@@ -343,17 +343,24 @@ component pss_top {""" + ONE + """
     foreach (w[i]) { i = 2; }
     a.STS.write_val(w[0]);
   }
-}""", Refused([r"assigns the index 'i'"]), xfail=on(("c", "cpp", "sv"), W61),
+}""", Refused([r"m\.pss:\d+:\d+: error: foreach index variable 'i' is read-only and "
+               r"cannot be changed in the foreach body \(LRM 20\.7\.8 g\)"]),
         covers=("ST-FOREACH.6", "ST-ASSIGN.6")),
 
+    # Replacing the collection whole. An assignment to an ELEMENT is not
+    # reported: the LRM's own Example 291 assigns `dst[i]` inside
+    # `foreach (dst[i])`, so "the contents" cannot mean an element's value
+    # (06-front-end-checks F17; a reading for the user to confirm).
     "a foreach changing its collection": Case("""
 component pss_top {""" + ONE + """
   target function void run() {
     array<int, 2> w = {1, 2};
-    foreach (w[i]) { w[0] = 5; }
+    array<int, 2> u = {3, 4};
+    foreach (w[i]) { w = u; }
     a.STS.write_val(w[0]);
   }
-}""", Refused([r"\bw\b"]), xfail=on(ALL, F17),
+}""", Refused([r"m\.pss:\d+:\d+: error: 'w' is the collection this foreach iterates, so it "
+               r"cannot be changed in the foreach body \(LRM 20\.7\.8 g\)"]),
         covers=("ST-FOREACH.7", "ST-ASSIGN.6")),
 
     # Either an index or an iterator is named (20.7.8 f).
@@ -365,6 +372,53 @@ component pss_top {""" + ONE + """
   }
 }""", Refused([r"line \d+: a 'ProceduralStmtForeach' statement could not "
                r"be translated"]), covers=("ST-FOREACH.5",)),
+
+    # `break` and `continue` only within a loop (20.7.11 b): py wrote a
+    # module that does not import (F16).
+    "a break outside a loop": Case("""
+component pss_top {""" + ONE + """
+  target function void run() {
+    int x = 1;
+    if (x == 1) { break; }
+    a.STS.write_val(x);
+  }
+}""", Refused([r"m\.pss:\d+:\d+: error: 'break' may only appear within a "
+               r"loop statement: repeat, while or foreach \(LRM 20\.7\.11 b\)"]),
+        covers=("ST-BRK.3",)),
+
+    "a continue outside a loop": Case("""
+component pss_top {""" + ONE + """
+  target function void run() {
+    int x = 1;
+    if (x == 1) { continue; }
+    a.STS.write_val(x);
+  }
+}""", Refused([r"m\.pss:\d+:\d+: error: 'continue' may only appear within "
+               r"a loop statement: repeat, while or foreach \(LRM 20\.7\.11 b\)"]),
+        covers=("ST-BRK.3",)),
+
+    # At most one default branch (20.7.10 f): py ran the second (F18).
+    "a match with two defaults": Case("""
+component pss_top {""" + ONE + """
+  target function void run() {
+    int x = 1;
+    int y;
+    match (x) { [2]: y = 1; default: y = 2; default: y = 3; }
+    a.STS.write_val(y);
+  }
+}""", Refused([r"m\.pss:\d+:\d+: error: a match statement may have at most "
+               r"one default branch; this is a second one \(LRM 20\.7\.10 f\)"]),
+        covers=("ST-MATCH.3",)),
+
+    # Only the bare `return;` in an exec (20.7.5; ruling R21) (F21).
+    "a return with a value in an exec": Case("""
+component pss_top {""" + ONE + """
+  int n;
+  exec init_down { n = 1; return 1; }
+  target function void run() { a.STS.write_val(n); }
+}""", Refused([r"m\.pss:\d+:\d+: error: an exec block returns void, so "
+               r"'return' cannot take a value \(LRM 20\.7\.5, ruling R21\)"]),
+        covers=("ST-RET.3",)),
 
     # `compile assert` is a package/type-body item, not a procedural
     # statement (19.4).

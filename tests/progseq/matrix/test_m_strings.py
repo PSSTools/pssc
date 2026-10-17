@@ -16,8 +16,6 @@ E27 = ("E27: an import signature type (20.4.1 c) is an internal error, not "
        "a located refusal")
 H1 = ("H1: the harness's platform implements no user import, so SV's "
       "import interface does not compile")
-F9 = ("F9: an assignment to a sub-string is accepted (7.6.2): pssparser "
-      "does not check it")
 
 
 CASES = {
@@ -262,9 +260,9 @@ component pss_top {""" + ONE + """
     s[0] = "x";
     message(LOW, "%s", s);
   }
-}""", Refused([r"sub-?string|lvalue"]),
-        refused=on(("c", "cpp"), Refused([r": a string", r"ruling R3"])),
-        xfail=on(("py", "sv"), F9),
+}""", Refused([r"m\.pss:\d+:\d+: error: a sub-string of 's' on the left of an assignment: "
+               r"the sub-string operator shall not be used there "
+               r"\(LRM 7\.6\.2\)"]),
         covers=("EX-SUBSTR.4",)),
 
     # `string` is an import type (20.4.1 c); an import declared and not

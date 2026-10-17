@@ -416,8 +416,10 @@ def test_foreach_index_is_an_int(tmp_path):
                 extra="int arr[2];") == ["-1", "0"]
 
 
+# pssparser reports both (PSS123, LRM 20.7.8 g) before op-model-py's own
+# refusal is reached.
 @pytest.mark.parametrize("body, what", [
-    ("v = 1;", "iterator 'v'"),
+    ("v = 1;", "iterator variable 'v'"),
 ])
 def test_foreach_refuses_a_write_to_its_iterator(tmp_path, body, what):
     with pytest.raises(CompileError) as ei:
@@ -426,7 +428,7 @@ component pss_top {{
   int arr[3];
   target function void g() {{ foreach (v : arr) {{ {body} }} }}
 }}""")
-    assert_refused_at(ei, f"body assigns the {what}")
+    assert_refused_at(ei, f"foreach {what} is read-only")
 
 
 def test_foreach_refuses_a_write_to_its_index(tmp_path):
@@ -436,7 +438,7 @@ component pss_top {
   int arr[3];
   target function void g() { foreach (arr[i]) { i = 2; } }
 }""")
-    assert_refused_at(ei, "body assigns the index 'i'")
+    assert_refused_at(ei, "foreach index variable 'i' is read-only")
 
 
 def test_foreach_iterates_an_array_of_components_by_reference(tmp_path):

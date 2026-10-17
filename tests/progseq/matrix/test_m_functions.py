@@ -6,15 +6,9 @@ from __future__ import annotations
 
 from ._matrix import ALL, Case, define_tests, on, ONE, Refused
 
-W40 = ("W40: a const parameter passed to a non-const formal is accepted "
-       "(20.2.3): pssparser does not check it")
 E26 = "E26: a static const struct: 'unsupported field initializer ExprStructLiteral'"
-E32 = ("E32: a function returning a component without `ref`: unlocated "
-       "'unsupported ... type for DataTypeComponent'")
 E33 = ("E33: a call on a base instance of a function only a derived type "
        "defines is not refused (c, py: unlocated ValueError)")
-F10 = "F10: assignment to a const scalar parameter is accepted (20.2.3)"
-F13 = "F13: a function returning a component without `ref` is accepted (20.2.2)"
 F14 = ("F14: a target declaration with a solve definition is accepted "
        "(20.2.1.3, 20.2.7)")
 F15 = ("F15: declaration/definition and override consistency is not checked "
@@ -160,15 +154,15 @@ component pss_top {""" + ONE + """
                        "FN-PARAM.5")),
 
     # ... and its error: a `const` parameter passed where the callee may
-    # write it (20.2.3). pssparser accepts it, and every target lets `wr`
-    # write the caller's struct (W40).
+    # write it (20.2.3; was W40).
     "a const struct parameter forwarded to a non-const formal": Case("""
 struct p_s { int x; }
 component pss_top {""" + ONE + """
   target function void wr(p_s p) { p.x = 9; }
   target function int fwd(const p_s p) { wr(p); return p.x; }
   target function void run() { p_s q; q.x = 4; message(LOW, "%d", fwd(q)); }
-}""", Refused([r"const", r"\bp\b"]), xfail=on(ALL, W40),
+}""", Refused([r"m\.pss:\d+:\d+: error: argument 1 of 'wr' is const parameter 'p', so "
+               r"parameter 'p' must be declared const \(LRM 20\.2\.3\)"]),
         covers=("FN-PARAM", "DT-CONST")),
 
     # A static function called by its base type's name (20.2, IP-64): the
@@ -392,7 +386,8 @@ component pss_top {""" + ONE + """
   sub_c s;
   function sub_c g() { return s; }
   target function void run() { message(LOW, "x"); }
-}""", Refused([r"\bg\b"]), xfail={"py": F13, "c": E32, "cpp": E32, "sv": E32},
+}""", Refused([r"m\.pss:\d+:\d+: error: function 'g' returns component type 'sub_c' "
+               r"without 'ref': a function shall not \(LRM 20\.2\.2\)"]),
         covers=("FN-DECL.4",)),
 
     # A `const` parameter cannot be changed in the body (20.2.3).
@@ -400,7 +395,8 @@ component pss_top {""" + ONE + """
 component pss_top {""" + ONE + """
   target function int f(const int x) { x = 3; return x; }
   target function void run() { message(LOW, "%d", f(1)); }
-}""", Refused([r"const", r"\bx\b"]), xfail=on(ALL, F10),
+}""", Refused([r"m\.pss:\d+:\d+: error: parameter 'x' is const, so its value cannot be "
+               r"changed in the function body \(LRM 20\.2\.3\)"]),
         covers=("FN-PARAM.5",)),
 
     # A static const struct passed to a const formal (20.2.3).

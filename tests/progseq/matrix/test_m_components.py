@@ -10,7 +10,6 @@ from ._matrix import ALL, Case, define_tests, on, ONE, PY_LAZY_SUB, Refused
 W66 = ("W66: `in` over a component array compares the components by value: "
        "the C/C++ does not compile")
 
-F30 = "F30: `==` / assignment of component arrays is accepted (7.9.2)"
 W60 = ("W60: solve-ness is classified by short name across the model, so a "
        "target function sharing a solve function's name is refused")
 
@@ -340,7 +339,9 @@ component pss_top {""" + ONE + """
   sub_c s[2];
   sub_c t[2];
   target function void run() { if (s == t) { message(LOW, "eq"); } }
-}""", Refused([r"component array"]), xfail=on(ALL, F30),
+}""", Refused([r"m\.pss:\d+:\d+: error: '==' does not apply to an array of components or "
+               r"actions: only \[\], size\(\), foreach and 'in' do "
+               r"\(LRM 7\.9\.2\)"]),
         covers=("DT-ARR.15",)),
 
     "a component array assigned": Case("""
@@ -354,7 +355,9 @@ component pss_top {
     s = t;
   }
   target function void run() { message(LOW, "run"); }
-}""", Refused([r"component array"]), xfail=on(ALL, F30),
+}""", Refused([r"m\.pss:\d+:\d+: error: an array of components or actions cannot be "
+               r"assigned: only \[\], size\(\), foreach and 'in' apply to "
+               r"one \(LRM 7\.9\.2\)"]),
         covers=("DT-ARR.15",)),
 
     # `mutable` fields (9.1.6) may be written by solve-time code, which in an
