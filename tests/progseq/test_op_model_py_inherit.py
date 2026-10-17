@@ -127,12 +127,22 @@ component pss_top : base_c { }"""))
         ("read", 0x108, 0x40), ("write", 0x100, 0x41)]
 
 
-def test_a_shadowing_function_with_another_signature_is_allowed_uncalled(
-        tmp_path):
-    """LRM Example 284's shape: der_c::scale() shadows base_c::scale(int),
-    and nothing it inherits calls `scale`, so nothing is ambiguous."""
-    mod, rt = _load(_compile(tmp_path, """
+def test_a_shadowing_function_with_another_signature_is_refused(tmp_path):
+    """der_c::scale() shadows the INSTANCE function base_c::scale(int): LRM
+    20.2 requires "the same return type and arguments", and pssparser reports
+    it (PSS009) whether or not anything calls it. (Only a static function may
+    be shadowed by one of another signature.)"""
+    with pytest.raises(Exception) as ei:
+        _compile(tmp_path, """
 component base_c { target function int scale(int v) { return v * 2; } }
+component pss_top : base_c { target function int scale() { return 9; } }""")
+    text = str(ei.value) + "".join(getattr(ei.value, "errors", []))
+    assert "it overrides disagree about the number of parameters" in text
+
+
+def test_a_shadowing_static_function_may_have_another_signature(tmp_path):
+    mod, rt = _load(_compile(tmp_path, """
+component base_c { static function int scale(int v) { return v * 2; } }
 component pss_top : base_c { target function int scale() { return 9; } }"""))
     assert mod.PssTop(rt.MemoryBus()).scale() == 9
 
@@ -158,12 +168,14 @@ component base_c {
 }
 component der_c : base_c { target function int f() { return 0; } }
 component pss_top { der_c d; target function void g() { } }""",
-     "with a signature that differs from 'base_c::f'"),
+     # pssparser reports it first (PSS009, LRM 20.2); pssc's own refusal,
+     # "with a signature that differs", is not reached.
+     "'der_c::f' and the 'base_c::f' it overrides disagree"),
 ])
 def test_what_cannot_be_inherited_is_refused(tmp_path, model, msg):
     with pytest.raises(Exception) as ei:
         _compile(tmp_path, model)
-    assert msg in str(ei.value)
+    assert msg in str(ei.value) + "".join(getattr(ei.value, "errors", []))
 
 
 def test_a_refused_component_outside_the_tree_is_not_reported(tmp_path):

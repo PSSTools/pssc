@@ -7,6 +7,7 @@ metadata: ``const_params`` and ``param_dirs``.
 from __future__ import annotations
 
 import pytest
+from pssc.driver import CompileError
 
 from ._ir import function, shape, translate
 
@@ -15,7 +16,6 @@ package q {
   function int pf(int a) { return a; }
   function void fetch(output int v, inout int w, input int c, int d);
   import target function fetch;
-  import solve function int fmt(string f, int ... args);
   import target function void put(int a, bit[8] b = 3);
 }
 """
@@ -89,24 +89,24 @@ def test_parameter_direction_is_recorded(tmp_path):
     assert fn.metadata["param_dirs"] == {"v": "output", "w": "inout"}
 
 
-def test_an_imports_varargs_and_defaults_are_kept(tmp_path):
-    """The variadic parameter became an ordinary one, and a default was
-    dropped (20.2.4, 20.2.5)."""
+def test_an_imports_defaults_are_kept(tmp_path):
+    """A default was dropped (20.2.4). (Its varargs half went with ruling
+    R23: a user-written varargs import is pssparser's PSS136.)"""
     ctx = _ctx(tmp_path, "")
-    assert _sig(_import(ctx, "fmt")) == (
-        "Arguments([Arg('f', String())], Arg('args', int[32])) -> int[32] "
-        "['is_solve', 'is_import']")
     assert shape(_import(ctx, "put").args) == (
         "Arguments([Arg('a', int[32]), Arg('b', bit[8])], [3])")
 
 
 def test_an_imports_parameter_is_never_dropped(tmp_path):
-    ctx = translate(tmp_path, """package q {
+    """A float is no import type (20.4.1 c): pssparser reports it (PSS137)
+    before ast2ir's own refusal (R5) is reached."""
+    with pytest.raises(CompileError) as ei:
+        translate(tmp_path, """package q {
   import target function void k(int a, float32 f);
 }
 component pss_top { }""")
-    assert any(e.startswith("line 3: ") and "parameter 'f' of 'k' is "
-               "floating point" in e for e in ctx.errors), ctx.errors
+    assert "parameter 'f' of imported function 'k' has type float, which an " \
+        "import cannot take" in str(ei.value) + "".join(ei.value.errors)
 
 
 @pytest.mark.parametrize("stmt, want", [

@@ -168,8 +168,6 @@ def test_floating_point_in_a_body_is_refused(tmp_path, src, what):
                  id="float"),
     pytest.param("int a, ref p_s b", "'b' of 'h' is a reference (`ref T`)",
                  id="ref"),
-    pytest.param("int a, type T", "'T' of 'h' is a type parameter",
-                 id="type"),
 ])
 def test_a_parameter_is_never_dropped(tmp_path, params, what):
     ctx = translate(tmp_path, _PRE + f"""component pss_top {{

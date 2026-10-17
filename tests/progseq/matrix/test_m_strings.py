@@ -279,7 +279,8 @@ component pss_top {""" + ONE + """
 package pk { import target function int n(list<string> s); }
 component pss_top {""" + ONE + """
   target function void run() { a.STS.write_val(1); }
-}""", Refused([r"list"]), xfail=on(("c", "cpp", "py", "sv"), E27),
+}""", Refused([r"m\.pss:\d+:\d+: error: parameter 's' of imported function 'n' has type list "
+               r"of string, which an import cannot take \(LRM 20\.4\.1 c\)"]),
         covers=("DT-STR.16",)),
 
     # --- error()/fatal() strings are known at solve time (21.3; R15) ----------

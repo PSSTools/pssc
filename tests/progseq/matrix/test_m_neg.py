@@ -20,13 +20,8 @@ from ._matrix import ALL, Case, define_tests, on, ONE, Refused
 
 F5 = "F5: `rand chandle` is accepted (7.1, 7.7)"
 F6 = "F6: access protection is not checked (20.4 b)"
-F11 = "F11: a varargs parameter of a PSS-bodied function is accepted (20.2.5)"
-F26 = ("F26: import/export parameter types are not checked (20.4.1 c, "
-       "20.4.2.1)")
 F5_RAND = ("F5: `randomize` of a chandle is accepted (7.1); pssc refuses every "
            "randomize, so the error goes unsaid")
-F11_GENERIC = ("F11: a generic parameter of a PSS-bodied function is accepted "
-               "(20.2.5); pssc refuses it as unsupported")
 F22 = ("F22: an exec placement or call context the LRM forbids is accepted; "
        "pssc refuses it as unsupported (M5)")
 
@@ -256,7 +251,18 @@ component pss_top {""" + ONE + """
 component pss_top {""" + ONE + """
   target function int f(int k, int ... rest) { return k; }
   target function void run() { a.STS.write_val(f(1, 2, 3)); }
-}""", Refused([r"\brest\b|varargs|\.\.\."]), xfail=on(ALL, F11),
+}""", Refused([r"m\.pss:\d+:\d+: error: parameter 'rest' of 'f' is varargs, which only a "
+               r"core-library function may have \(LRM 20\.2\.5, ruling R23\)"]),
+        covers=("FN-PARAM.9",)),
+
+    # ...not even in a bodiless declaration (ruling R23; Ex 293/294 written
+    # in a user model are errors too).
+    "a varargs parameter of a bodiless declaration": Case("""
+component pss_top {""" + ONE + """
+  function void g(string f, int ... rest);
+  target function void run() { a.STS.write_val(1); }
+}""", Refused([r"m\.pss:\d+:\d+: error: parameter 'rest' of 'g' is varargs, which "
+               r"only a core-library function may have \(LRM 20\.2\.5, ruling R23\)"]),
         covers=("FN-PARAM.9",)),
 
     # An import's parameter is at most 64 bits wide, and a list of strings
@@ -265,14 +271,16 @@ component pss_top {""" + ONE + """
 package q { import target function void put(bit[65] v); }
 component pss_top {""" + ONE + """
   target function void run() { q::put(1); a.STS.write_val(1); }
-}""", Refused([r"\bv\b", r"65|64"]), xfail=on(ALL, F26),
+}""", Refused([r"m\.pss:\d+:\d+: error: parameter 'v' of imported function 'put' has type "
+               r"bit\[65\], which an import cannot take \(LRM 20\.4\.1 c\)"]),
         covers=("FN-IMPORT.3",)),
 
     "an import parameter of a list of strings": Case("""
 package q { import target function void put(list<string> v); }
 component pss_top {""" + ONE + """
   target function void run() { a.STS.write_val(1); }
-}""", Refused([r"\bv\b", r"list"]), xfail=on(ALL, F26),
+}""", Refused([r"m\.pss:\d+:\d+: error: parameter 'v' of imported function 'put' has type "
+               r"list of string, which an import cannot take \(LRM 20\.4\.1 c\)"]),
         covers=("FN-IMPORT.3",)),
 
     # A struct parameter of an exported function must be `const`
@@ -286,7 +294,8 @@ component pss_top {""" + ONE + """
     p_s q;
     message(LOW, "%d %d", sf(q), q.x);
   }
-}""", Refused([r"\bp\b", r"const"]), xfail=on(ALL, F26),
+}""", Refused([r"m\.pss:\d+:\d+: error: parameter 'p' of exported function 'sf' is a struct, "
+               r"so it shall be declared const \(LRM 20\.4\.2\.1 g\)"]),
         covers=("FN-EXPORT.2",)),
 
     # A parameter declared `const` is read-only (20.2.3).
@@ -506,7 +515,8 @@ struct a_s { int x; }
 component pss_top {""" + ONE + """
   function int f(struct x) { return 1; }
   target function void run() { a_s v; a.STS.write_val(f(v)); }
-}""", Refused([r"\bx\b", r"generic|built-in"]), xfail=on(ALL, F11_GENERIC),
+}""", Refused([r"m\.pss:\d+:\d+: error: parameter 'x' of 'f' is generic, which only a "
+               r"core-library function may have \(LRM 20\.2\.5, ruling R23\)"]),
         covers=("FN-PARAM.8",)),
 
     # A target-template function may not be called from an init exec, or

@@ -9,12 +9,6 @@ from ._matrix import ALL, Case, define_tests, on, ONE, Refused
 E26 = "E26: a static const struct: 'unsupported field initializer ExprStructLiteral'"
 E33 = ("E33: a call on a base instance of a function only a derived type "
        "defines is not refused (c, py: unlocated ValueError)")
-F14 = ("F14: a target declaration with a solve definition is accepted "
-       "(20.2.1.3, 20.2.7)")
-F15 = ("F15: declaration/definition and override consistency is not checked "
-       "(20.2, 20.2.3 c, 20.2.4 c, 20.2.6)")
-E38 = ("E38: (with F15) sv: an override with a different signature is an "
-       "unlocated 'shadows ... with a different signature'")
 
 
 CASES = {
@@ -235,7 +229,8 @@ component pss_top {""" + ONE + """
   target function int f(int x);
   solve function int f(int x) { return x; }
   target function void run() { message(LOW, "%d", f(1)); }
-}""", Refused([r"'f' is a solve function", r"target context"]),
+}""", Refused([r"m\.pss:\d+:\d+: error: declarations of 'f' disagree about the platform "
+               r"qualifier: one is target, the other solve \(LRM 20\.3\.1\)"]),
         covers=("FN-DECL.5", "FN-CALL.7")),
 
     # ...and the definition contradicts the declaration, which fixes the
@@ -246,7 +241,8 @@ component pss_top {""" + ONE + """
   target function int f(int x);
   solve function int f(int x) { return x; }
   target function void run() { message(LOW, "a"); }
-}""", Refused([r"\bf\b"]), xfail=on(ALL, F14), covers=("FN-DECL.5",)),
+}""", Refused([r"m\.pss:\d+:\d+: error: declarations of 'f' disagree about the platform "
+               r"qualifier: one is target, the other solve \(LRM 20\.3\.1\)"]), covers=("FN-DECL.5",)),
 
     # Calls inside aggregate literals (Ex 35), and mutual recursion (20.2.7).
     "calls in aggregate literals and mutual recursion": Case("""
@@ -338,7 +334,8 @@ component pss_top {""" + ONE + """
   function int f(const int x);
   function int f(int x) { return x; }
   target function void run() { message(LOW, "%d", f(1)); }
-}""", Refused([r"const"]), xfail=on(ALL, F15), covers=("FN-DECL.8",)),
+}""", Refused([r"m\.pss:\d+:\d+: error: declarations of 'f' disagree about whether parameter "
+               r"1 \('x'\) is const \(LRM 20\.2\.3 c\)"]), covers=("FN-DECL.8",)),
 
     # ...and in an override, whose defaults are the base's too (20.2.3 c,
     # 20.2.4 c).
@@ -348,7 +345,8 @@ component der_c : base_c { target function int f(int x, int y = 5) { return x * 
 component pss_top {""" + ONE + """
   der_c d;
   target function void run() { message(LOW, "%d", d.f(3)); }
-}""", Refused([r"\bf\b"]), xfail=on(ALL, F15), covers=("FN-VIRT.7",)),
+}""", Refused([r"m\.pss:\d+:\d+: error: 'der_c::f' and the 'base_c::f' it overrides disagree "
+               r"about whether parameter 1 \('x'\) is const"]), covers=("FN-VIRT.7",)),
 
     # A non-pure function shall not be declared pure in a derived type
     # (20.2.6).
@@ -358,7 +356,8 @@ component der_c : base_c { pure function int f(int x) { return x + 1; } }
 component pss_top {""" + ONE + """
   der_c d;
   target function void run() { message(LOW, "%d", d.f(2)); }
-}""", Refused([r"pure"]), xfail=on(ALL, F15), covers=("FN-PURE.2", "FN-VIRT.7")),
+}""", Refused([r"m\.pss:\d+:\d+: error: 'der_c::f' is pure but overrides the non-pure "
+               r"'base_c::f' \(LRM 20\.2\.6\)"]), covers=("FN-PURE.2", "FN-VIRT.7")),
 
     # An instance override keeps the base's signature (20.2)...
     "an override with another signature": Case("""
@@ -367,7 +366,8 @@ component der_c : base_c { target function int f(int x, int y) { return x + y; }
 component pss_top {""" + ONE + """
   der_c d;
   target function void run() { message(LOW, "%d", d.f(1, 2)); }
-}""", Refused([r"\bf\b"]), xfail={**on(("c", "cpp", "py"), F15), "sv": E38},
+}""", Refused([r"m\.pss:\d+:\d+: error: 'der_c::f' and the 'base_c::f' it overrides disagree "
+               r"about the number of parameters \(1 and 2\)"]),
         covers=("FN-VIRT.2",)),
 
     # ...and an instance function cannot be shadowed by a static one (20.2).
@@ -377,7 +377,8 @@ component der_c : base_c { static function int f(int x) { return x + 1; } }
 component pss_top {""" + ONE + """
   der_c d;
   target function void run() { message(LOW, "%d", d.f(1)); }
-}""", Refused([r"\bf\b"]), xfail=on(ALL, F15), covers=("FN-VIRT.2",)),
+}""", Refused([r"m\.pss:\d+:\d+: error: static function 'der_c::f' cannot shadow the instance "
+               r"function 'base_c::f' \(LRM 20\.2\)"]), covers=("FN-VIRT.2",)),
 
     # A component type is returned only with `ref` (20.2.2).
     "a function returning a component without ref": Case("""

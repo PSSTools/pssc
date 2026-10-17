@@ -560,7 +560,9 @@ component pss_top {
   exec init_down { set_executor(x); }
   target function void g() { }
 }""")
-    assert "Syntax 159" in msg
+    # pssparser reports the override's signature first (PSS009, LRM 20.2);
+    # pssc's own "Syntax 159" refusal is not reached.
+    assert "'x_c::read32' and the" in msg and "it overrides disagree" in msg
 
 
 def test_a_target_without_delegation_refuses_an_override(tmp_path):

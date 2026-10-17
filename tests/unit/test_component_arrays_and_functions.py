@@ -269,6 +269,8 @@ class TestSuperCallFeature(unittest.TestCase):
         self.assertEqual(attr.attr, "x")
 
 
+@unittest.skip("ruling R23: a user-written varargs function is an error "
+               "(pssparser PSS136), so ast2ir never sees one")
 class TestFunctionVarargs(unittest.TestCase):
     """Tests for varargs function parameter translation."""
 

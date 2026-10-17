@@ -231,7 +231,7 @@ Sources are in brackets.
 | E35 | c, cpp, py; sv | `set_handle` on a sub-group (21.14.3) | internal errors; sv accepts it | P5.3 |
 | E36 | c, cpp, sv | a `mem_access_desc_s` argument to a memory primitive, no executor (21.13.9) | c: unlocated arity error on any descriptor; cpp/sv: "unsupported expr ExprList" on `{}`. py ignores it, as it should | P5.3 |
 | E37 | sv | `%n` of an int | unlocated ValueError (c, cpp, py refuse it with a location) | P5.3 |
-| E38 | sv | an override with a different signature (F15) | unlocated "shadows ... with a different signature" | P5.3 |
+| E38 | sv | an override with a different signature (F15) | **Fixed** with F15 (pssparser 4c7d2f0): pssparser refuses it first (PSS009). Was: unlocated "shadows ... with a different signature" | P5.3 |
 | E39 | py | a `reg_c` in a plain component (F27) | unlocated "no default value for ... DataTypeRegister" | P5.3 |
 | E40 | c | a channel of a struct | unlocated ValueError | P5.3 |
 | E41 | c, sv | a `foreach` value iterator over a two-dimensional array (a row) | internal error, "unsupported type for DataTypeArray"; cpp and py work | P5.3 |
@@ -272,11 +272,11 @@ members of this class.
 | F8 | assignment to a `static const` (scalar, element, member) (7.1, 7.9 a) | **Fixed** (pssparser 00b0eba): PSS121. Was: accepted; py rendered `5 = 2` in a target function and really modified it in a constructor |
 | F9 | assignment to a sub-string, `s[0] = "x"` (7.6.2) | **Fixed** (pssparser 00b0eba): PSS122. Was: accepted; py raised TypeError at run time, sv emitted it |
 | F10 | assignment to a `const` scalar parameter (20.2.3) | **Fixed** (pssparser 00b0eba): PSS121 (W40, the struct passed on, is PSS006) |
-| F11 | a varargs or generic (`type`, `struct`, `numeric`) parameter of a PSS-bodied function (20.2.5) | varargs accepted (py TypeError at run time); generic refused only as "not supported". Error for any user-written function by **R23** |
+| F11 | a varargs or generic (`type`, `struct`, `numeric`) parameter of a PSS-bodied function (20.2.5) | **Fixed** (pssparser 4c7d2f0): PSS136, by **R23** -- bodied, imported or bodiless |
 | F12 | an array argument of another size than the formal (8.3) | **Fixed** (pssparser a199765): PSS006. Was: accepted; py ran it |
 | F13 | a function returning a component without `ref` (20.2.2) | **Fixed** (pssparser a199765): PSS129, for parameters too (the same 20.2.2 "shall not"). Was: accepted (then E32) |
-| F14 | a `target` declaration with a `solve` definition (20.2.1.3) | accepted |
-| F15 | declaration/definition and override consistency: `const` and default mismatches, a non-pure function made `pure`, an override with another signature, an instance function shadowed by a static one (20.2.3 c, 20.2.4 c, 20.2.6) | accepted (PSS009 checks defaults on a redeclaration only); sv E38 |
+| F14 | a `target` declaration with a `solve` definition (20.2.1.3) | **Fixed** (pssparser 4c7d2f0): PSS009 (platform qualifier) |
+| F15 | declaration/definition and override consistency: `const` and default mismatches, a non-pure function made `pure`, an override with another signature, an instance function shadowed by a static one (20.2.3 c, 20.2.4 c, 20.2.6) | **Fixed** (pssparser 4c7d2f0): PSS009 -- const between declarations; overrides: signature, const, defaults, static shadow, pure |
 | F16 | `break`/`continue` outside a loop (20.7.11 b) | **Fixed** (pssparser 00b0eba): PSS124. Was: accepted; py wrote a module that does not import |
 | F17 | modifying the collection a `foreach` iterates (20.7.8 g) | **Fixed** (pssparser 00b0eba): PSS123 for the index, the iterator written whole, the collection replaced whole and its changing methods (a member of the iterator may be written: it aliases the element, 20.7.8 c, as pssc already held; narrowed in a199765). An element write (`w[0] = 5`) is NOT reported: Ex 291 assigns `dst[i]` in `foreach (dst[i])` -- a reading for the user to confirm |
 | F18 | two `default` arms in a `match` (20.7.10 f) | **Fixed** (pssparser 00b0eba): PSS125 (procedural and activity). Was: accepted; py ran the second |
@@ -287,7 +287,7 @@ members of this class.
 | F23 | collection Negs: `k in m` on a map, a subscript or slice of a set, `rand map`/`set`, a modifying collection method in a constraint, a `ref` field in a struct, `const ref`, a cast to a typedef of a struct, `instance` on a non-ref | accepted (all refused on op-model under R4 / `ref`) |
 | F24 | a method of a string-array element, `s[1].size()` | PSS002 "the enclosing scope is unknown" (a resolution bug, not a check) |
 | F25 | `addr_value` called from solve context (21.13.5) | accepted |
-| F26 | import/export parameter types (20.4.1 c, 20.4.2.1): `bit[65]`, `list<string>`, a non-const struct to an export | accepted (then E27) |
+| F26 | import/export parameter types (20.4.1 c, 20.4.2.1): `bit[65]`, `list<string>`, a non-const struct to an export | **Fixed** (pssparser 4c7d2f0): PSS137. An exported *instance* function (the LINT301 extension; the WB DMA exports file uses one with a non-const struct) is not judged. Was: accepted (then E27) |
 | F27 | a `reg_c` outside a `reg_group_c`; `extend component reg_group_c` (21.14.1) | accepted (py E39) |
 | F28 | `channel_c<string>` (21.9.1) | accepted (py) |
 | F29 | a struct on the left of `in` with a range list (8.5.9.1) | **Fixed** (pssparser a199765): PSS127 (also an aggregate literal on the left). Was: accepted; py evaluated false |
@@ -1457,3 +1457,19 @@ Newest last. Each entry names what changed and the test that proves it.
   tightened. `test_enum_item_types` gave two items one value on purpose
   (to show a name is never recovered from a value); that is an error now,
   so `ALIAS` has a value of its own. Compliance: no corpus model rejected.
+* 2026-10-17 -- **F11, F14, F15, F26 fixed** (pssparser 4c7d2f0): PSS009
+  grows `const` and platform-qualifier comparison and override checks
+  (signature, const, defaults, static shadow, pure; E38 goes with it);
+  PSS136 (R23); PSS137 (import/export types, an export's non-const struct;
+  exports of instance functions, an extension, left alone because
+  `tests/progseq/data/wb_dma_exports.pss` exports `write_descriptor(...,
+  wb_dma_desc_s desc)`). Matrix: the F11/F14/F15/F26/E38 xfails removed and
+  tightened; "a call to a target declaration with a solve definition" and
+  "a list of strings in an import signature" now meet pssparser's message;
+  new case "a varargs parameter of a bodiless declaration". pssc tests
+  adjusted: the IR's varargs tests (`TestFunctionVarargs`, the `fmt`
+  import) are skipped/removed -- R23 makes such input an error; ast2ir's
+  own refusals of a `type` parameter and a float import parameter now meet
+  pssparser first; op-model-py's override refusals (`test_op_model_py_
+  inherit`, the executor `read32` override) expect PSS009, and a shadowing
+  function of another signature is legal only over a static base.
