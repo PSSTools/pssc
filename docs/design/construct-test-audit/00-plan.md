@@ -284,8 +284,8 @@ members of this class.
 | F20 | `yield` in a solve function (20.7.14 a) | **Fixed** (pssparser 9dd8cea): PSS143, by **R20**. Was: accepted; error by **R20** |
 | F21 | `return expr;` in an exec block (20.7.5) | **Fixed** (pssparser 00b0eba): PSS007, by **R21** |
 | F22 | exec placements: `pre_solve`/`body` in a component (20.1.2), a target-template exec of a solve kind (20.5), solve-only `file_*` from target code (21.2), memory/channel calls from solve code, a target-template function called from an init exec (20.1.2) | **Fixed** (pssparser 9dd8cea): PSS145 placements (init_down/init_up outside a component not judged yet), PSS144 calls across the platform boundary; the core library's `print` (declared `solve`, 21.1.2) from target code is NOT reported pending a ruling -- pssc's target-side backends lower it in `exec body`. Was: accepted; pssc refuses them as unsupported (M5) |
-| F23 | collection Negs: `k in m` on a map, a subscript or slice of a set, `rand map`/`set`, a modifying collection method in a constraint, a `ref` field in a struct, `const ref`, a cast to a typedef of a struct, `instance` on a non-ref | accepted (all refused on op-model under R4 / `ref`) |
-| F24 | a method of a string-array element, `s[1].size()` | PSS002 "the enclosing scope is unknown" (a resolution bug, not a check) |
+| F23 | collection Negs: `k in m` on a map, a subscript or slice of a set, `rand map`/`set`, a modifying collection method in a constraint, a `ref` field in a struct, `const ref`, a cast to a typedef of a struct, `instance` on a non-ref | **Fixed** (pssparser 33da9f3): PSS148 (`in` on a map, a set indexed or sliced, a changing method in a constraint/activity), PSS149 (ref field in a struct, `instance` on a non-reference, `const ref`), PSS142 (`rand` map/set); the typedef cast was already PSS126. Was: accepted (all refused on op-model under R4 / `ref`) |
+| F24 | a method of a string-array element, `s[1].size()` | **Fixed** (pssparser 1854235): a string element or sub-string has the string methods. Was: PSS002 "the enclosing scope is unknown" (a resolution bug, not a check) |
 | F25 | `addr_value` called from solve context (21.13.5) | **Fixed** (pssparser 9dd8cea): PSS144. Was: accepted |
 | F26 | import/export parameter types (20.4.1 c, 20.4.2.1): `bit[65]`, `list<string>`, a non-const struct to an export | **Fixed** (pssparser 4c7d2f0): PSS137. An exported *instance* function (the LINT301 extension; the WB DMA exports file uses one with a non-const struct) is not judged. Was: accepted (then E27) |
 | F27 | a `reg_c` outside a `reg_group_c`; `extend component reg_group_c` (21.14.1) | **Fixed** (pssparser 9dd8cea): PSS141 (and extending reg_c/reg_group_c or their bases). Was: accepted (py E39) |
@@ -293,7 +293,7 @@ members of this class.
 | F29 | a struct on the left of `in` with a range list (8.5.9.1) | **Fixed** (pssparser a199765): PSS127 (also an aggregate literal on the left). Was: accepted; py evaluated false |
 | F30 | `==` / assignment of component arrays (7.9.2) | **Fixed** (pssparser a199765): PSS128. Was: accepted; py ran it |
 | F31 | a constant zero divisor, a constant negative shift amount (8.5.1, 8.5.7) | **Fixed** (pssparser 9dd8cea): PSS139 (constant forms only, R14). Was: accepted |
-| F32 | `error()`/`fatal()` with a string not known at solve time, in target code (21.3) | **Refused by pssc** (R15, `targets/error_strings.py`); a front-end check would be earlier |
+| F32 | `error()`/`fatal()` with a string not known at solve time, in target code (21.3) | **Not done** (optional per the brief): pssc enforces R15 (`targets/error_strings.py`); a pssparser check needs a solve-time-known-string analysis it does not have. Was: **Refused by pssc** (R15, `targets/error_strings.py`); a front-end check would be earlier |
 
 P1 found I1 to be **silently wrong in the matrix**: `g(int x, float32 y)`
 called as `g(1, 2.0)` compiles and runs on all four targets, the parameter
@@ -1493,3 +1493,11 @@ Newest last. Each entry names what changed and the test that proves it.
   refusals, op-model's "legal only in a target/solve context" and "`exec
   ...` is not lowered" for these placements, `'exec body' in struct`.
   Compliance: no corpus model rejected.
+* 2026-10-17 -- **F23 and F24 fixed** (pssparser 33da9f3, 1854235): PSS148,
+  PSS149, PSS142 for rand map/set; `s[1].size()` and `u[0..1].size()`
+  resolve. Matrix: `coverage.yaml` DT-LIST.12, DT-MAP.5, DT-MAP.10,
+  DT-SET.6, DT-SET.7 `open, F23` dispositions replaced by `test_m_neg`
+  cases; "a ref member of a struct" tightened to PSS149; new `test_m_
+  strings` case "a method of a string-array element". F32 left undone
+  (optional). The F1-F32 brief is complete but for F32 and the held-back
+  `print` call (see the 2026-10-17 group 6 entry).

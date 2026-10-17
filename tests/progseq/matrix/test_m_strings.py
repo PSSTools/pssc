@@ -236,7 +236,6 @@ component pss_top {''' + ONE + r'''
 }''', Refused([r"PSS027|escape"]), covers=("DT-STR.11",)),
 
     # An array of strings (7.9): elements assigned and read like any other.
-    # (`s[1].size()` is F24, so the size is read through a local.)
     "an array of strings": Case("""
 component pss_top {""" + ONE + """
   target function void run() {
@@ -246,6 +245,17 @@ component pss_top {""" + ONE + """
     message(LOW, "%s %s %d", s[0], s[1], t.size());
   }
 }""", ["zz bc 2"],
+        refused=on(("c", "cpp"), Refused([r": a string", r"ruling R3"])),
+        covers=("DT-ARR.19", "DT-STR")),
+
+    # ...and a method of an element (F24: was "cannot resolve 'size'").
+    "a method of a string-array element": Case("""
+component pss_top {""" + ONE + """
+  target function void run() {
+    array<string, 2> s = {"a", "bc"};
+    message(LOW, "%d %s", s[1].size(), s[0].upper());
+  }
+}""", ["2 A"],
         refused=on(("c", "cpp"), Refused([r": a string", r"ruling R3"])),
         covers=("DT-ARR.19", "DT-STR")),
 

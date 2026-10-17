@@ -446,8 +446,7 @@ component pss_top {""" + ONE + """
   target function void run() { a.STS.write_val(1); }
 }""", Refused([r"PSS013|packed"]), covers=("DT-STRUCT.14",)),
 
-    # A struct member is plain data; a `ref` member is illegal (7.10.1 a).
-    # pssparser does not check it (F23); pssc refuses it as unsupported.
+    # A struct member is plain data; a `ref` member is illegal (7.10 a).
     "a ref member of a struct": Case("""
 component k_c { }
 struct p_s { int a; ref k_c r; }
@@ -456,7 +455,8 @@ component pss_top {""" + ONE + """
     p_s v;
     message(LOW, "%d", v.a);
   }
-}""", Refused([r"field 'r' is a reference"]), covers=("DT-STRUCT.15",)),
+}""", Refused([r"m\.pss:\d+:\d+: error: 'r' is a reference field, which a struct "
+               r"or object cannot declare \(LRM 7\.10 a\)"]), covers=("DT-STRUCT.15",)),
 
     # Access modifiers on struct members (7.1.1, 17.4): a public member is
     # read and written from outside the struct.

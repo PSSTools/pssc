@@ -1,14 +1,15 @@
 # 06 — Front-end checks pssparser does not make (F1–F32)
 
-Status: **in progress** (pssparser branch `front-end-checks`). Done: step 0
-typer (1675c3a); F8, F9, F10+W40, F16, F17 (index, iterator written whole,
-collection replaced or changed by a method; element and iterator-member
-writes left legal per Ex 291 / 20.7.8 c), F18, F21 (00b0eba, narrowed in
-a199765); F4, F29, F30, F12, F13 (a199765); F3 (5780a63); F1+W38
-(fb0eabc; grammar fix for `in` precedence a7bc8c4); F2 (657de18); F11,
-F14, F15, F26 (4c7d2f0); F5, F6, F7, F19, F20, F22, F25, F27, F28, F31
-(9dd8cea; core `print` from target code held back for a ruling). Not
-done: F23, F24, F32. Marker IDs used: PSS121-PSS147. Written 2026-10-17 for the agent that implements them.
+Status: **done but F32** (pssparser branch `front-end-checks`, unpushed).
+Done: step 0 typer (1675c3a); F8, F9, F10+W40, F16, F17 (index, iterator
+written whole, collection replaced or changed by a method; element and
+iterator-member writes left legal per Ex 291 / 20.7.8 c), F18, F21
+(00b0eba, narrowed in a199765); F4, F29, F30, F12, F13 (a199765); F3
+(5780a63); F1+W38 (fb0eabc; `in` precedence grammar fix a7bc8c4); F2
+(657de18); F11, F14, F15, F26 (4c7d2f0); F5, F6, F7, F19, F20, F22, F25,
+F27, F28, F31 (9dd8cea); F24 (1854235); F23 (33da9f3). Open: F32 (optional,
+not done); the core library's `print` called from target code is not
+reported (PSS144) pending a ruling. Marker IDs used: PSS121-PSS149. Written 2026-10-17 for the agent that implements them.
 Source: the construct test audit's P5.3 mapping (`00-plan.md` §2, the
 "Front-end checks missing (F)" table; §8 entries of 2026-10-16/17).
 

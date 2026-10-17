@@ -331,6 +331,52 @@ component pss_top {""" + ONE + """
 }""", Refused([r"m\.pss:\d+:\d+: error: channel 'ch' cannot hold string \(LRM 21\.9\.1 a\)"]),
         covers=("LIB-CHAN.1",)),
 
+    # Collections (F23; the op-model targets refuse collections anyway, R4,
+    # which used to hide these).
+    "in directly on a map": Case("""
+component pss_top {""" + ONE + """
+  target function void run() {
+    map<int, int> m;
+    int k = 1;
+    if (k in m) { a.STS.write_val(1); }
+  }
+}""", Refused([r"m\.pss:\d+:\d+: error: 'in' cannot be applied directly to a map: use its keys\(\) "
+               r"or values\(\) \(LRM 7\.9\.4\)"]),
+        covers=("DT-MAP.5",)),
+
+    "an index of a set": Case("""
+component pss_top {""" + ONE + """
+  target function void run() {
+    set<int> s;
+    a.STS.write_val(s[0]);
+  }
+}""", Refused([r"m\.pss:\d+:\d+: error: 's' is a set, which cannot be indexed or sliced"]),
+        covers=("DT-SET.6",)),
+
+    "a rand map field": Case("""
+struct t_s { rand map<int, int> m; int a; }
+component pss_top {""" + ONE + """
+  target function void run() { t_s v; a.STS.write_val(v.a); }
+}""", Refused([r"m\.pss:\d+:\d+: error: rand field 'm' is a map, which is not randomizable "
+               r"\(LRM 7\.1\)"]),
+        covers=("DT-MAP.10",)),
+
+    "a rand set field": Case("""
+struct t_s { rand set<int> s; int a; }
+component pss_top {""" + ONE + """
+  target function void run() { t_s v; a.STS.write_val(v.a); }
+}""", Refused([r"m\.pss:\d+:\d+: error: rand field 's' is a set, which is not randomizable "
+               r"\(LRM 7\.1\)"]),
+        covers=("DT-SET.7",)),
+
+    "a list-changing method in a constraint": Case("""
+component pss_top {""" + ONE + """
+  action A { rand int x; list<int> l; constraint { x == l.pop_back(); } }
+  target function void run() { a.STS.write_val(1); }
+}""", Refused([r"m\.pss:\d+:\d+: error: 'pop_back' changes its collection, so it shall not be used "
+               r"in a constraint or activity \(LRM 7\.9\)"]),
+        covers=("DT-LIST.12",)),
+
     # An import's parameter is at most 64 bits wide, and a list of strings
     # is not importable (20.4.1 c).
     "an import parameter wider than 64 bits": Case("""

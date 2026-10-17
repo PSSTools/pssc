@@ -91,16 +91,6 @@ dispositions:
     all: {"status": "n-a", "why": "rand arrays and foreach constraints are solve-time only (Ctx C); op-model targets have no solver, and randomize is refused (test_m_refusals.py 'randomize')"}
   DT-LIST.13:
     all: {"status": "n-a", "why": "list randomization is solve-time only (Ctx C); op-model targets have no solver, and lists are refused (R4)"}
-  DT-LIST.12:
-    all: {"status": "open", "defect": "F23"}
-  DT-MAP.5:
-    all: {"status": "open", "defect": "F23"}
-  DT-MAP.10:
-    all: {"status": "open", "defect": "F23"}
-  DT-SET.6:
-    all: {"status": "open", "defect": "F23"}
-  DT-SET.7:
-    all: {"status": "open", "defect": "F23"}
   DT-REF.11:
     py: {"status": "elsewhere", "test": "tests/progseq/test_op_model_entry.py::test_an_operation_is_called_through_sub_components"}
     sv: {"status": "elsewhere", "test": "tests/compliance/test_compliance_op_model_sv.py::test_op_model_sv"}
