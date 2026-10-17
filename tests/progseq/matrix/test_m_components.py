@@ -183,7 +183,7 @@ component pss_top {""" + ONE + """
   int x = 0;
   solve function void setup(int v) { x = v; }
   target function void run() { setup(1); a.STS.write_val(x); }
-}""", Refused([r"'setup' is a solve function", r"target context"]),
+}""", Refused([r"m\.pss:\d+:\d+: error: 'setup' is a solve function and cannot be called from target function 'run'"]),
         covers=("FN-SOLVE", "FN-DECL.5", "FN-CALL.6", "FN-SOLVE.1")),
 
     # --- P4: interaction patterns ---------------------------------------------------
@@ -399,14 +399,14 @@ component pss_top {
     k = t();
   }
   target function void run() { a.STS.write_val(k); }
-}""", Refused([r"'t' is an operation of this model", r"solve context"]),
+}""", Refused([r"m\.pss:\d+:\d+: error: 't' is a target function and cannot be called from solve function 'initialize'"]),
         covers=("FN-SOLVE.2", "FN-CALL.6")),
 
     "set_handle in a target function": Case("""
 component pss_top {""" + ONE + """
   addr_handle_t h;
   target function void run() { a.set_handle(h); a.STS.write_val(1); }
-}""", Refused([r"'set_handle' is legal only in a solve context"]),
+}""", Refused([r"m\.pss:\d+:\d+: error: 'set_handle' is a solve function and cannot be called from target function 'run'"]),
         covers=("FN-SOLVE.6",)),
 
     # Whether `func5` is a solve or a target function depends on the type it

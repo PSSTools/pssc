@@ -21,7 +21,7 @@ from . import trace_harness as th
 _MODEL = """
 package p_pkg {
   import target function void wait_ns(int n);
-  import solve function int ticks();
+  import function int ticks();
 }
 import p_pkg::*;
 pure component ga_c : reg_group_c {

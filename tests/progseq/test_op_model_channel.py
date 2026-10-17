@@ -117,8 +117,11 @@ def test_zero_depth_is_rejected(tmp_path):
     src.write_text("import sync_pkg::*;\n"
                    "component z_c { channel_c<bit, 0> c;\n"
                    "  target function void f() { c.put(1); } }\n")
-    res = driver.translate([str(src)])
-    assert any("DEPTH shall be positive" in e for e in res.errors), res.errors
+    # pssparser reports it (PSS140, 21.9.1 b) before pssc's own check.
+    with pytest.raises(driver.CompileError) as ei:
+        driver.translate([str(src)])
+    assert any("has DEPTH 0: it shall be positive" in str(e)
+               for e in ei.value.errors), ei.value.errors
 
 
 # --- SV projection ---------------------------------------------------------

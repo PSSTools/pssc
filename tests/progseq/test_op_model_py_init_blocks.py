@@ -212,7 +212,8 @@ component pss_top {
   exec init_down { v = f(); }
   target function void g() { }
 }""")
-    assert "pss_top::init_down: cannot lower call: 'f'" in msg
+    # pssparser reports it first (PSS144, 20.2.1.3).
+    assert "'f' is a target function and cannot be called from exec init_down" in msg
 
 
 def test_a_platform_access_is_refused(tmp_path):
@@ -222,7 +223,9 @@ component pss_top {
   exec init_down { write32(h, 1); }
   target function void g() { }
 }""")
-    assert "pss_top::init_down: cannot lower call: 'write32'" in msg
+    # pssparser reports it first (PSS144, 20.2.1.3).
+    assert "'write32' is a target function and cannot be called from exec " \
+        "init_down" in msg
 
 
 # --- what is refused, rather than dropped ------------------------------------

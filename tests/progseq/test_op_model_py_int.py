@@ -97,7 +97,8 @@ def test_a_constant_division_by_zero_is_a_build_error(tmp_path):
 component pss_top {
   target function int g() { return 1 / 0; }
 }""")
-    assert_refused_at(ei, "division by zero")
+    # pssparser reports it (PSS139, 8.5.1) before pssc's own check.
+    assert_refused_at(ei, "division by a constant zero is illegal")
 
 
 # --- comparison (8.5.2) ------------------------------------------------------

@@ -18,12 +18,6 @@ from __future__ import annotations
 
 from ._matrix import ALL, Case, define_tests, on, ONE, Refused
 
-F5 = "F5: `rand chandle` is accepted (7.1, 7.7)"
-F6 = "F6: access protection is not checked (20.4 b)"
-F5_RAND = ("F5: `randomize` of a chandle is accepted (7.1); pssc refuses every "
-           "randomize, so the error goes unsaid")
-F22 = ("F22: an exec placement or call context the LRM forbids is accepted; "
-       "pssc refuses it as unsupported (M5)")
 
 
 CASES = {
@@ -33,7 +27,7 @@ CASES = {
 struct s_s { rand chandle h; int a; }
 component pss_top {""" + ONE + """
   target function void run() { s_s v; a.STS.write_val(v.a); }
-}""", Refused([r"chandle"]), xfail=on(ALL, F5),
+}""", Refused([r"m\.pss:\d+:\d+: error: rand field 'h' is of type chandle, which is not randomizable \(LRM 7\.1\)"]),
         covers=("DT-CHND.2",)),
 
     # A packed struct's fields are integral, bool or enum (21.13.1):
@@ -230,7 +224,7 @@ component sib_c { private int x = 4; }
 component pss_top {""" + ONE + """
   sib_c s;
   target function void run() { a.STS.write_val(s.x); }
-}""", Refused([r"\bx\b", r"private"]), xfail=on(ALL, F6),
+}""", Refused([r"m\.pss:\d+:\d+: error: 'x' is private to 'sib_c' and cannot be reached from here \(LRM 17\.4 b\)"]),
         covers=("EX-REF.11",)),
 
     # --- P5.3: functions -----------------------------------------------------
@@ -264,6 +258,78 @@ component pss_top {""" + ONE + """
 }""", Refused([r"m\.pss:\d+:\d+: error: parameter 'rest' of 'g' is varargs, which "
                r"only a core-library function may have \(LRM 20\.2\.5, ruling R23\)"]),
         covers=("FN-PARAM.9",)),
+
+    # --- front-end group 6 (06-front-end-checks) ------------------------------
+    # A width folds to a positive value (7.2.1 c "should"; ruling R19). F7;
+    # pssc's own I13 refusal is now redundant.
+    "a zero-width integer": Case("""
+component pss_top {""" + ONE + """
+  static const int W = 0;
+  target function void run() { bit[W] v; a.STS.write_val(1); }
+}""", Refused([r"m\.pss:\d+:\d+: error: integer width 0 is not positive \(LRM 7\.2\.1 c, ruling R19\)"]),
+        covers=("DT-INT.3",)),
+
+    # Division or modulus by zero is illegal (8.5.1); a shift amount is
+    # non-negative (8.5.7). Only the constant form is a front-end error (R14). F31.
+    "a division by a constant zero": Case("""
+component pss_top {""" + ONE + """
+  target function void run() { int x = 3; a.STS.write_val(x / 0); }
+}""", Refused([r"m\.pss:\d+:\d+: error: division by a constant zero is illegal \(LRM 8\.5\.1\)"]),
+        covers=("EX-ARITH.4",)),
+
+    "a shift by a constant negative amount": Case("""
+component pss_top {""" + ONE + """
+  target function void run() { int x = 3; a.STS.write_val(x << -1); }
+}""", Refused([r"m\.pss:\d+:\d+: error: a shift by the constant -1: the right operand shall be "
+               r"non-negative \(LRM 8\.5\.7\)"]),
+        covers=("EX-SHIFT.3",)),
+
+    # Only package-scope constants in a compile if (19.1.3 b). F19.
+    "a compile if on a type-scope constant": Case("""
+component pss_top {""" + ONE + """
+  static const int LOC = 1;
+  compile if (pss_top::LOC == 1) { int z; }
+  target function void run() { a.STS.write_val(1); }
+}""", Refused([r"m\.pss:\d+:\d+: error: a compile if condition may not reference 'LOC', a member of "
+               r"type 'pss_top' \(LRM 19\.1\.3 b\)"]),
+        covers=("ST-CIF.3",)),
+
+    # `yield` is target-only (20.7.14 a; ruling R20). F20.
+    "a yield in a constructor": Case("""
+component pss_top {
+  ga_c a;
+  solve function void initialize(addr_handle_t base) {
+    a.set_handle(base);
+    yield;
+  }
+  target function void run() { a.STS.write_val(1); }
+}""", Refused([r"m\.pss:\d+:\d+: error: 'yield' may only be used in target code; solve function "
+               r"'initialize' is solve code \(LRM 20\.7\.14 a, ruling R20\)"]),
+        covers=("ST-YIELD.1",)),
+
+    # addr_value is a target function (21.13.5). F25.
+    "addr_value in a constructor": Case("""
+component pss_top {
+  ga_c a;
+  bit[64] v;
+  solve function void initialize(addr_handle_t base) {
+    a.set_handle(base);
+    v = addr_value(base);
+  }
+  target function void run() { a.STS.write_val(1); }
+}""", Refused([r"m\.pss:\d+:\d+: error: 'addr_value' is a target function and cannot be called from "
+               r"solve function 'initialize'"]),
+        covers=("LIB-MEM.8",)),
+
+    # A channel holds numeric, bool, a based enum, a packed struct or arrays
+    # of them (21.9.1 a). F28.
+    "a channel of strings": Case("""
+import sync_pkg::*;
+component pss_top {""" + ONE + """
+  channel_c<string> ch;
+  target function void run() { a.STS.write_val(1); }
+}""", Refused([r"m\.pss:\d+:\d+: error: channel 'ch' cannot hold string \(LRM 21\.9\.1 a\)"]),
+        covers=("LIB-CHAN.1",)),
 
     # An import's parameter is at most 64 bits wide, and a list of strings
     # is not importable (20.4.1 c).
@@ -315,14 +381,14 @@ component pss_top {""" + ONE + """
   int n;
   exec pre_solve { n = 1; }
   target function void run() { a.STS.write_val(n); }
-}""", Refused([r"`exec pre_solve` is not lowered"]),
+}""", Refused([r"m\.pss:\d+:\d+: error: exec pre_solve is not valid in a component: it is valid in actions, objects and structs \(LRM 20\.1\.2\)"]),
         covers=("EXEC-KIND.8",)),
 
     "a body exec in a component": Case("""
 component pss_top {""" + ONE + """
   exec body { message(LOW, "b"); }
   target function void run() { a.STS.write_val(1); }
-}""", Refused([r"`exec body` is not lowered"]),
+}""", Refused([r"m\.pss:\d+:\d+: error: exec body is not valid in a component: it is valid in actions \(LRM 20\.1\.2\)"]),
         covers=("EXEC-KIND.8", "EXEC-KIND.4")),
 
     # The memory primitives are target functions (21.13.5): a constructor is
@@ -335,8 +401,8 @@ component pss_top {
     write32(base, 1);
   }
   target function void run() { a.STS.write_val(1); }
-}""", Refused([r"pss_top::initialize: cannot lower call: 'write32' is legal "
-               r"only in a target context"]), covers=("LIB-MEM.8",)),
+}""", Refused([r"m\.pss:\d+:\d+: error: 'write32' is a target function and cannot be called from solve function 'initialize', which is solve code \(LRM 20\.2\.1\.3\)"]),
+        covers=("LIB-MEM.8",)),
 
     # --- P5.3: statements ----------------------------------------------------
     "a local declared twice in one scope": Case("""
@@ -527,7 +593,7 @@ component pss_top {""" + ONE + """
   target C function void ts(int x) = \"\"\" bar({{x}}); \"\"\";
   exec init_down { ts(1); }
   target function void run() { a.STS.write_val(1); }
-}""", Refused([r"\bts\b", r"init_down|solve"]), xfail=on(ALL, F22),
+}""", Refused([r"m\.pss:\d+:\d+: error: 'ts' is a target-template function and cannot be called from exec init_down, which is solve code \(LRM 20\.2\.1\.3\)"]),
         covers=("FN-CALL.8", "FN-TT.5")),
 
     # A chandle is not randomizable (7.1).
@@ -539,7 +605,7 @@ component pss_top { ga_c a;
     randomize c;
   }
   target function void run() { a.STS.write_val(1); }
-}""", Refused([r"chandle"]), xfail=on(ALL, F5_RAND),
+}""", Refused([r"m\.pss:\d+:\d+: error: a randomize target of type chandle, which is not randomizable \(LRM 7\.1, 13\.4\.6, ruling R18\)"]),
         covers=("ST-RAND.11",)),
 
     # A target-template exec block is not for solve exec kinds (20.5).
@@ -547,7 +613,7 @@ component pss_top { ga_c a;
 component pss_top {""" + ONE + """
   exec init_down C = \"\"\"int y;\"\"\";
   target function void run() { a.STS.write_val(1); }
-}""", Refused([r"init_down"]), xfail=on(ALL, F22),
+}""", Refused([r"m\.pss:\d+:\d+: error: a target-template exec block cannot be init_down, a solve exec kind \(LRM 20\.5\)"]),
         covers=("EXEC-TT.7",)),
 
     # The file functions are solve-only (21.2): any call from target code is
@@ -557,7 +623,7 @@ component pss_top {""" + ONE + """
   target function void run() {
     if (file_exists("x")) { a.STS.write_val(1); }
   }
-}""", Refused([r"file_exists", r"solve|target"]), xfail=on(ALL, F22),
+}""", Refused([r"m\.pss:\d+:\d+: error: 'file_exists' is a solve function and cannot be called from target function 'run', which is target code \(LRM 20\.2\.1\.3\)"]),
         covers=("LIB-FILE.6",)),
 
     # A register group shall not implement all three offset functions

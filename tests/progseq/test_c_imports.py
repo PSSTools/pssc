@@ -24,12 +24,13 @@ needs_cc = pytest.mark.skipif(not _CC, reason="no C compiler on PATH")
 
 
 #: Two imports the generator has never heard of: one `target` returning void
-#: with an argument, one `solve` returning a value with none. Neither name
-#: appears anywhere in pssc.
+#: with an argument, one unqualified returning a value with none. Neither name
+#: appears anywhere in pssc. (It was a `solve` import, which target code may
+#: not call -- LRM 20.2.1.3, pssparser PSS144.)
 _MODEL = """
 package plat_pkg {
     import target function void plat_delay_us(int us);
-    import solve  function int  plat_ticks();
+    import function int  plat_ticks();
 }
 
 component imp_c {

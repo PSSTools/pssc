@@ -232,7 +232,7 @@ Sources are in brackets.
 | E36 | c, cpp, sv | a `mem_access_desc_s` argument to a memory primitive, no executor (21.13.9) | c: unlocated arity error on any descriptor; cpp/sv: "unsupported expr ExprList" on `{}`. py ignores it, as it should | P5.3 |
 | E37 | sv | `%n` of an int | unlocated ValueError (c, cpp, py refuse it with a location) | P5.3 |
 | E38 | sv | an override with a different signature (F15) | **Fixed** with F15 (pssparser 4c7d2f0): pssparser refuses it first (PSS009). Was: unlocated "shadows ... with a different signature" | P5.3 |
-| E39 | py | a `reg_c` in a plain component (F27) | unlocated "no default value for ... DataTypeRegister" | P5.3 |
+| E39 | py | a `reg_c` in a plain component (F27) | unlocated "no default value for ... DataTypeRegister" | **Fixed** with F27 (pssparser 9dd8cea): pssparser refuses it first. Was: P5.3 |
 | E40 | c | a channel of a struct | unlocated ValueError | P5.3 |
 | E41 | c, sv | a `foreach` value iterator over a two-dimensional array (a row) | internal error, "unsupported type for DataTypeArray"; cpp and py work | P5.3 |
 | E42 | all (ast2ir) | a template string initializing a `static const` (`static const string S = """c={{K}}""";`) | refused with the template-string message, but with no line | P5.3 |
@@ -246,7 +246,7 @@ Sources are in brackets.
 | M2 | all | `get_handle()` (21.14.4), `executor()`, `get_context()` | "no function named X is declared by PSS": the core library declares all three | P5.3 |
 | M3 | py, sv | array `join` / `str_from_chars` (7.9.2.2) | refused as unknown names, like E15 was | P5.3 |
 | M4 | py, c | a constant out-of-range select as a `message` argument | "cannot determine its PSS type" instead of the out-of-range text | P5.3 |
-| M5 | all | exec placements the LRM forbids (F22) | refused as "not lowered" / "not supported yet", not as illegal | P5.3 |
+| M5 | all | exec placements the LRM forbids (F22) | refused as "not lowered" / "not supported yet", not as illegal | **Fixed** with F22 (pssparser 9dd8cea): the LRM error is said first (PSS144/PSS145); pssc's "not lowered" wording is now unreachable for these. Was: P5.3 |
 | M6 | all | `size()` of an array-typed `foreach` iterator (a row) | refused as an unknown function; `m[0].size()` works | P5.3 |
 | H1 | harness | user import functions | the trace harness supplies none (py `MemoryBus`, C/C++/SV mains implement the core seam only), so no case can call an import: DT-CHND.3, DT-INT.8 (sv), FN-IMPORT executed | P5.3 |
 
@@ -266,9 +266,9 @@ members of this class.
 | F2 | enum values (7.5.1 c/e/j): duplicates, outside the base type, negative with an unsigned base, implicit past the base's max, a base with a domain, a variable of an itemless enum | **Fixed** (pssparser 657de18): PSS134 values and base type, PSS135 a variable of an itemless enum. Was: accepted; a duplicate made `%n` print the other name |
 | F3 | an unqualified enum item where the expected type is not the enum: `(int)BLUE` (Ex 37), `M1 == e`, `M1 in [...]` | **Fixed** (pssparser 5780a63): PSS130, by **R22** (LINT101 and PSS045 retired; the left of `==` takes no expected type). Was: LINT101 warning only; `M1 == e` accepted |
 | F4 | casts (7.12.1 a): from a chandle, struct or string; to a struct | **Fixed** (pssparser a199765): PSS126. Was: accepted; `(p_s)3` crashed py at run time |
-| F5 | `rand chandle`, `rand float64` (7.1, 7.7); `randomize` of a chandle | accepted (float later refused by R5); the `randomize` form is an error by **R18** |
-| F6 | access protection (17.4, 20.4): a private/protected field written or read from outside | accepted |
-| F7 | `bit[0]` (7.2.1 c) | accepted; error by **R19** (pssc refuses it, I13) |
+| F5 | `rand chandle`, `rand float64` (7.1, 7.7); `randomize` of a chandle | **Fixed** (pssparser 9dd8cea): PSS142 (rand field and randomize target, R18). Was: accepted (float later refused by R5); the `randomize` form is an error by **R18** |
+| F6 | access protection (17.4, 20.4): a private/protected field written or read from outside | **Fixed** (pssparser 9dd8cea): PSS147 (a member reached through another value). Was: accepted |
+| F7 | `bit[0]` (7.2.1 c) | **Fixed** (pssparser 9dd8cea): PSS138, by **R19**; pssc's I13 refusal is now redundant. Was: accepted; error by **R19** (pssc refuses it, I13) |
 | F8 | assignment to a `static const` (scalar, element, member) (7.1, 7.9 a) | **Fixed** (pssparser 00b0eba): PSS121. Was: accepted; py rendered `5 = 2` in a target function and really modified it in a constructor |
 | F9 | assignment to a sub-string, `s[0] = "x"` (7.6.2) | **Fixed** (pssparser 00b0eba): PSS122. Was: accepted; py raised TypeError at run time, sv emitted it |
 | F10 | assignment to a `const` scalar parameter (20.2.3) | **Fixed** (pssparser 00b0eba): PSS121 (W40, the struct passed on, is PSS006) |
@@ -280,19 +280,19 @@ members of this class.
 | F16 | `break`/`continue` outside a loop (20.7.11 b) | **Fixed** (pssparser 00b0eba): PSS124. Was: accepted; py wrote a module that does not import |
 | F17 | modifying the collection a `foreach` iterates (20.7.8 g) | **Fixed** (pssparser 00b0eba): PSS123 for the index, the iterator written whole, the collection replaced whole and its changing methods (a member of the iterator may be written: it aliases the element, 20.7.8 c, as pssc already held; narrowed in a199765). An element write (`w[0] = 5`) is NOT reported: Ex 291 assigns `dst[i]` in `foreach (dst[i])` -- a reading for the user to confirm |
 | F18 | two `default` arms in a `match` (20.7.10 f) | **Fixed** (pssparser 00b0eba): PSS125 (procedural and activity). Was: accepted; py ran the second |
-| F19 | a type-scope constant in a `compile if` condition (19.1.3 b) | accepted |
-| F20 | `yield` in a solve function (20.7.14 a) | accepted; error by **R20** |
+| F19 | a type-scope constant in a `compile if` condition (19.1.3 b) | **Fixed** (pssparser 9dd8cea): PSS146 (`compile if` only; `compile assert` not judged). Was: accepted |
+| F20 | `yield` in a solve function (20.7.14 a) | **Fixed** (pssparser 9dd8cea): PSS143, by **R20**. Was: accepted; error by **R20** |
 | F21 | `return expr;` in an exec block (20.7.5) | **Fixed** (pssparser 00b0eba): PSS007, by **R21** |
-| F22 | exec placements: `pre_solve`/`body` in a component (20.1.2), a target-template exec of a solve kind (20.5), solve-only `file_*` from target code (21.2), memory/channel calls from solve code, a target-template function called from an init exec (20.1.2) | accepted; pssc refuses them as unsupported (M5) |
+| F22 | exec placements: `pre_solve`/`body` in a component (20.1.2), a target-template exec of a solve kind (20.5), solve-only `file_*` from target code (21.2), memory/channel calls from solve code, a target-template function called from an init exec (20.1.2) | **Fixed** (pssparser 9dd8cea): PSS145 placements (init_down/init_up outside a component not judged yet), PSS144 calls across the platform boundary; the core library's `print` (declared `solve`, 21.1.2) from target code is NOT reported pending a ruling -- pssc's target-side backends lower it in `exec body`. Was: accepted; pssc refuses them as unsupported (M5) |
 | F23 | collection Negs: `k in m` on a map, a subscript or slice of a set, `rand map`/`set`, a modifying collection method in a constraint, a `ref` field in a struct, `const ref`, a cast to a typedef of a struct, `instance` on a non-ref | accepted (all refused on op-model under R4 / `ref`) |
 | F24 | a method of a string-array element, `s[1].size()` | PSS002 "the enclosing scope is unknown" (a resolution bug, not a check) |
-| F25 | `addr_value` called from solve context (21.13.5) | accepted |
+| F25 | `addr_value` called from solve context (21.13.5) | **Fixed** (pssparser 9dd8cea): PSS144. Was: accepted |
 | F26 | import/export parameter types (20.4.1 c, 20.4.2.1): `bit[65]`, `list<string>`, a non-const struct to an export | **Fixed** (pssparser 4c7d2f0): PSS137. An exported *instance* function (the LINT301 extension; the WB DMA exports file uses one with a non-const struct) is not judged. Was: accepted (then E27) |
-| F27 | a `reg_c` outside a `reg_group_c`; `extend component reg_group_c` (21.14.1) | accepted (py E39) |
-| F28 | `channel_c<string>` (21.9.1) | accepted (py) |
+| F27 | a `reg_c` outside a `reg_group_c`; `extend component reg_group_c` (21.14.1) | **Fixed** (pssparser 9dd8cea): PSS141 (and extending reg_c/reg_group_c or their bases). Was: accepted (py E39) |
+| F28 | `channel_c<string>` (21.9.1) | **Fixed** (pssparser 9dd8cea): PSS140 (element type; DEPTH <= 0 too). Was: accepted (py) |
 | F29 | a struct on the left of `in` with a range list (8.5.9.1) | **Fixed** (pssparser a199765): PSS127 (also an aggregate literal on the left). Was: accepted; py evaluated false |
 | F30 | `==` / assignment of component arrays (7.9.2) | **Fixed** (pssparser a199765): PSS128. Was: accepted; py ran it |
-| F31 | a constant zero divisor, a constant negative shift amount (8.5.1, 8.5.7) | accepted |
+| F31 | a constant zero divisor, a constant negative shift amount (8.5.1, 8.5.7) | **Fixed** (pssparser 9dd8cea): PSS139 (constant forms only, R14). Was: accepted |
 | F32 | `error()`/`fatal()` with a string not known at solve time, in target code (21.3) | **Refused by pssc** (R15, `targets/error_strings.py`); a front-end check would be earlier |
 
 P1 found I1 to be **silently wrong in the matrix**: `g(int x, float32 y)`
@@ -1473,3 +1473,23 @@ Newest last. Each entry names what changed and the test that proves it.
   pssparser first; op-model-py's override refusals (`test_op_model_py_
   inherit`, the executor `read32` override) expect PSS009, and a shadowing
   function of another signature is legal only over a static base.
+* 2026-10-17 -- **Group 6 (less F23, F24, F32) fixed** (pssparser
+  9dd8cea): F5 PSS142, F6 PSS147, F7 PSS138, F19 PSS146, F20 PSS143, F22
+  and F25 PSS144/PSS145, F27 PSS141 (E39), F28 PSS140, F31 PSS139. Matrix:
+  their xfails removed and every `Refused` (including the M5 "not lowered"
+  wordings and op-model "legal only in a target context" ones) tightened
+  to pssparser's message; new `test_m_neg` cases for F7, F19, F20, F25,
+  F28, F31; `coverage.yaml` EX-ARITH.4/EX-SHIFT.3 `open` dispositions
+  replaced by cases. **Held back for a ruling**: the core library's
+  `print` is `solve` (21.1.2) and so not callable from `exec body` by
+  20.2.1.3, but `c-host`/`sv-dpi-bridge` lower it there and ~50 tests use
+  it -- PSS144 does not report it yet. pssc test models that broke the
+  rules were corrected rather than the checks weakened: `import solve`
+  functions called from target code (test_c_imports, test_qualified_
+  import_call, test_op_model_py, test_python_api_e2e, test_bc_strings)
+  became unqualified imports, and the bridge seam test calls its solve
+  import from `post_solve`. pssc stopgaps now redundant: ast2ir's I13
+  width refusal, the "DEPTH shall be positive" and "division by zero"
+  refusals, op-model's "legal only in a target/solve context" and "`exec
+  ...` is not lowered" for these placements, `'exec body' in struct`.
+  Compliance: no corpus model rejected.

@@ -13,7 +13,6 @@ from ._matrix import ALL, Case, define_tests, on, ONE, Refused, REGS
 
 W59 = "W59: a read of a WRITEONLY / write of a READONLY register is accepted"
 E28 = "E28: a nested packed struct or array field in a register value"
-F27 = "F27: a reg_c outside a reg_group_c is accepted (21.14.1)"
 M2 = "M2: get_handle() is refused as not declared by PSS (21.14.4)"
 
 
@@ -523,7 +522,7 @@ component pss_top {
   reg_c<bit[32], READWRITE, 32> X;
   solve function void initialize(addr_handle_t base) { a.set_handle(base); }
   target function void run() { X.write_val(1); }
-}""", Refused([r"\bX\b", r"reg_group_c"]), xfail=on(ALL, F27),
+}""", Refused([r"m\.pss:\d+:\d+: error: register 'X' is in 'pss_top', which is not a register group \(LRM 21\.14\.1\)"]),
         covers=("DT-REG.2",)),
 
     # A READONLY and a WRITEONLY register may share an offset (Ex 361); each

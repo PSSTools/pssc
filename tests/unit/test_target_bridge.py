@@ -101,7 +101,9 @@ package dut_api {
 }
 component pss_top {
     import dut_api::*;
-    action Entry { exec body { do_write(16, do_read(7)); } }
+    // A solve import is called from solve code (LRM 20.2.1.3; pssparser
+    // PSS144 refuses `do_read` in a body).
+    action Entry { int r; exec post_solve { r = do_read(7); } exec body { do_write(16, r); } }
 }
 """
 

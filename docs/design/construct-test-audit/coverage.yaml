@@ -110,10 +110,6 @@ dispositions:
   # --- operators -------------------------------------------------------------
   EX-IN.11:
     all: {"status": "n-a", "why": "8.5.9.1 leaves the evaluation order of range-list expressions nondeterministic; the row only forbids tests from depending on it, so there is no expectation to hold a target to"}
-  EX-ARITH.4:
-    all: {"status": "open", "defect": "F31: the constant form is not diagnosed; the run-time form is undefined by ruling R14, nothing to check"}
-  EX-SHIFT.3:
-    all: {"status": "open", "defect": "F31: the constant form is not diagnosed; the run-time form is undefined by ruling R14, nothing to check"}
 
   # --- references, selects, widths -------------------------------------------
   EX-SUBSTR.5:

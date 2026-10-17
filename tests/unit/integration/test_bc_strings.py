@@ -79,4 +79,4 @@ def test_an_import_with_a_string_is_refused(decl, call, match):
     nothing outside the model."""
     with pytest.raises(LoweringError, match=match):
         trace(_SRC.replace("component pss_top {", "component pss_top {\n    import api::*;")
-              % (f"package api {{ import solve function {decl}; }}", call))
+              % (f"package api {{ import function {decl}; }}", call))

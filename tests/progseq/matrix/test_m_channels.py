@@ -128,8 +128,7 @@ component pss_top {
     (void)ch.try_put(1);
   }
   target function void run() { a.STS.write_val(1); }
-}""", Refused([r"cannot lower call: 'try_put' is legal only in a target "
-               r"context"]),
+}""", Refused([r"m\.pss:\d+:\d+: error: 'try_put' is a target function and cannot be called from solve function 'initialize', which is solve code \(LRM 20\.2\.1\.3\)"]),
         covers=("LIB-CHAN.6",)),
 
     "try_put in init_down": Case("""
@@ -138,11 +137,7 @@ component pss_top {""" + ONE + """
   channel_c<bit[32]> ch;
   exec init_down { (void)ch.try_put(1); }
   target function void run() { a.STS.write_val(1); }
-}""", Refused([r"cannot lower call: 'try_put' is legal only in a target "
-               r"context"]),
-        refused={t: Refused([r"`exec init_down` is not lowered by "
-                             r"'op-model-c(pp)?' yet"])
-                 for t in ("c", "cpp")},
+}""", Refused([r"m\.pss:\d+:\d+: error: 'try_put' is a target function and cannot be called from exec init_down, which is solve code \(LRM 20\.2\.1\.3\)"]),
         covers=("LIB-CHAN.6",)),
 
     # A channel holds a copy (21.9.1): the struct written after `try_put` is

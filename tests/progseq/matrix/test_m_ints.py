@@ -765,9 +765,11 @@ component pss_top {""" + ONE + """
 
     # A select of a named constant is a constant expression (8.2): it may
     # size an array, decide a `compile if` and be a `match` choice.
+    # D is a package-scope constant: a compile if may not reference one of a
+    # type (19.1.3 b, pssparser PSS146).
     "selects of a static constant": Case("""
+static const bit[8] D = 0xA5;
 component pss_top {""" + ONE + """
-  static const bit[8] D = 0xA5;
   target function void go(int v) {
     array<bit[8], D[3:0]> arr;
     message(LOW, "%x %u %u %d", D[7:4], D[0], D[1], arr.size());

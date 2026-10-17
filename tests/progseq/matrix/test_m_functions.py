@@ -218,7 +218,7 @@ component pss_top {""" + ONE + """
   function int f3(int x);
   solve function int f3(int x) { return x + 1; }
   target function void run() { int c = f3(5); a.STS.write_val(c); }
-}""", Refused([r"'f3' is a solve function", r"target context"]),
+}""", Refused([r"m\.pss:\d+:\d+: error: 'f3' is a solve function and cannot be called from target function 'run'"]),
         covers=("FN-DECL.5", "FN-SOLVE.3")),
 
     # A `target` declaration with a `solve` definition: the function has no

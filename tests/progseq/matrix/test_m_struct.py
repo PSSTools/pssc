@@ -13,8 +13,6 @@ from ._matrix import ALL, Case, define_tests, on, ONE, Refused
 W31 = "W31: a derived struct is not usable as its base (8.3, 20.3.2)"
 E26 = ("E26: a static const struct is an internal error on c/cpp, and not "
        "translated at package scope")
-F6 = ("F6: a private member written from outside is accepted (17.4): "
-      "pssparser does not check access")
 
 CASES = {
     # --- A struct's defaults, wherever a value of it is -------------------------
@@ -387,7 +385,8 @@ component pss_top {""" + ONE + """
     p_s v;
     message(LOW, "%d", v.a);
   }
-}""", Refused([r"'exec body' in struct 'p_s'"]), covers=("DT-STRUCT.9",)),
+}""", Refused([r"m\.pss:\d+:\d+: error: exec body is not valid in a struct or object: it is valid in actions \(LRM 20\.1\.2\)"]),
+        covers=("DT-STRUCT.9",)),
 
     # Each specialization of a template struct is its own type (7.8.1, 10):
     # `f` is 4 bits wide in `s_s<4>`, so 15 + 1 wraps to 0, and 8 in `s_s<8>`.
@@ -480,7 +479,8 @@ component pss_top {""" + ONE + """
     v.b = 2;
     message(LOW, "%d", v.b);
   }
-}""", Refused([r"private|'b'"]), xfail=on(ALL, F6), covers=("DT-STRUCT.16",)),
+}""", Refused([r"m\.pss:\d+:\d+: error: 'b' is private to 'p_s' and cannot be reached from here \(LRM 17\.4 b\)"]),
+        covers=("DT-STRUCT.16",)),
 
     # A typedef of a struct or an array names the same type (7.1): as a
     # parameter, a result and a local.

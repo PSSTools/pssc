@@ -29,7 +29,10 @@ async def test_import_target_and_solve_wired_end_to_end(capsys):
     registry = load_pss("""
         package dut_api {
             import target function void doit(int i);
-            import solve  function int  getval(int i);
+            // Unqualified: a `solve` import may not be called from a body
+            // (LRM 20.2.1.3, pssparser PSS144), and the runtime does not run
+            // one from post_solve.
+            import function int  getval(int i);
         }
         component pss_top {
             import dut_api::*;

@@ -198,7 +198,7 @@ def test_check_import_api_reports_a_wrong_arity(wb_dma):
 _IMPORTS_MODEL = """
 package plat_pkg {
     import target function void plat_delay_us(int us);
-    import solve  function int  plat_ticks();
+    import function int  plat_ticks();
     import target function void plat_reset();
 }
 

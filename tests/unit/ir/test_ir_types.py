@@ -71,9 +71,10 @@ def test_a_width_from_a_component_constant(tmp_path):
     assert shape(f["a"].datatype) == "bit[5]"
 
 
+# (`bit[0]` and a constant width that folds to 0 or less are pssparser's
+# PSS138 now, ruling R19, and never reach ast2ir: see
+# test_a_non_positive_constant_width_is_a_front_end_error.)
 @pytest.mark.parametrize("decl, msg", [
-    ("bit[0] a;", "must be positive; this one is 0"),
-    ("bit[k::M - 3] a;", "must be positive; this one is -1"),
     ("int n = 3; bit[n] a;", "does not fold"),
 ])
 def test_a_width_that_is_not_a_positive_constant_is_refused(tmp_path, decl,
@@ -84,6 +85,15 @@ def test_a_width_that_is_not_a_positive_constant_is_refused(tmp_path, decl,
     errs = [e for e in ctx.errors if "width" in str(e)]
     assert len(errs) == 1 and msg in str(errs[0]), ctx.errors
     assert str(errs[0]).startswith("line "), errs
+
+
+@pytest.mark.parametrize("decl", ["bit[0] a;", "bit[k::M - 3] a;"])
+def test_a_non_positive_constant_width_is_a_front_end_error(tmp_path, decl):
+    from pssc.driver import CompileError
+    with pytest.raises(CompileError) as ei:
+        translate(tmp_path, _PRE + "component pss_top {\n  " + decl + "\n}\n")
+    assert any("is not positive (LRM 7.2.1 c, ruling R19)" in str(e)
+               for e in ei.value.errors), ei.value.errors
 
 
 def test_an_array_of_structs(tmp_path):

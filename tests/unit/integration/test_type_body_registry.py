@@ -173,8 +173,7 @@ WRONG_BODY = [
      r"'exec pre_body' in action 'pss_top::A'"),
     ("component pss_top { action A { exec run_start { } } }",
      r"'exec run_start' in action 'pss_top::A'"),
-    ("struct t_s { int a; exec body { } } component pss_top { }",
-     r"'exec body' in struct 't_s'"),
+    # (`exec body` in a struct is pssparser's PSS145 now, 20.1.2.)
     ("struct t_s { int a; exec init_down { } } component pss_top { }",
      r"'exec init_down' in struct 't_s'"),
 ]
