@@ -6,8 +6,6 @@ from __future__ import annotations
 
 from ._matrix import ALL, Case, define_tests, on, ONE, Refused
 
-F2 = ("F2: enum values are not checked (7.5.1 e/j, 17.2.4): a duplicate "
-      "value, or a variable of an itemless enum, is accepted")
 
 
 CASES = {
@@ -176,14 +174,18 @@ component pss_top {""" + ONE + """
 enum e_e { A = 1, B = 1 }
 component pss_top {""" + ONE + """
   target function void run() { e_e v = B; message(LOW, "%n", v); }
-}""", Refused([r"\bB\b"]), xfail=on(ALL, F2), covers=("DT-ENUM.4",)),
+}""", Refused([r"m\.pss:\d+:\d+: error: enum item 'B' has the value 1, as 'A' does: each "
+               r"enum item shall have a distinct value \(LRM 7\.5\.1 e\)"]),
+        covers=("DT-ENUM.4",)),
 
     "an extension item with an existing value is refused": Case("""
 enum e_e { A = 1 }
 extend enum e_e { C = 1 }
 component pss_top {""" + ONE + """
   target function void run() { e_e v = C; message(LOW, "%n", v); }
-}""", Refused([r"\bC\b"]), xfail=on(ALL, F2), covers=("DT-ENUM.4",)),
+}""", Refused([r"m\.pss:\d+:\d+: error: enum item 'C' has the value 1, as 'A' does: each "
+               r"enum item shall have a distinct value \(LRM 7\.5\.1 e\)"]),
+        covers=("DT-ENUM.4",)),
 
     # Extension items take values as if they ended the initial list (17.2.4):
     # YELLOW follows GREEN = 5. An empty enum may be filled by an extension
@@ -216,7 +218,9 @@ component pss_top {""" + ONE + """
 enum n_e { }
 component pss_top {""" + ONE + """
   target function void run() { n_e v; message(LOW, "%d", (int)v); }
-}""", Refused([r"n_e"]), xfail=on(ALL, F2), covers=("DT-ENUM.8",)),
+}""", Refused([r"m\.pss:\d+:\d+: error: 'v' is a variable of enum 'n_e', which has "
+               r"no items in its declaration or any extension \(LRM 7\.5\.1 j\)"]),
+        covers=("DT-ENUM.8",)),
 
     # A domain-restricted enum defaults to the first DECLARED item inside the
     # domain (7.5.1): GREEN for [GREEN..BLUE], and GREEN, not BLACK, for

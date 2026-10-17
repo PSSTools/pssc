@@ -4,6 +4,8 @@ ast2ir folds an item to its value and keeps the item the linker resolved in
 `ExprConstant.ref`. `ExprTypes` reads that, so a backend spells an item by
 name from the type alone -- rather than each recovering the name its own way,
 from the value, which picks the wrong one of two items with one value.
+(Two items with one value are an error now -- pssparser PSS134, 7.5.1 e --
+so `ALIAS` has a value of its own.)
 """
 from __future__ import annotations
 
@@ -13,7 +15,7 @@ from pssc.targets.expr_types import ExprTypes
 
 _MODEL = """
 package p {
-  enum mode_e { OFF, SLOW = 5, FAST, ALIAS = 5 }
+  enum mode_e { OFF, SLOW = 5, FAST, ALIAS = 9 }
   static const int K = 5;
 }
 enum e { A, B }
@@ -46,7 +48,7 @@ def test_an_item_is_of_its_enum():
     assert t["f1"].dtype.name.endswith("mode_e")
 
 
-def test_an_item_sharing_a_value_is_still_its_enums():
+def test_a_later_explicit_item_is_still_its_enums():
     assert _types()["f2"].kind == "enum"
 
 
