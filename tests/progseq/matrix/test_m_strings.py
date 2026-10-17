@@ -286,6 +286,35 @@ component pss_top {""" + ONE + """
   target function void run() { a.STS.write_val(1); }
 }""", Refused([r"list"]), xfail=on(("c", "cpp", "py", "sv"), E27),
         covers=("DT-STR.16",)),
+
+    # --- error()/fatal() strings are known at solve time (21.3; R15) ----------
+    # A string constant may be printed from target code ...
+    "error() of constant strings in target code": Case("""
+component pss_top {""" + ONE + """
+  static const string S = "abc";
+  target function void run() {
+    a.STS.write_val(1);
+    error("bad %s %d", S, 3);
+  }
+}""", ["write 32 0x1004 0x1", ERROR],
+        refused=on(("c", "cpp"), Refused([r": a string", r"ruling R3"])),
+        covers=("LIB-ERR.3", "LIB-ERR.1")),
+
+    # ... a parameter or a local may not: in target context the format and
+    # string arguments of error() and fatal() are constant at run time.
+    "error() and fatal() of run-time strings in target code": Case("""
+component pss_top {""" + ONE + """
+  target function void f(string s) { error("bad %s", s); }
+  target function void run() {
+    string m = "z %d";
+    f("x");
+    fatal(1, m, 3);
+  }
+}""", Refused([r"pss_top::f: error\(\)'s string argument 2 is not known at "
+               r"solve time", r"pss_top::run: fatal\(\)'s format is not known "
+               r"at solve time"]),
+        refused=on(("c", "cpp"), Refused([r": a string", r"ruling R3"])),
+        covers=("LIB-ERR.3",)),
 }
 
 test_construct = define_tests(CASES)

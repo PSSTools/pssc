@@ -1,7 +1,7 @@
 # Construct test audit and plan: data types, expressions, functions, procedural statements
 
 Status: **in progress** (started 2026-10-16, tree `394f75d`). Rulings R1–R3,
-R4, R5, R9, R12, R13 decided (§7); R6-R8, R10, R14-R16 open. Progress is logged in §8.
+R4, R5, R9, R12-R17 decided (§7); R6-R8, R10 open. Progress is logged in §8.
 
 **Where it stands (2026-10-16):** P0.2, P0.3 done; P1 done but for two
 items carried forward -- string METHODS on py/sv (E1, to P3 strings: the
@@ -23,7 +23,7 @@ against an emitter-kind registry, E20/E22/E23 fixed, E21 pinned. **P5.3
 done** (§8): coverage is enforcing -- all 596 sub-constructs mapped on every
 target (530-539 proved per target), 239 -> 442 matrix cases, a new
 `test_m_neg.py` for LRM errors, and ~75 new defects pinned (I13-I18,
-W46-W66, E24-E42, M1-M6, F1-F32, H1); rulings R14-R16 needed. **The
+W46-W66, E24-E42, M1-M6, F1-F32, H1); rulings R14-R16 decided 2026-10-17. **The
 silently-wrong ones are done** (2026-10-17, §8): I13, I14 (with pssparser
 b52f1d2), I15 (ruling R17), W46, W47, W49, W50, W53, W55, W63 fixed, W48
 refused with a location; E24, W54 fell out. Next: file F1-F32 with
@@ -289,7 +289,7 @@ members of this class.
 | F29 | a struct on the left of `in` with a range list (8.5.9.1) | accepted; py evaluates false |
 | F30 | `==` / assignment of component arrays (7.9.2) | accepted; py runs it |
 | F31 | a constant zero divisor, a constant negative shift amount (8.5.1, 8.5.7) | accepted |
-| F32 | `error()`/`fatal()` with a string not known at solve time, in target code (21.3) | accepted on py/sv; waiting on **R15** |
+| F32 | `error()`/`fatal()` with a string not known at solve time, in target code (21.3) | **Refused by pssc** (R15, `targets/error_strings.py`); a front-end check would be earlier |
 
 P1 found I1 to be **silently wrong in the matrix**: `g(int x, float32 y)`
 called as `g(1, 2.0)` compiles and runs on all four targets, the parameter
@@ -712,7 +712,18 @@ for completeness. "Ref" = located-refusal case.
   `w_s_4_8`, `p_s<e_e::A>` `p_s_A` (a constant argument by its value, an
   enum item by its name). A clash with another type's name is refused.
 
-R6, R7, R8, R10 and R14-R16 (P5.3) are still open; work proceeds on the
+* **R14** (2026-10-17) -- a run-time zero divisor (8.5.1) or negative
+  shift amount (8.5.7) is left UNDEFINED: no target checks for it, and a
+  matrix case may not depend on it. A constant one is still illegal, for
+  the front end to diagnose (F31).
+* **R15** (2026-10-17) -- enforced: in target code, `error()`/`fatal()`'s
+  format and string arguments are known at solve time (21.3); one that
+  reads a local, a parameter, a non-constant field or a call is a located
+  refusal (`targets/error_strings.py`).
+* **R16** (2026-10-17) -- unary `+` is accepted as the identity (Table 22),
+  though 8.1's grammar omits it; a PSWG question.
+
+R6, R7, R8 and R10 are still open; work proceeds on the
 suggested defaults only where a case does not depend on them.
 
 | R | Question | Why it blocks | Suggested default |
@@ -1356,3 +1367,12 @@ Newest last. Each entry names what changed and the test that proves it.
   every read (`::G` before and beside `int G = 1` read the local). A local
   that a declared constant's name would collide with is now spelled
   `<name>_l`. (A parameter of that name is not renamed yet.)
+* 2026-10-17 -- **Rulings R14-R16** (user). R14: a run-time zero divisor or
+  negative shift is undefined -- W58 closed, EX-ARITH.4 and EX-SHIFT.3 stay
+  `open` only for the constant form's missing diagnostic (F31). R15:
+  enforced; `targets/error_strings.py` refuses, in what target code
+  reaches (`field_writes.target_code`, factored out of R13's check), an
+  `error()`/`fatal()` whose format or string argument reads a local, a
+  parameter, a non-constant field or a call. LIB-ERR.3 is now two matrix
+  cases (constant strings pass on py/sv; run-time ones are refused; C/C++
+  refuse strings, R3). R16: unary `+` stays the identity.

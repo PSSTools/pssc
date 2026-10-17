@@ -114,9 +114,9 @@ dispositions:
   EX-IN.11:
     all: {"status": "n-a", "why": "8.5.9.1 leaves the evaluation order of range-list expressions nondeterministic; the row only forbids tests from depending on it, so there is no expectation to hold a target to"}
   EX-ARITH.4:
-    all: {"status": "open", "defect": "W58", "ruling": "R14"}
+    all: {"status": "open", "defect": "F31: the constant form is not diagnosed; the run-time form is undefined by ruling R14, nothing to check"}
   EX-SHIFT.3:
-    all: {"status": "open", "defect": "W58", "ruling": "R14"}
+    all: {"status": "open", "defect": "F31: the constant form is not diagnosed; the run-time form is undefined by ruling R14, nothing to check"}
 
   # --- references, selects, widths -------------------------------------------
   EX-SUBSTR.5:
@@ -196,5 +196,3 @@ dispositions:
     all: {"status": "n-a", "why": "a property of activity syntax (11.4.2: activities have repeat-while, no while); op-model targets lower no activities, and a procedural while is unaffected"}
   ST-YIELD.3:
     all: {"status": "elsewhere", "test": "tests/unit/integration/test_bc_interaction_patterns.py::test_ip90_yield_in_a_function_two_parallel_bodies_call"}
-  LIB-ERR.3:
-    all: {"status": "open", "defect": "F32", "ruling": "R15"}

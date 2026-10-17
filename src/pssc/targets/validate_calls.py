@@ -498,6 +498,14 @@ def gate(root, ctx, target: str, language: str, ctor_names=None,
         raise CompileError(
             f"{len(writes)} function(s) write a component field from target "
             f"code", writes)
+    from .error_strings import refusals as error_string_refusals
+    strings = error_string_refusals(
+        _with_extra(_components(root), extra_components), ctx,
+        entries=entries, ctor_names=ctor_names)
+    if strings:
+        raise CompileError(
+            f"{len(strings)} error()/fatal() argument(s) are not known at "
+            f"solve time", strings)
     bad = validate_calls(root, ctx, target, ctor_names=ctor_names,
                          entries=entries, pkg_functions=pkg_functions,
                          init_blocks=init_blocks,

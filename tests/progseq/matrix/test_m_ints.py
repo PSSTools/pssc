@@ -726,8 +726,8 @@ component pss_top {""" + ONE + """
         covers=("EX-REL.1", "EX-REL.3", "EX-EQ.1")),
 
     # Unary `+` is listed in Table 22 though the 8.1 grammar's unary_operator
-    # omits it (ruling R16 pending); pssparser accepts it, and it is the
-    # identity, keeping its operand's type.
+    # omits it; ruling R16 keeps it: the identity, keeping its operand's
+    # type.
     "unary plus": Case("""
 component pss_top {""" + ONE + """
   target function void go(int x, bit[8] y) {

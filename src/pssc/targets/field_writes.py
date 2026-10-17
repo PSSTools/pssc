@@ -28,7 +28,7 @@ from typing import Dict, List, Optional, Tuple
 from ..diag import at
 from .progseq_model import _dt_name
 
-__all__ = ["refusals"]
+__all__ = ["refusals", "target_code", "reached_from"]
 
 
 def _walk(node):
@@ -114,10 +114,12 @@ def _callees(fn, comp, ctx, fns_of) -> List[Tuple[object, object]]:
     return out
 
 
-def refusals(comps, ctx, entries=(), ctor_names=None) -> List[str]:
-    """One message per function that writes a component field and is reached
-    from target code, naming the field and the target code it is reached
-    from."""
+def target_code(comps, ctx, entries=(), ctor_names=None):
+    """Every function target code runs, with what reaches it: ``(component,
+    function, root component, root function)`` per root -- a `target`
+    function or an exported action's body -- and per function they call,
+    transitively. Solve-context functions are not followed (the call gate
+    refuses target code calling them)."""
     from .progseq_model import FuncKind, func_kind
 
     def fns_of(c) -> Dict[str, object]:
@@ -127,7 +129,6 @@ def refusals(comps, ctx, entries=(), ctor_names=None) -> List[str]:
              if getattr(f, "is_target", False)
              and func_kind(f, ctor_names) is FuncKind.EXPORT_OP]
     roots += list(entries)
-    msgs, seen = [], set()
     for rc, rf in roots:
         stack = [(rc, rf)]
         visited = set()
@@ -140,19 +141,32 @@ def refusals(comps, ctx, entries=(), ctor_names=None) -> List[str]:
             if kind in (FuncKind.CONSTRUCTOR, FuncKind.EXPORT_SOLVE,
                         FuncKind.REG_OFFSET, FuncKind.EXEC):
                 continue        # solve context: the call gate's business
-            for p, node in _writes(f, c):
-                key = (id(f), p)
-                if key in seen:
-                    continue
-                seen.add(key)
-                via = ("" if f is rf else
-                       f", reached from target function "
-                       f"'{getattr(rc, 'name', '?')}::{rf.name}'")
-                msgs.append(at((node, f),
-                    f"{getattr(c, 'name', '?')}::{f.name}: writes component "
-                    f"field '{p}'{via}; a component's fields are set only "
-                    f"while it is initialized (LRM 20.7.3 b, 9.1.6; ruling "
-                    f"R13). Keep run-time state in a local, a parameter or a "
-                    f"channel"))
+            yield c, f, rc, rf
             stack.extend(_callees(f, c, ctx, fns_of))
+
+
+def reached_from(f, rc, rf) -> str:
+    """", reached from target function 'c::f'" unless ``f`` is the root."""
+    return ("" if f is rf else
+            f", reached from target function "
+            f"'{getattr(rc, 'name', '?')}::{rf.name}'")
+
+
+def refusals(comps, ctx, entries=(), ctor_names=None) -> List[str]:
+    """One message per function that writes a component field and is reached
+    from target code, naming the field and the target code it is reached
+    from."""
+    msgs, seen = [], set()
+    for c, f, rc, rf in target_code(comps, ctx, entries, ctor_names):
+        for p, node in _writes(f, c):
+            key = (id(f), p)
+            if key in seen:
+                continue
+            seen.add(key)
+            msgs.append(at((node, f),
+                f"{getattr(c, 'name', '?')}::{f.name}: writes component "
+                f"field '{p}'{reached_from(f, rc, rf)}; a component's fields "
+                f"are set only while it is initialized (LRM 20.7.3 b, 9.1.6; "
+                f"ruling R13). Keep run-time state in a local, a parameter or "
+                f"a channel"))
     return msgs
