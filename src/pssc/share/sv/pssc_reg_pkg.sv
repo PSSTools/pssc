@@ -65,9 +65,11 @@ package pssc_reg_pkg;
   // Holds its absolute address, folded at build time. data_t tracks $bits(T);
   // the bus primitive is selected from ACC_W (register width rounded up to the
   // nearest legal transaction size: 8/16/32/64). All widths fold at elaboration.
-  class reg_c #(type T = bit [31:0], reg_access_e ACC = READWRITE);
+  // SZ: the register's size when it is not its value's (`reg_c<bit[8],
+  // READWRITE, 32>`); 0 derives it from T.
+  class reg_c #(type T = bit [31:0], reg_access_e ACC = READWRITE, int SZ = 0);
     localparam int          WIDTH = $bits(T);
-    localparam int          POW2  = 1 << $clog2(WIDTH);          // nearest pow2 >= WIDTH
+    localparam int          POW2  = 1 << $clog2(SZ != 0 ? SZ : WIDTH); // nearest pow2 >= size
     localparam int          ACC_W = POW2 < 8 ? 8 : (POW2 > 64 ? 64 : POW2);
     typedef bit [WIDTH-1:0] data_t;                             // raw value-vector, width of T
 

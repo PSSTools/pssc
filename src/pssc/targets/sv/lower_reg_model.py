@@ -54,10 +54,32 @@ def _reg_value_sv(reg_dtype) -> str:
 
 
 def _reg_handle_type(reg_dtype) -> str:
-    """``reg_c #(T[, ACC])`` for a register field; ACC omitted when READWRITE."""
+    """``reg_c #(T[, ACC[, SZ]])`` for a register field; ACC omitted when
+    READWRITE and nothing follows it, SZ when it is the default the class
+    derives from T (whole bytes of its width, 21.14.1)."""
     vt = _reg_value_sv(reg_dtype)
     acc = getattr(reg_dtype, "access_mode", "READWRITE") or "READWRITE"
+    sz = _explicit_size(reg_dtype)
+    if sz is not None:
+        return f"reg_c #({vt}, {acc}, {sz})"
     return f"reg_c #({vt})" if acc == "READWRITE" else f"reg_c #({vt}, {acc})"
+
+
+def _explicit_size(reg_dtype) -> Optional[int]:
+    """The register's SZ when it is not its value's own (a `bit[8]` value in
+    a 32-bit register): the class would derive the narrower access (W50)."""
+    size = int(getattr(reg_dtype, "size_bits", 0) or 0)
+    vt = getattr(reg_dtype, "register_value_type", None)
+    if _dt_name(vt) == _DT_STRUCT:
+        from ...reg_field_resolve import field_width
+        try:
+            vbits = sum(field_width(f) for f in vt.fields)
+        except ValueError:
+            return None
+    else:
+        vbits = int(getattr(vt, "bits", 0) or 0)
+    dflt = (vbits + 7) // 8 * 8
+    return size if size and vbits and size != dflt else None
 
 
 # --- emission --------------------------------------------------------------

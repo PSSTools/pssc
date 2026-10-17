@@ -11,7 +11,6 @@ import pytest
 from .. import trace_harness as th
 from ._matrix import ALL, Case, define_tests, on, ONE, Refused, REGS
 
-W50 = "W50: reg_c<packed struct> with no SZ is accessed with 32-bit primitives"
 W59 = "W59: a read of a WRITEONLY / write of a READONLY register is accepted"
 E28 = "E28: a nested packed struct or array field in a register value"
 F27 = "F27: a reg_c outside a reg_group_c is accepted (21.14.1)"
@@ -492,8 +491,30 @@ component pss_top {
   }
 }""", ["read 16 0x1004 0xabcd", "write 16 0x1004 0x12cd",
        "write 16 0x1008 0xcd"],
-        mem={0x1004: 0xABCD}, xfail=on(("c", "py"), W50),
+        mem={0x1004: 0xABCD},
         covers=("DT-REG.1", "DT-REG.3", "DT-REG", "LIB-REG.10")),
+
+    # SZ defaults to whole bytes (8*sizeof_s<R>::nbytes, 21.14.1): a bit[12]
+    # value is a 16-bit register. A named SZ is a constant expression.
+    "register sizes: a default of whole bytes and a named SZ": Case("""
+pure component gz_c : reg_group_c {
+  static const int W = 32;
+  reg_c<bit[12]> R12;
+  reg_c<bit[8], READWRITE, W> R8;
+  function bit[64] get_offset_of_instance(string name) {
+    match (name) { ["R12"]: return 0x0; ["R8"]: return 0x4; }
+    return 0xFFFFFFFFFFFFFFFF;
+  }
+}
+component pss_top {
+  gz_c a;
+  solve function void initialize(addr_handle_t base) { a.set_handle(base); }
+  target function void run() {
+    a.R12.write_val(0xABC);
+    a.R8.write_val(0x5A);
+  }
+}""", ["write 16 0x1000 0xabc", "write 32 0x1004 0x5a"],
+        covers=("DT-REG.3", "LIB-REG.10")),
 
     # A register is instantiable only in a register group (21.14.1).
     "a register in a plain component": Case("""

@@ -228,6 +228,37 @@ def _is_selected(node) -> bool:
                                     for i in range(leaf.numElems()))
 
 
+def _packed_bits(dt, ctx=None, depth: int = 0) -> Optional[int]:
+    """The bits of a register value type (21.13.1): an integer's width, an
+    enum's base width, a packed struct's fields summed, bases first. None
+    when a member has no width (the register checks refuse it later)."""
+    if depth > 32 or dt is None:
+        return None
+    if isinstance(dt, ir.DataTypeRef) and ctx is not None:
+        dt = ctx.get_type(dt.ref_name)
+    if isinstance(dt, ir.DataTypeEnum):
+        return int(getattr(dt, "width", 0) or 0) or None
+    if isinstance(dt, ir.DataTypeInt):
+        return int(dt.bits) if dt.bits and dt.bits > 0 else None
+    if isinstance(dt, ir.DataTypeStruct):
+        total = 0
+        sup = dt.super
+        if sup is not None and not (getattr(sup, "ref_name", None)
+                                    or getattr(sup, "name", "") or ""
+                                    ).split("::")[-1].startswith("packed_s"):
+            b = _packed_bits(sup, ctx, depth + 1)
+            if b is None:
+                return None
+            total += b
+        for f in dt.fields:
+            b = _packed_bits(f.datatype, ctx, depth + 1)
+            if b is None:
+                return None
+            total += b
+        return total
+    return None
+
+
 def _eval_const_ir(e):
     """The value of constant IR expression *e* (an int or a bool), or None.
 
@@ -6263,23 +6294,28 @@ class AstToIrTranslator:
             # Third parameter: SZ2 (int - size in bits)
             if params.numValues() > 2:
                 param2 = params.getValue(2)
-                if isinstance(param2, pss_ast.TemplateParamExprValue):
-                    expr = param2.getValue()
-                    if isinstance(expr, pss_ast.ExprNumber):
-                        size_bits = expr.getValue()
-
+                expr = param2.getValue() if hasattr(param2, "getValue") else None
+                if isinstance(expr, pss_ast.DataTypeUserDefined):
+                    # A bare name in argument position parses as a type.
+                    expr = expr.getType_id()
+                if expr is not None:
+                    # A constant expression, folded (a named SZ was ignored).
+                    named = (self._linked_constant(ctx, expr)
+                             if isinstance(expr, pss_ast.TypeIdentifier)
+                             else None)
+                    size_bits = (named.value if named is not None
+                                 else self._int_width(ctx, expr))
+                    if size_bits is not None:
                         template_args.append(ir.TemplateArgValue(
                             param_name="SZ2",
                             value_expr=ir.ExprConstant(value=size_bits)
                         ))
 
-        # Calculate size_bits if not explicitly provided
+        # SZ's default is 8 * sizeof_s<R>::nbytes (21.14.1): whole bytes. A
+        # packed struct's was 32, whatever its size, and a `bit[12]`'s 12 (W50).
         if size_bits is None and register_value_type:
-            # Default: 8 * sizeof(R), rounded to byte boundary
-            if isinstance(register_value_type, ir.DataTypeInt):
-                size_bits = register_value_type.bits
-            else:
-                size_bits = 32  # Conservative default
+            vbits = _packed_bits(register_value_type, ctx)
+            size_bits = (vbits + 7) // 8 * 8 if vbits else 32
 
         if size_bits is None:
             size_bits = 32  # Absolute fallback
