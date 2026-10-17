@@ -264,7 +264,7 @@ members of this class.
 |---|---|---|
 | F1 | operand and condition types (8.4 Table 10, 8.5.2, 20.7.7 a, 20.7.9): relational on bool/string, chained `a < b < c`, bitwise on bool, chandle arithmetic and `c == 1`, a non-bool `if`/`while`/`?:` condition, `int x = null`, `%` on a float | accepted and run (W38's root) |
 | F2 | enum values (7.5.1 c/e/j): duplicates, outside the base type, negative with an unsigned base, implicit past the base's max, a base with a domain, a variable of an itemless enum | accepted; a duplicate makes `%n` print the other name |
-| F3 | an unqualified enum item where the expected type is not the enum: `(int)BLUE` (Ex 37), `M1 == e`, `M1 in [...]` | `(int)BLUE`, `M1 in [...]`: LINT101 warning only; `M1 == e` accepted. Error by **R22** |
+| F3 | an unqualified enum item where the expected type is not the enum: `(int)BLUE` (Ex 37), `M1 == e`, `M1 in [...]` | **Fixed** (pssparser 5780a63): PSS130, by **R22** (LINT101 and PSS045 retired; the left of `==` takes no expected type). Was: LINT101 warning only; `M1 == e` accepted |
 | F4 | casts (7.12.1 a): from a chandle, struct or string; to a struct | **Fixed** (pssparser a199765): PSS126. Was: accepted; `(p_s)3` crashed py at run time |
 | F5 | `rand chandle`, `rand float64` (7.1, 7.7); `randomize` of a chandle | accepted (float later refused by R5); the `randomize` form is an error by **R18** |
 | F6 | access protection (17.4, 20.4): a private/protected field written or read from outside | accepted |
@@ -1429,3 +1429,11 @@ Newest last. Each entry names what changed and the test that proves it.
   reading, `test_a_foreach_iterator_aliases_its_element`); pssc's tests
   of its foreach refusals (`test_op_model_py_int`, `test_bc_comp_array`)
   now expect pssparser's message, which comes first.
+* 2026-10-17 -- **F3 fixed** (pssparser 5780a63, ruling R22): PSS130
+  replaces LINT101; the left of `==` gets no expected type (decision Q2
+  reversed, PSS045 retired). Found on the way: a qualified call's
+  arguments had no expected type (`std_pkg::message(LOW, ...)`), fixed.
+  Matrix: the two F3 xfails removed, new case "an unqualified enum item on
+  the left of ==". Three pssc unit tests whose models used an unqualified
+  item where no enum is expected now qualify it. Compliance: no corpus
+  model rejected.

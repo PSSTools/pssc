@@ -20,8 +20,6 @@ from ._matrix import ALL, Case, define_tests, on, ONE, Refused
 
 F1 = ("F1: operand types are not checked (8.4 Table 10): a bool compared "
       "with a number, a bitwise operator on bool")
-F3 = ("F3: an unqualified enum item where the expected type is not the enum "
-      "is accepted")
 F5 = "F5: `rand chandle` is accepted (7.1, 7.7)"
 F6 = "F6: access protection is not checked (20.4 b)"
 F11 = "F11: a varargs parameter of a PSS-bodied function is accepted (20.2.5)"
@@ -171,7 +169,22 @@ component pss_top {""" + ONE + """
   target function void run() {
     if (M1 in [M0, M1]) { a.STS.write_val(1); }
   }
-}""", Refused([r"\bM1\b"]), xfail=on(ALL, F3), covers=("EX-IN.7",)),
+}""", Refused([r"m\.pss:\d+:\d+: error: enum item 'M1' is used where no "
+               r"enumeration type is expected \(7\.5\.1 i, 8\.4\.3; ruling R22\)"]),
+        covers=("EX-IN.7",)),
+
+    # 8.4.3 gives only the RIGHT side of `==` an expected type; ruling R22
+    # makes an unqualified item on the left an error (F3).
+    "an unqualified enum item on the left of ==": Case("""
+enum m_e { M0, M1 }
+component pss_top {""" + ONE + """
+  target function void run() {
+    m_e e = m_e::M1;
+    if (M1 == e) { a.STS.write_val(1); }
+  }
+}""", Refused([r"m\.pss:\d+:\d+: error: enum item 'M1' is used where no "
+               r"enumeration type is expected \(7\.5\.1 i, 8\.4\.3; ruling R22\)"]),
+        covers=("DT-ENUM.7",)),
 
     "a struct on the left of in with a range list": Case("""
 struct p_s { int x; }

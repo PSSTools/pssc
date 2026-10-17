@@ -10,8 +10,6 @@ F1 = ("F1: operand types are not checked (8.5.2): a relational operator on "
       "bools is accepted")
 F2 = ("F2: enum values are not checked (7.5.1 e/j, 17.2.4): a duplicate "
       "value, or a variable of an itemless enum, is accepted")
-F3 = ("F3: an unqualified enum item is resolved where the expected type is "
-      "not the enum (`(int)BLUE`, Example 37)")
 
 
 CASES = {
@@ -272,7 +270,9 @@ component pss_top {""" + ONE + """
 enum col_e { RED, GREEN, BLUE }
 component pss_top {""" + ONE + """
   target function void run() { int c = (int)BLUE; message(LOW, "%d", c); }
-}""", Refused([r"BLUE"]), xfail=on(ALL, F3), covers=("DT-CAST.6",)),
+}""", Refused([r"m\.pss:\d+:\d+: error: enum item 'BLUE' is used where no "
+               r"enumeration type is expected \(7\.5\.1 i, 8\.4\.3; ruling R22\)"]),
+        covers=("DT-CAST.6",)),
 
     # Only a numeric, bool or enum value casts, and only to such a type
     # (7.12.1 a): not a chandle or a struct, nor to a struct.

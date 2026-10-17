@@ -90,7 +90,7 @@ class TestEnumAstToIr(unittest.TestCase):
         ctx = self.parse_and_translate("""
             enum e { NEG = -3, FAST = 6 }
             component pss_top {
-                function int f() { return NEG; }
+                function int f() { return e::NEG; }
             }
         """)
         f = next(fn for fn in ctx.type_map["pss_top"].functions
@@ -103,7 +103,7 @@ class TestEnumAstToIr(unittest.TestCase):
         does not exist."""
         ctx = self.parse_and_translate("""
             component pss_top {
-                function int f() { return B; }
+                function int f() { return e::B; }
             }
             enum e { A }
             extend enum e { NEG = -3, B }

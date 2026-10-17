@@ -81,7 +81,7 @@ ROWS = {
     "x = k_pkg::D[1];": "Assign([x], Subscript(k_pkg::D=165'8u, 1))",
     # 7.12 casts
     "x = (int[8])b;": "Assign([x], Cast(int[8], self.b))",
-    "x = (int)M1;": "Assign([x], Cast(int[32], m_e::M1=1))",
+    "x = (int)m_e::M1;": "Assign([x], Cast(int[32], m_e::M1=1))",
     "u = (bit[64])n;": "Assign([u], Cast(bit[64], self.n))",
     "m = (m_e)n;": "Assign([m], Cast(Enum('m_e', {'M0': 0, 'M1': 1, "
                    "'M2': 2}, 0), self.n))",
