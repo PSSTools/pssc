@@ -779,7 +779,13 @@ class _BodyEmitter(BodyWalker):
     def expr_ref_local(self, e) -> str:
         # A local is renamed as a parameter or field is: `int wor;` does not
         # parse. `_local_names` already spells them this way.
-        return self.arg_rename.get(e.name) or mangle(e.name)
+        name = self.arg_rename.get(e.name) or mangle(e.name)
+        if self.consts is not None and name in self.consts.declared():
+            # A local named like a constant the package declares would hide
+            # it for the whole task -- SV declarations are hoisted -- so a
+            # `::G` read before or beside `int G` read the local (W63).
+            return f"{name}_l"
+        return name
 
     def type_expr_ref_self(self, e) -> str:
         return "this"

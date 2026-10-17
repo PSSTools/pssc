@@ -134,6 +134,11 @@ class SvConstants(object):
             return None
         return self._names.get(ref)
 
+    def declared(self) -> frozenset:
+        """The names the `localparam`s are declared under (none while the
+        table is still recording which ones are used)."""
+        return frozenset(self._names.values())
+
     def item_name(self, enum_name: str, item: str) -> str:
         """The enumerator for *item* of the enum named *enum_name* (without
         its package)."""

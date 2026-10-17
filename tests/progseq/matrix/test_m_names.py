@@ -7,8 +7,6 @@ from __future__ import annotations
 
 from ._matrix import Case, define_tests, on, ONE
 
-W63 = ("W63: sv spells `::G` as `G`, and a local `G` (hoisted to the "
-       "top of the task) hides the static const for both")
 
 
 CASES = {
@@ -177,8 +175,7 @@ component pss_top {""" + ONE + """
     int G = 1;
     message(LOW, "%d %d", G, ::G);
   }
-}""", ["4 41 7 5", "1 7"], xfail=on(("sv",), W63),
-        covers=("EX-REF.6",)),
+}""", ["4 41 7 5", "1 7"], covers=("EX-REF.6",)),
 }
 
 test_construct = define_tests(CASES)
