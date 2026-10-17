@@ -6,8 +6,6 @@ from __future__ import annotations
 
 from ._matrix import Case, define_tests, ERROR, on, ONE
 
-W55 = ("W55: a match subject is evaluated at its own width, not with its "
-       "choices as `in` is (8.5.9.1)")
 
 
 CASES = {
@@ -159,7 +157,7 @@ component pss_top {""" + ONE + """
     }
   }
   target function void run() { go(2, 2); go(3, 2); go(1, 1); }
-}""", ["four", "five", "def"], xfail=on(("c", "cpp", "py"), W55),
+}""", ["four", "five", "def"],
         covers=("ST-MATCH.9", "EX-IN.6")),
 
     # A match nested in an arm, braced and unbraced; the inner `default`

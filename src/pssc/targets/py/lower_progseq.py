@@ -1156,7 +1156,7 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
                 raise ValueError("channel try_put() takes one argument")
             # NOT awaited, in either form: `try_put` is the non-blocking one and
             # its whole purpose is to answer immediately.
-            return f"{ref}.try_put({self.expr(call.args[0])})"
+            return f"{ref}.try_put({self._chan_item(call.args[0])})"
         if m == "try_get":
             if len(call.args) != 1:
                 raise ValueError("channel try_get() takes one output argument")
@@ -1169,12 +1169,22 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
             # finally render: `pssc_rt_async.Chan1` suspends on an event. The
             # sync form never reaches here -- the legality registry refuses the
             # call before lowering.
-            args = ", ".join(self.expr(a) for a in call.args)
+            args = ", ".join(self._chan_item(a) if m == "put" else self.expr(a)
+                             for a in call.args)
             return self._awaited(f"{ref}.{m}({args})", call)
         raise ValueError(
             f"unsupported channel method '{m}' on '{ref}'. This form of the "
             f"Python channel runtime implements try_put/try_get "
             f"(share/py/pssc_rt.py); get/put need --py-await async.")
+
+    def _chan_item(self, e) -> str:
+        """What `put`/`try_put` sends: a value (21.9.1). A struct is copied,
+        or the queued item was the sender's object, and a write after the
+        put changed what the receiver got (W53)."""
+        t = self.types.type_of(e)
+        if self._struct_dtype(t) is not None:
+            return self._struct_value(e, t)
+        return self.expr(e)
 
     # -- built-ins and model calls -------------------------------------------
 

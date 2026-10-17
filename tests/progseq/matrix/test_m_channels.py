@@ -12,8 +12,6 @@ W64 = ("W64: Verilator reads `$signed(q.x)` of a non-constant packed struct "
 E19 = ("E19: only depth-1 channels are implemented, and a deeper one is "
        "refused with an internal error (ValueError), not a located refusal")
 
-W53 = ("W53: a channel of a struct queues the local itself, not a copy: a "
-       "write after try_put changes the queued item")
 E40 = "E40: a channel of a struct is refused with an unlocated ValueError"
 
 
@@ -174,7 +172,7 @@ component pss_top {""" + ONE + """
     (void)cb.try_get(b);
     message(LOW, "%d %d %n %n", q.x, q.y, e, b);
   }
-}""", ["3 4 E2 true"], xfail={"py": W53, "c": E40,
+}""", ["3 4 E2 true"], xfail={"c": E40,
                "sv": W64},
         covers=("LIB-CHAN.1", "LIB-CHAN.4", "LIB-CHAN.5")),
 }

@@ -332,6 +332,8 @@ def elaborate(ctx, root, out_dir, *, ctor_names: Optional[FrozenSet[str]] = None
     pm.flatten_struct_bases(ctx)
     from .array_methods import lower as lower_array_methods
     lower_array_methods(ctx)
+    from .match_width import lower as widen_match_subjects
+    widen_match_subjects(ctx)
     from .match_overlap import lower as guard_match_overlap
     guard_match_overlap(ctx)
     from .comp_foreach import lower as lower_comp_foreach
