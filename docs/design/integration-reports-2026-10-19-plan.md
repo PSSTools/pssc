@@ -9,17 +9,17 @@ this file does not name the reporter or their IP. Their example is called
 
 | Step | State |
 |------|-------|
-| §3 read-only runtime install | **DONE (uncommitted).** `op_model._install_copy` writes to a temp file and `os.replace`s it in, so it no longer writes through the old file. `OpModelTarget.run` turns an `OSError` into `CompileError("cannot write the generated files (<path>: <reason>)")`. Tests: `test_recompile_same_output_dir.py`, which covers a 0444 stale copy on all four targets, the shipped source left untouched, and an unwritable directory. 5 of its 6 tests fail without the fix. |
-| §1 register-group regressions | **DONE (uncommitted).** Three matrix cases in `test_m_registers.py`, which pass on c/cpp/py/sv: two groups at one handle; four groups bound out of order, one with a run-time-indexed register array; a sub-component's group beside the root's. |
-| §2 literal sizing | **DONE (uncommitted).** The fix is `1971c28` (2026-10-16), which is **only on the local `construct-test-audit` branch and not pushed**. C/C++ already suffix literals (`4294967232u`, `...ull`). New matrix case "masks with bit 31 set, wider than 32 bits, and negative" (4 targets, executed). New `test_no_unsized_decimal_outside_int_reaches_sv`, which fails on the old rendering. §2.2 ruled no change (below). |
-| §0 release + reply | open: needs the branch merged and pushed, then a release |
+| §3 read-only runtime install | **DONE (63d6f6e, pushed to main).** `op_model._install_copy` writes to a temp file and `os.replace`s it in, so it no longer writes through the old file. `OpModelTarget.run` turns an `OSError` into `CompileError("cannot write the generated files (<path>: <reason>)")`. Tests: `test_recompile_same_output_dir.py`, which covers a 0444 stale copy on all four targets, the shipped source left untouched, and an unwritable directory. 5 of its 6 tests fail without the fix. |
+| §1 register-group regressions | **DONE (63d6f6e, pushed to main).** Three matrix cases in `test_m_registers.py`, which pass on c/cpp/py/sv: two groups at one handle; four groups bound out of order, one with a run-time-indexed register array; a sub-component's group beside the root's. |
+| §2 literal sizing | **DONE (63d6f6e, pushed to main).** The fix is `1971c28` (2026-10-16), now on `main` (pushed 2026-10-19). C/C++ already suffix literals (`4294967232u`, `...ull`). New matrix case "masks with bit 31 set, wider than 32 bits, and negative" (4 targets, executed). New `test_no_unsized_decimal_outside_int_reaches_sv`, which fails on the old rendering. §2.2 ruled no change (below). |
+| §0 release + reply | open: branch merged to `main` and pushed 2026-10-19; a release is next |
 
 Original triage, against HEAD `b4d12ee`:
 
 | # | Report | Finding |
 |---|--------|---------|
 | 1 | C uses the last `set_handle` for every group | Fixed by `a93c14a` (2026-10-07, on `main`). |
-| 2 | SV emits `4294967232` for a 32-bit mask | Fixed by `1971c28` (local branch only). |
+| 2 | SV emits `4294967232` for a 32-bit mask | Fixed by `1971c28` (on `main` since 2026-10-19). |
 | 3 | Second compile fails on a read-only runtime copy | `41f617d` fixed only NEW copies; a stale read-only copy still failed, rc 2. Fixed now. |
 
 **§2.2 decision.** LRM Table 21 makes an unsized decimal `int[N]`, where N is
