@@ -28,7 +28,10 @@ from __future__ import annotations
 import abc
 import argparse
 import dataclasses as dc
+import os
 import shutil
+import stat
+import tempfile
 from pathlib import Path
 from typing import (Any, Dict, FrozenSet, List, Mapping, Optional, Sequence,
                     Tuple)
@@ -53,6 +56,42 @@ def resolver(ctx):
         return dtype
 
     return resolve
+
+
+def _install_copy(src: Path, dst: Path) -> None:
+    """Put a copy of *src* at *dst*, whatever is at *dst* already.
+
+    REPLACED, never written through: a copy an older pssc left read-only (it
+    used ``copy2``, which kept the shipped file's mode) cannot be opened for
+    writing, but the directory entry can be swapped. The new copy is the
+    owner's to write, so the next compile can replace it too. The source is
+    only read.
+    """
+    fd, tmp = tempfile.mkstemp(prefix=f".{dst.name}.", dir=str(dst.parent))
+    try:
+        with os.fdopen(fd, "wb") as out, open(src, "rb") as inp:
+            shutil.copyfileobj(inp, out)
+        os.chmod(tmp, 0o644)
+        try:
+            # Windows will not replace a read-only file; POSIX does not care.
+            os.chmod(dst, stat.S_IMODE(os.stat(dst).st_mode) | stat.S_IWUSR)
+        except OSError:
+            pass
+        os.replace(tmp, dst)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _write_error(e: OSError):
+    """An output that could not be written, as the user's problem to fix
+    (a directory or a file they cannot write), not a compiler crash."""
+    from ..driver import CompileError
+    what = f"{e.filename}: {e.strerror}" if e.filename else str(e)
+    return CompileError(f"cannot write the generated files ({what})")
 
 
 def _post_order(tree: CompNode) -> List[CompNode]:
@@ -701,7 +740,12 @@ class OpModelTarget(Target):
                 raise CompileError(
                     f"a construct cannot be lowered to "
                     f"{self.language or self.name}", [e.located()]) from e
-            return outputs + self.emit_manifest(model, opts, outputs)
+            except OSError as e:
+                raise _write_error(e) from e
+            try:
+                return outputs + self.emit_manifest(model, opts, outputs)
+            except OSError as e:
+                raise _write_error(e) from e
 
     def emit_manifest(self, model: OpModel, opts: argparse.Namespace,
                       outputs: Sequence[Path]) -> List[Path]:
@@ -982,10 +1026,7 @@ class OpModelTarget(Target):
         model.out_dir.mkdir(parents=True, exist_ok=True)
         for src in _resolve(names, self.core_package, lang):
             dst = model.out_dir / src.name
-            # Not copy2: it preserves the source's mode, and package data is
-            # commonly read-only -- a second compile into the same output dir
-            # would then fail to overwrite its own prior output.
-            shutil.copyfile(str(src), str(dst))
+            _install_copy(src, dst)
             written.append(dst)
         return written
 

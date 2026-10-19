@@ -354,6 +354,24 @@ component pss_top {""" + ONE + """
         covers=("EX-LIT.1", "EX-LIT.2", "EX-LIT.3", "EX-LIT.4", "EX-LIT.5",
                 "EX-LIT.6", "EX-LIT.7", "EX-REL.2", "EX-WIDTH.1")),
 
+    # Masks as a driver writes them (an external report: SV once spelled
+    # 0xFFFFFFC0 as the unsized decimal 4294967232, which a simulator reads
+    # as a signed 32-bit -64 and warns about): bit 31 set, as hex and as an
+    # unsized decimal (int[33], Table 21), wider than 32 bits, and negative.
+    "masks with bit 31 set, wider than 32 bits, and negative": Case("""
+component pss_top {""" + ONE + """
+  target function void go(bit[32] lo, bit[64] w, int s) {
+    bit[64] m = w & 0xFFFFFFFFFFFFFFC0;
+    bit[32] d = 4294967232;
+    a.CTL.write_val(lo & 0xFFFFFFC0);
+    a.STS.write_val(lo & 4294967232);
+    message(LOW, "%x %x %d", m, d & lo, s & -64);
+  }
+  target function void run() { go(0xDEADBEEF, 0xFEDCBA9876543210, -100); }
+}""", ["write 32 0x1000 0xdeadbec0", "write 32 0x1004 0xdeadbec0",
+       "fedcba9876543200 deadbec0 -128"],
+        covers=("EX-LIT.1", "EX-LIT.2", "EX-WIDTH.1")),
+
     # A shift of the literal 1 is carried out at the literal's 32 bits when
     # nothing wider is around it (EX-SHIFT.5), and at 64 in a 64-bit target;
     # the same holds for 0xFFFFFFFF << 4 (EX-WIDTH.15). With the amount a
@@ -825,3 +843,19 @@ component pss_top {""" + ONE + """
 }
 
 test_construct = define_tests(CASES)
+
+
+def test_no_unsized_decimal_outside_int_reaches_sv(tmp_path):
+    """SV reads an unsized decimal as a signed 32-bit `int` (IEEE 1800
+    5.7.1), so one outside that range is truncated, with a warning at best.
+    Every other integer must be sized (`_sv_int_literal`)."""
+    import re
+    from .. import trace_harness as th
+    from ..sv_text import sv_package_text
+    from ._matrix import REGS
+    case = CASES["masks with bit 31 set, wider than 32 bits, and negative"]
+    out = th.compile_model(tmp_path, REGS + case.pss, "sv")
+    text = sv_package_text(out / "pss_top_pkg.sv")
+    bare = [int(t) for t in re.findall(r"(?<![\w'.])(\d+)(?![\w'])", text)]
+    assert bare and not [v for v in bare if v >= 1 << 31]
+    assert "32'hffffffc0" in text

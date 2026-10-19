@@ -61,6 +61,68 @@ component pss_top {
         args=(0x1000, 0x2000, 0x3000), covers=("DT-REG", "LIB-REG",
                                                "LIB-REG.8")),
 
+    "two groups at one handle": Case("""
+component pss_top {
+  ga_c a;
+  gb_c b;
+  solve function void initialize(addr_handle_t base) {
+    a.set_handle(base);
+    b.set_handle(base);
+  }
+  target function void run() { a.STS.write_val(1); b.CTL.write_val(2); }
+}""", ["write 32 0x1004 0x1", "write 32 0x1010 0x2"],
+        covers=("DT-REG", "LIB-REG.8")),
+
+    # Four apertures, bound in an order unlike their declaration, one holding
+    # an array of registers reached with a run-time index: each access must
+    # land at its own group's handle (the shape of an external D1 report).
+    "four groups, one with an indexed register array": Case("""
+pure component gp_c : reg_group_c {
+  reg_c<bit[32], READWRITE, 32> PAIR[2];
+  function bit[64] get_offset_of_instance_array(string name, int index) {
+    if (name == "PAIR") { return 0x40 + 8 * index; }
+    return 0xFFFFFFFFFFFFFFFF;
+  }
+}
+component pss_top {
+  ga_c w;
+  gp_c x;
+  gb_c y;
+  ga_c z;
+  solve function void initialize(addr_handle_t hw, addr_handle_t hx,
+                                 addr_handle_t hy, addr_handle_t hz) {
+    z.set_handle(hz);
+    x.set_handle(hx);
+    w.set_handle(hw);
+    y.set_handle(hy);
+  }
+  target function void run() {
+    w.STS.write_val(1);
+    repeat (i : 2) { x.PAIR[i].write_val(0x10 + i); }
+    y.CTL.write_val(3);
+    z.CTL.write_val(4);
+  }
+}""", ["write 32 0x1004 0x1", "write 32 0x2040 0x10", "write 32 0x2048 0x11",
+       "write 32 0x3010 0x3", "write 32 0x4000 0x4"],
+        args=(0x1000, 0x2000, 0x3000, 0x4000),
+        covers=("DT-REG", "LIB-REG.8", "LIB-REG.12")),
+
+    "a sub-component's group beside the root's own": Case("""
+component sub_c {
+  ga_c a;
+  solve function void initialize(addr_handle_t base) { a.set_handle(base); }
+}
+component pss_top {
+  gb_c b;
+  sub_c s;
+  solve function void initialize(addr_handle_t hb, addr_handle_t hs) {
+    b.set_handle(hb);
+    s.initialize(hs);
+  }
+  target function void run() { s.a.STS.write_val(1); b.CTL.write_val(2); }
+}""", ["write 32 0x2004 0x1", "write 32 0x1010 0x2"],
+        args=(0x1000, 0x2000), covers=("DT-REG", "LIB-REG.8")),
+
     "a group no set_handle reaches": Case("""
 component pss_top {
   ga_c a;
