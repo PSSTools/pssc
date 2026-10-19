@@ -114,7 +114,7 @@ endmodule
 _IMPORTS_PSS = """
 package dut_api {
     import target function void doit(int i);
-    import solve  function int  getval(int i);
+    import        function int  getval(int i);
 }
 component pss_top {
     import dut_api::*;
@@ -123,7 +123,9 @@ component pss_top {
 """
 
 # Mixin pattern: each impl overrides one import method over import_api_base
-# (which $fatal-stubs every method).  doit = target -> task, getval = solve -> function.
+# (which $fatal-stubs every method).  doit = target -> task; getval, unqualified
+# and value-returning, is a function. (A `solve` import cannot be called from
+# an exec body: LRM 20.2.1.3.)
 _TB_IMPORTS = """\
 module tb;
   import zsp_rt_pkg::*;
@@ -166,7 +168,8 @@ def test_atomic_export_api_runs(tmp_path, sim):
 
 @pytest.mark.parametrize("sim", _SIMS)
 def test_import_api_routed_to_testbench(tmp_path, sim):
-    """target->task and solve->function imports route through import_api_if."""
+    """target->task and plain value-returning (function) imports route through
+    import_api_if."""
     sv_dir = _stage(tmp_path, _IMPORTS_PSS, _TB_IMPORTS)
     status, log = _run(tmp_path, sim, sv_dir)
     assert status == 0, f"sim failed:\n{log}"

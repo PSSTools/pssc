@@ -26,6 +26,7 @@ from __future__ import annotations
 import dataclasses as dc
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..diag import Refusal
 from ..reg_field_resolve import field_width
 from .progseq_model import (OffsetFoldError, _dt_name, array_element_type,
                             array_base_stride, field_is_array, field_is_reg_group,
@@ -235,9 +236,27 @@ def _mk(segs, name, reg_dtype, const_off, strides, decl=None) -> RegAccessor:
 # `_Static_assert` per member: the layout is a claim about addresses, and a
 # claim about addresses that nothing checks is the one defect a golden snapshot
 # can never catch.
+#
+# OVERLAP is legal. A register map commonly describes one aperture through
+# two views -- a normal block and a debug/copy view of the same bytes, two
+# widths of one register -- and those are aliases of the same hardware, not
+# two storage locations and not alternatives a discriminator picks between. A
+# set of members whose byte ranges connect (transitively: A overlaps B, B
+# overlaps C) becomes ONE `UNION` member: an anonymous C union whose
+# alternatives are the source members, each at its own address, so the PSS
+# access path is still the C member path. Only an access produces bus
+# traffic; declaring an alias reads nothing.
+#
+# C, not this walk, decides where a member of a union alternative lands and
+# how big the union is (it rounds to its alignment). So the walk models C's
+# alignment rule -- conservatively, a primitive aligned to its own size --
+# refuses an alternative that rule would move, and, where rounding makes the
+# union longer than its members, says so explicitly with a span pad, so the
+# union's size is the same on every ABI whose alignment is no stricter than
+# the model's. The emitted `_Static_assert`s remain the proof.
 
 #: `MapMember.kind` values.
-REG, GROUP, PAD = "reg", "group", "pad"
+REG, GROUP, PAD, UNION = "reg", "group", "pad", "union"
 
 
 @dc.dataclass(frozen=True)
@@ -251,6 +270,13 @@ class MapMember:
     elem_size: int            # bytes occupied by ONE element
     count: Optional[int]      # array length, or None for a scalar member
     stride: int               # byte stride between elements (== elem_size when packed)
+    #: UNION only: the alternatives, in address order. Each is
+    #: ``(lead, member)``: ``lead`` is a PAD from the union's origin to
+    #: ``member`` (None when ``member`` starts at the origin), and the pair is
+    #: one anonymous struct in C.
+    alts: Tuple[Tuple[Optional["MapMember"], "MapMember"], ...] = ()
+    #: The C alignment this walk assumes for the member (see `_c_align`).
+    align: int = 1
 
     @property
     def is_array(self) -> bool:
@@ -272,18 +298,39 @@ class RegMap:
     dtype: Any
     members: Tuple[MapMember, ...]
     size: int
+    align: int = 1
+
+    @property
+    def named(self) -> List[MapMember]:
+        """Every REG and GROUP member, union alternatives included, in
+        address order: the members a C access path can name."""
+        out: List[MapMember] = []
+        for m in self.members:
+            if m.kind == UNION:
+                out.extend(a for _, a in m.alts if a.kind != PAD)
+            elif m.kind != PAD:
+                out.append(m)
+        return out
 
     @property
     def registers(self) -> List[MapMember]:
-        return [m for m in self.members if m.kind == REG]
+        return [m for m in self.named if m.kind == REG]
 
     @property
     def groups(self) -> List[MapMember]:
-        return [m for m in self.members if m.kind == GROUP]
+        return [m for m in self.named if m.kind == GROUP]
+
+    @property
+    def has_union(self) -> bool:
+        return any(m.kind == UNION for m in self.members)
 
 
-class RegMapError(Exception):
-    """A register group that cannot be expressed as a struct."""
+class RegMapError(Refusal):
+    """A register group that cannot be expressed as a struct.
+
+    A `Refusal`: the model's layout, not a compiler bug, so `OpModelTarget.run`
+    reports it as a `CompileError` located at the innermost group that has a
+    location (`build_reg_map` adds each group it was laying out)."""
 
 
 def _pad_name(offset: int) -> str:
@@ -298,10 +345,10 @@ def _pad_name(offset: int) -> str:
 
 
 def _group_size(group_dt, min_size: Optional[int] = None, _seen=None,
-                _sizes=None) -> int:
-    """Bytes spanned by ``group_dt``, at least ``min_size``."""
-    return build_reg_map(group_dt, min_size=min_size, _seen=_seen,
-                         sizes=_sizes).size
+                _sizes=None) -> Tuple[int, int]:
+    """``(bytes spanned, C alignment)`` of ``group_dt``, at least ``min_size``."""
+    rm = build_reg_map(group_dt, min_size=min_size, _seen=_seen, sizes=_sizes)
+    return rm.size, rm.align
 
 
 def build_reg_map(group_dt, *, min_size: Optional[int] = None,
@@ -325,9 +372,13 @@ def build_reg_map(group_dt, *, min_size: Optional[int] = None,
     for the other use. ``None`` lays out each embedded group for its own use
     alone.
 
-    Raises `RegMapError` on a map a struct cannot express -- overlapping
-    instances, an array whose stride is smaller than its element, or one group
-    type used with two different strides.
+    Overlapping members become one `UNION` member (see the module comment
+    above `MapMember`).
+
+    Raises `RegMapError` on a map a struct cannot express -- an alias C's
+    alignment would move, an array whose stride is smaller than its element,
+    one group type used with two different strides, or a group that contains
+    itself.
     """
     _seen = set() if _seen is None else _seen
     if id(group_dt) in _seen:
@@ -335,57 +386,165 @@ def build_reg_map(group_dt, *, min_size: Optional[int] = None,
             f"register group '{_name(group_dt)}' contains itself; a recursive "
             f"map has no struct layout")
     _seen = _seen | {id(group_dt)}
+    try:
+        return _build_reg_map(group_dt, min_size, sizes, _seen)
+    except RegMapError as e:
+        raise e.at_least(group_dt)
 
+
+def _build_reg_map(group_dt, min_size, sizes, _seen) -> RegMap:
     placed: List[MapMember] = []
     for f in getattr(group_dt, "fields", []) or []:
         placed.append(_place(group_dt, f, _seen, sizes or {}))
 
+    # Address order; a tie keeps declaration order (`sort` is stable), so
+    # the layout -- and every name in it -- is deterministic.
     placed.sort(key=lambda m: m.offset)
     members: List[MapMember] = []
     cursor = 0
-    for m in placed:
-        if m.offset < cursor:
-            prev = members[-1].name if members else "the start of the group"
-            raise RegMapError(
-                f"'{_name(group_dt)}.{m.name}' at 0x{m.offset:x} overlaps "
-                f"{prev}, which ends at 0x{cursor:x}; a struct cannot place "
-                f"two instances at one address")
-        if m.offset > cursor:
-            members.append(_pad(cursor, m.offset - cursor))
+    for region in _regions(placed):
+        start = region[0].offset
+        if start > cursor:
+            members.append(_pad(cursor, start - cursor))
+        m = region[0] if len(region) == 1 else _union(group_dt, region)
         members.append(m)
         cursor = m.end
 
-    if min_size is not None and cursor < min_size:
-        members.append(_pad(cursor, min_size - cursor))
-        cursor = min_size
+    align = max((x.align for x in members), default=1)
+    # C rounds a struct up to its alignment, so a group whose last register
+    # ends short of it is that much longer in C than its registers: state it
+    # with a tail pad, as the union's span does, rather than leave the size
+    # to the ABI. Without it, `sizeof` disagreed with this walk and every
+    # use of the group after it moved.
+    want = _round_up(cursor, align) if min_size is None else min_size
+    if cursor < want:
+        members.append(_pad(cursor, want - cursor))
+        cursor = want
     if min_size is not None and cursor > min_size:
         raise RegMapError(
             f"register group '{_name(group_dt)}' spans 0x{cursor:x} bytes but "
             f"is used with a stride of 0x{min_size:x}; the elements would "
             f"overlap")
-    return RegMap(dtype=group_dt, members=tuple(members), size=cursor)
+    if cursor % align:
+        raise RegMapError(
+            f"register group '{_name(group_dt)}' is used with a stride of "
+            f"0x{cursor:x}, which is not a multiple of the {align}-byte "
+            f"alignment of its widest register; C would round each element "
+            f"up and index the array at a different stride")
+    align = max(align, max((x.align for x in members), default=1))
+    return RegMap(dtype=group_dt, members=tuple(members), size=cursor,
+                  align=align)
+
+
+def _regions(placed: List[MapMember]) -> List[List[MapMember]]:
+    """``placed`` (address order) cut into connected overlap regions.
+
+    A member joins the open region when it starts before the region's end --
+    the running maximum, so containment and chains (A overlaps B, B overlaps C,
+    A and C apart) are one region. Adjacent is not overlapping: a member
+    starting exactly at the end opens a new region. The end is C's, not the
+    intervals': a union rounds up to its alignment (`_union_extent`), and a
+    member inside that rounding would collide with the union's storage, so it
+    is an alternative too.
+    """
+    regions: List[List[MapMember]] = []
+    end = 0
+    for m in placed:
+        if regions and m.offset < end:
+            regions[-1].append(m)
+        else:
+            regions.append([m])
+        cur = regions[-1]
+        end = (cur[0].end if len(cur) == 1
+               else cur[0].offset + _union_extent(cur)[0])
+    return regions
+
+
+def _union_extent(region: List[MapMember]) -> Tuple[int, int]:
+    """``(bytes, alignment)`` C gives the union over ``region``.
+
+    Each alternative is the member, or a struct of a lead pad and the member;
+    the union is as long as its longest alternative rounded up to the
+    strictest alignment among them.
+    """
+    start = region[0].offset
+    align, natural = 1, 0
+    for m in region:
+        rel = m.offset - start
+        a = max(m.align, _pad_align(start, rel)) if rel else m.align
+        align = max(align, a)
+        natural = max(natural, rel + m.total_size)
+    return _round_up(natural, align), align
+
+
+def _union(group_dt, region: List[MapMember]) -> MapMember:
+    """One UNION member: ``region``'s members as aliases at one origin."""
+    start = region[0].offset
+    size, align = _union_extent(region)
+    if start % align:
+        raise RegMapError(
+            f"'{_name(group_dt)}': the registers aliased at 0x{start:x} "
+            f"({', '.join(m.name for m in region)}) need {align}-byte "
+            f"alignment, and C would move a union at 0x{start:x} to the "
+            f"next multiple of {align}; give the overlapping views an "
+            f"origin aligned to their widest register")
+    alts: List[Tuple[Optional[MapMember], MapMember]] = []
+    natural = 0
+    for m in region:
+        rel = m.offset - start
+        if rel % m.align:
+            raise RegMapError(
+                f"'{_name(group_dt)}.{m.name}' at 0x{m.offset:x} aliases "
+                f"{region[0].name} at 0x{start:x}, but sits 0x{rel:x} bytes "
+                f"into the overlap, which is not a multiple of its "
+                f"{m.align}-byte alignment; C would move it. A register "
+                f"view must start at a multiple of its own width from the "
+                f"start of the views it overlaps")
+        lead = None
+        if rel:
+            lead = dc.replace(_pad(start, rel), name=f"{_pad_name(start)}__{m.name}")
+        alts.append((lead, m))
+        natural = max(natural, rel + m.total_size)
+    if size > natural:
+        # Rounding made the union longer than any alternative. Say so: C's
+        # rounding is per-ABI, a declared span is the same everywhere.
+        alts.append((None, dc.replace(_pad(start, size),
+                                      name=f"{_pad_name(start)}_{start + size:x}")))
+    return MapMember(kind=UNION, name=f"_alias_{start:x}", dtype=None,
+                     offset=start, elem_size=size, count=None, stride=size,
+                     alts=tuple(alts), align=align)
+
+
+def _round_up(n: int, a: int) -> int:
+    return (n + a - 1) // a * a
+
+
+def _pad_align(offset: int, nbytes: int) -> int:
+    """A PAD is `uint32_t[]` when word-aligned and whole words, else bytes
+    (`lower_reg_model._member_c_type`)."""
+    return 4 if (offset % 4 == 0 and nbytes % 4 == 0) else 1
 
 
 def _pad(offset: int, nbytes: int) -> MapMember:
     return MapMember(kind=PAD, name=_pad_name(offset), dtype=None,
                      offset=offset, elem_size=nbytes, count=None,
-                     stride=nbytes)
+                     stride=nbytes, align=_pad_align(offset, nbytes))
 
 
 def _place(group_dt, f, _seen, sizes) -> MapMember:
     """One field, placed. Reserved instances keep their own name."""
     if field_is_register(f):
+        width = prim_bits(value_bits(f.datatype)) // 8
         return MapMember(kind=REG, name=f.name, dtype=f.datatype,
                          offset=scalar_offset(group_dt, f.name),
-                         elem_size=prim_bits(value_bits(f.datatype)) // 8,
-                         count=None,
-                         stride=prim_bits(value_bits(f.datatype)) // 8)
+                         elem_size=width, count=None, stride=width,
+                         align=width)
     if field_is_reg_group(f):
-        sz = _group_size(f.datatype, min_size=sizes.get(id(f.datatype)),
-                         _seen=_seen, _sizes=sizes)
+        sz, al = _group_size(f.datatype, min_size=sizes.get(id(f.datatype)),
+                             _seen=_seen, _sizes=sizes)
         return MapMember(kind=GROUP, name=f.name, dtype=f.datatype,
                          offset=scalar_offset(group_dt, f.name),
-                         elem_size=sz, count=None, stride=sz)
+                         elem_size=sz, count=None, stride=sz, align=al)
     if field_is_array(f):
         elem = array_element_type(f)
         base, stride = array_base_stride(group_dt, f.name)
@@ -397,7 +556,8 @@ def _place(group_dt, f, _seen, sizes) -> MapMember:
                     f"'{_name(group_dt)}.{f.name}' has stride 0x{stride:x} but "
                     f"each element is {width} bytes; the elements overlap")
             return MapMember(kind=REG, name=f.name, dtype=elem, offset=base,
-                             elem_size=width, count=count, stride=stride)
+                             elem_size=width, count=count, stride=stride,
+                             align=width)
         if _dt_name(elem) == _DT_REGISTER_GROUP:
             # min_size=stride: the element struct must be exactly the stride,
             # or C's indexing and the device's disagree from bank 1 onward.
@@ -407,9 +567,11 @@ def _place(group_dt, f, _seen, sizes) -> MapMember:
                     f"'{_name(group_dt)}.{f.name}' has stride 0x{stride:x}, "
                     f"but '{_name(elem)}' is also used with a stride of "
                     f"0x{need:x}; one struct cannot be both sizes")
-            sz = _group_size(elem, min_size=stride, _seen=_seen, _sizes=sizes)
+            sz, al = _group_size(elem, min_size=stride, _seen=_seen,
+                                 _sizes=sizes)
             return MapMember(kind=GROUP, name=f.name, dtype=elem, offset=base,
-                             elem_size=sz, count=count, stride=stride)
+                             elem_size=sz, count=count, stride=stride,
+                             align=al)
     raise RegMapError(
         f"'{_name(group_dt)}.{getattr(f, 'name', '?')}' is neither a register, "
         f"a register group, nor an array of either; it has no place in a "

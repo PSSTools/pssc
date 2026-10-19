@@ -116,7 +116,7 @@ def test_bridge_presolved_rand_runs_on_verilator(tmp_path):
 _IMPORT_MODEL = """
 package dut_api {
     import target function void do_write(int a, int b);
-    import solve  function int  do_read(int a);
+    import        function int  do_read(int a);
 }
 component pss_top {
     import dut_api::*;
@@ -125,7 +125,8 @@ component pss_top {
 """
 
 # do_write is a *target* -> a blocking SV task that consumes time (#10); do_read
-# is a *solve* -> a synchronous function. The blocking import suspends the C
+# is unqualified and value-returning -> a synchronous function (a `solve`
+# import cannot be called from an exec body, LRM 20.2.1.3). The blocking import suspends the C
 # coroutine, SV forks the task (advancing time), and the mailbox re-wakes it.
 _TB_IMPORTS = """\
 module tb;

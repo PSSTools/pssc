@@ -143,11 +143,13 @@ def func_kind(fn, ctor_names: Optional[FrozenSet[str]] = None) -> FuncKind:
         return FuncKind.REG_OFFSET
     if exec_kind(fn) is not None:
         return FuncKind.EXEC
+    # An import first: an `import solve function` is `is_solve` too, and is
+    # the platform's, never a solve operation of the model's.
+    if getattr(fn, "is_import", False):
+        return FuncKind.IMPORT_SOLVE if getattr(fn, "is_solve", False) else FuncKind.IMPORT_TASK
     if getattr(fn, "is_solve", False):
         names = current_ctor_names() if ctor_names is None else ctor_names
         return FuncKind.CONSTRUCTOR if fn.name in names else FuncKind.EXPORT_SOLVE
-    if getattr(fn, "is_import", False):
-        return FuncKind.IMPORT_SOLVE if getattr(fn, "is_solve", False) else FuncKind.IMPORT_TASK
     return FuncKind.EXPORT_OP
 
 

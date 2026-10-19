@@ -446,36 +446,69 @@ def emit_reg_map(rm, style=None, tagged: bool = False) -> str:
     original, self-contained form) is unchanged for `--header-only`, which has
     nowhere else to put a forward declaration.
     """
-    from ..reg_layout import GROUP, PAD, REG
-
     name = map_type_name(rm.dtype, style)
     lines = [f"struct {name} {{"] if tagged else [f"typedef struct {{"]
     for m in rm.members:
-        ct = _member_c_type(m, style)
-        if m.kind == PAD:
-            decl = f"{ct} {m.name}[{_pad_count(m)}];"
-            lines.append(f"    {decl:<40} /* 0x{m.offset:03x} reserved */")
-            continue
-        # READONLY as `const`: the write primitives take `volatile void *`, so a
-        # `const` member's address will not convert and writing it is a compile
-        # error. That is exactly what the absent `_write` accessor used to buy.
-        access = getattr(m.dtype, "access_mode", "READWRITE") or "READWRITE"
-        qual = "const " if (m.kind == REG and access == "READONLY") else ""
-        sub = f"[{m.count}]" if m.is_array else ""
-        decl = f"{qual}{ct} {m.name}{sub};"
-        note = f"0x{m.offset:03x}" + (f" {access.lower()}" if m.kind == REG else "")
-        lines.append(f"    {decl:<40} /* {note} */")
+        lines += _member_lines(m, style, "    ")
     lines.append(f"}};" if tagged else f"}} {name};")
 
     lines.append(f"PSSC_STATIC_ASSERT(sizeof({name}) == 0x{rm.size:x}u,"
                  f" {name}_size);")
-    for m in rm.members:
-        if m.kind == PAD:
-            continue
+    # Every alias inside a union too: an anonymous member's name is promoted
+    # to the enclosing struct, so `offsetof` reaches it by the same path an
+    # access does. A union's extent is pinned by the member after it, or by
+    # the size when it is last.
+    for m in rm.named:
         lines.append(
             f"PSSC_STATIC_ASSERT(offsetof({name}, {m.name}) == 0x{m.offset:x}u,"
             f" {name}_{m.name}_offset);")
     return "\n".join(lines)
+
+
+def _member_lines(m, style, ind: str) -> List[str]:
+    """One layout member as C declaration lines, indented by ``ind``."""
+    from ..reg_layout import PAD, REG, UNION
+
+    if m.kind == UNION:
+        # Aliases of one aperture: anonymous, so `regs->a` and `regs->b` are
+        # still the PSS paths. A view that starts past the union's origin is
+        # an anonymous struct led by its own pad, named for the member it
+        # leads so two leads never promote one name.
+        out = [f"{ind}{'union {':<40} /* 0x{m.offset:03x}..0x{m.end:x} aliases */"]
+        for lead, alt in m.alts:
+            if lead is None:
+                out += _member_lines(alt, style, ind + "    ")
+                continue
+            out.append(f"{ind}    struct {{")
+            out += _member_lines(lead, style, ind + "        ")
+            out += _member_lines(alt, style, ind + "        ")
+            out.append(f"{ind}    }};")
+        out.append(f"{ind}}};")
+        return out
+    ct = _member_c_type(m, style)
+    if m.kind == PAD:
+        decl = f"{ct} {m.name}[{_pad_count(m)}];"
+        return [f"{ind}{decl:<40} /* 0x{m.offset:03x} reserved */"]
+    # READONLY as `const`: the write primitives take `volatile void *`, so a
+    # `const` member's address will not convert and writing it is a compile
+    # error. That is exactly what the absent `_write` accessor used to buy.
+    access = getattr(m.dtype, "access_mode", "READWRITE") or "READWRITE"
+    qual = "const " if (m.kind == REG and access == "READONLY") else ""
+    sub = f"[{m.count}]" if m.is_array else ""
+    decl = f"{qual}{ct} {m.name}{sub};"
+    note = f"0x{m.offset:03x}" + (f" {access.lower()}" if m.kind == REG else "")
+    return [f"{ind}{decl:<40} /* {note} */"]
+
+
+#: Ahead of a register map holding aliases. An anonymous union is C11; the
+#: generated code is otherwise C99, and GCC and Clang accept the members in
+#: C99 mode as the extension they are. A compiler that does neither fails
+#: here, naming the cause, rather than at the first promoted member.
+ANON_MEMBER_GUARD = """\
+#if !(defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L) && \\
+    !defined(__GNUC__) && !defined(PSSC_ANON_MEMBERS)
+#  error "pssc: this register map overlays aliased registers with anonymous unions (C11). Build as C11, or define PSSC_ANON_MEMBERS if your C99 compiler accepts anonymous structs and unions."
+#endif"""
 
 
 def lower_reg_maps(model, style=None, tagged: bool = False) -> str:
@@ -493,6 +526,8 @@ def lower_reg_maps(model, style=None, tagged: bool = False) -> str:
     if not maps:
         return ""
     parts = ["/* ----- Register map. The layout IS the address arithmetic. ----- */"]
+    if any(rm.has_union for rm in maps):
+        parts.append(ANON_MEMBER_GUARD)
     for rm in maps:
         parts.append(emit_reg_map(rm, style, tagged=tagged))
     return "\n".join(parts)

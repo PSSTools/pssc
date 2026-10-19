@@ -38,13 +38,21 @@ def _runtime_lib_path() -> Optional[Path]:
     return rt if rt.exists() else None
 
 
+def _is_library(name, dt) -> bool:
+    """A stdlib type, under any of its names: type_map holds each type under
+    both its qualified name and a bare alias (`alloc_base_mode_s`), and the
+    dedup keeps whichever comes first, so the key alone misses a library
+    type whose bare alias is not on the stdlib list. Its own name does not."""
+    from .pss_to_sv import _is_stdlib
+    return _is_stdlib(name) or _is_stdlib(getattr(dt, "name", None) or "")
+
+
 def _is_action(name, dt) -> bool:
     """An action is a ``DataTypeClass`` that is not a component (structs are
     plain ``DataTypeStruct``; actions/components are ``DataTypeClass``)."""
-    from .pss_to_sv import _is_stdlib
     return (isinstance(dt, ir.DataTypeClass)
             and not isinstance(dt, ir.DataTypeComponent)
-            and not _is_stdlib(name))
+            and not _is_library(name, dt))
 
 
 def _action_types(ir_ctx) -> List[tuple]:
@@ -69,11 +77,10 @@ _FLOW_BASE = {ir.FlowKind.BUFFER: "zsp_buffer", ir.FlowKind.STATE: "zsp_state",
 
 def _flow_types(ir_ctx) -> List[tuple]:
     """Return (name, DataTypeStruct) for supported flow-object types."""
-    from .pss_to_sv import _is_stdlib
     out = []
     seen = set()
     for name, dt in ir_ctx.type_map.items():
-        if id(dt) in seen or _is_stdlib(name):
+        if id(dt) in seen or _is_library(name, dt):
             continue
         if isinstance(dt, ir.DataTypeStruct) and getattr(dt, "flow_kind", None) in _FLOW_BASE:
             seen.add(id(dt))
@@ -100,10 +107,9 @@ def _producers_of(ir_ctx, flow_type_name) -> List[tuple]:
 
 def _struct_types(ir_ctx) -> List[tuple]:
     """Return (name, DataTypeStruct) for plain structs (non-flow, non-action)."""
-    from .pss_to_sv import _is_stdlib
     out, seen = [], set()
     for name, dt in ir_ctx.type_map.items():
-        if id(dt) in seen or _is_stdlib(name):
+        if id(dt) in seen or _is_library(name, dt):
             continue
         if (isinstance(dt, ir.DataTypeStruct)
                 and not isinstance(dt, ir.DataTypeClass)  # excludes actions/components
@@ -115,10 +121,9 @@ def _struct_types(ir_ctx) -> List[tuple]:
 
 def _resource_types(ir_ctx) -> List[tuple]:
     """Return (name, DataTypeStruct) for resource types (claimed from pools)."""
-    from .pss_to_sv import _is_stdlib
     out, seen = [], set()
     for name, dt in ir_ctx.type_map.items():
-        if id(dt) in seen or _is_stdlib(name):
+        if id(dt) in seen or _is_library(name, dt):
             continue
         if isinstance(dt, ir.DataTypeStruct) and getattr(dt, "flow_kind", None) is ir.FlowKind.RESOURCE:
             seen.add(id(dt))
@@ -198,12 +203,16 @@ def _activity_supported(node) -> bool:
         return True
     if isinstance(node, ir.ActivityBind):
         return True
+    if isinstance(node, ir.ActivityFieldDecl):
+        # An action handle declared in the block (`B b;`); its type is the
+        # linker's. A data field declared there is not lowered yet.
+        return node.type_qname is not None
     return False
 
 
-def _walk_anon(node, fn):
-    """Visit every ActivityAnonTraversal in the activity tree."""
-    if isinstance(node, ir.ActivityAnonTraversal):
+def _walk(node, kind, fn):
+    """Visit every *kind* node in the activity tree."""
+    if isinstance(node, kind):
         fn(node)
     if dc.is_dataclass(node):
         for f in dc.fields(node):
@@ -211,7 +220,22 @@ def _walk_anon(node, fn):
             if isinstance(v, list):
                 for it in v:
                     if dc.is_dataclass(it):
-                        _walk_anon(it, fn)
+                        _walk(it, kind, fn)
+
+
+def _block_handles_distinct(dtype) -> bool:
+    """Every handle declared in an activity block has a name of its own: the
+    pure path declares them all at the activity top, so one name in two
+    blocks (or an action field's name) would make them one variable."""
+    names = [f.name for f in dtype.fields]
+    _walk(dtype.activity_ir, ir.ActivityFieldDecl,
+          lambda d: names.append(d.field.name))
+    return len(names) == len(set(names))
+
+
+def _walk_anon(node, fn):
+    """Visit every ActivityAnonTraversal in the activity tree."""
+    _walk(node, ir.ActivityAnonTraversal, fn)
 
 
 def _resolve_action(ctx, ref_name):
@@ -525,6 +549,8 @@ def _lower_activity(node, bm: "_BindMaps") -> List[svs.SVStmt]:
         return [svs.SVStmtRepeat(count=node.count, body=body)]
     if isinstance(node, ir.ActivityBind):
         return []  # realized via bind maps computed up-front
+    if isinstance(node, ir.ActivityFieldDecl):
+        return []  # a handle: declared at the activity top
     raise NotImplementedError(
         f"_lower_activity: unsupported {type(node).__name__}")
 
@@ -558,6 +584,21 @@ def _lower_compound_activity(ctx, dtype) -> List[svs.SVStmt]:
         top_decls.append(svs.SVVarDecl(
             name=name, dtype=ctx.resolve_sv_class_name(anon.action_type)))
     _walk_anon(dtype.activity_ir, _assign)
+
+    # Handles declared in an activity block (`B b;`, LRM 11.2.1): not members
+    # of the action class, so declared here. Every traversal creates its
+    # object afresh, which is the reset on entry to the block (11.3.1 b).
+    def _declare(decl):
+        name = decl.field.name
+        if name in handle_type:
+            return
+        at = _resolve_action(ctx, decl.type_qname)
+        if at is None:
+            return
+        handle_type[name] = at
+        top_decls.append(svs.SVVarDecl(
+            name=name, dtype=ctx.resolve_sv_class_name(decl.type_qname)))
+    _walk(dtype.activity_ir, ir.ActivityFieldDecl, _declare)
 
     # Resource pools (design §7): one pool per resource type used by a traversed
     # action, declared at the activity top; each lock/share field claims from it.
@@ -656,6 +697,8 @@ def is_pure_supported(ir_ctx, export_actions: Optional[List[str]] = None) -> boo
             return False  # residual joint case -> sv-native (design §10)
         act = getattr(dt, "activity_ir", None)
         if act is not None and not _activity_supported(act):
+            return False
+        if act is not None and not _block_handles_distinct(dt):
             return False
         if act is not None and not _inference_feasible(ir_ctx, dt):
             return False

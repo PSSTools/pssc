@@ -72,3 +72,48 @@ Until then, their `chmod -R u+w` workaround is correct.
 - Environment: `packages/dv-solve/build/lib/libdv_solve.so` is stale (missing
   `dvs_builder_expr_const_wide`), and the bc tests that solve fail until it is
   rebuilt. This is unrelated to these reports.
+
+## Report 4: op-model-sv and a value-returning `import` (reported against `48ce67b`)
+
+Reproduced on `2e67839`. All cases below are fixed or decided in the
+working tree (uncommitted).
+
+| Case | What was reported | On `2e67839` | Verdict |
+|---|---|---|---|
+| 1 | `import target function T f()`: the API declares a task, the body calls it as a function (VCS XMREF) | still broken; Verilator rejects it too | **bug, fixed** |
+| 1b | (not reported) the same with the qualified `plat_pkg::f()` | same breakage | **bug, fixed** |
+| 2 | `import solve function T f()` called from a `target function`: missing from the API | refused by PSS144 (`edebddf`/`b4d12ee` checks) | **reporter's model is illegal** (LRM 20.2.1.3). Their "expected" is wrong. |
+| 2b | (found in triage) the same import called LEGALLY, from `initialize` | still missing from `<root>_imp_if`; the call reaches nothing | **bug, fixed** |
+| 3 | `output` import parameter dropped on SV, C, Py | refused on all three, with a location ("does not lower yet") | the reporter's fallback ask is already met. **User ruling 2026-10-19: `output`/`inout` import parameters are not supported for now**; the refusal stands (pinned on all four targets by `test_m_refusals.py`, FN-IMPORT.4) |
+
+**Case 1 cause.** `_task_callee` in `targets/sv/lower_progseq.py` resolved a
+call on `self` only against the component's operations, so an import task
+never reached the value-task path (`_is_value_task` → `_hoist` →
+`_task_form`). The reporter's suggested patch fixes the unqualified form
+only. A qualified call keeps an `ExprRefUnresolved` callee until
+`expr_call` rewrites it, so the hoist checks never see it. Fix:
+`_import_callee` resolves both forms, with a component function of the same
+name shadowing the import. `_task_callee`, `_is_value_task` and `_task_form`
+consult it. In an expression the call goes through a temporary; assigned
+whole, the value is written straight into the variable.
+
+**Case 2b cause.** `progseq_model.func_kind` tested `is_solve` before
+`is_import`, so an `import solve function` was classified `EXPORT_SOLVE`
+(a private solve operation of the model) and the `IMPORT_SOLVE` branch was
+unreachable. Only op-model-sv reads `func_kind` for imports. C, C++ and
+Python already declared it. Fix: test `is_import` first.
+
+**Tests.** `tests/progseq/test_sv_import_value.py`: generation and a
+Verilator trace for case 1 (both call forms) and for 2b. All six fail
+without the fix. `trace_harness._prepare_sv` takes `plat=` (more
+platform-class members) for imports, which the shared platform does not
+implement (the matrix's `H1`). Full `tests/progseq` + `tests/unit`: no new
+failures (the 216 bc/sw failures are the stale `libdv_solve.so` above).
+Op-model-sv/py compliance: 169 passed / 59 xfailed, the same as without the
+change.
+
+**Reply points.** (1) and the qualified form are fixed. (2) as written is
+illegal PSS (a target function cannot call a solve function), now
+diagnosed. The legal form had a real bug, now fixed. (3) is refused with a
+located diagnostic, and that is the intended behaviour for now: `output`/`inout`
+import parameters are not supported. Return the value instead (case 1).

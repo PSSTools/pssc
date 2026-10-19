@@ -1066,6 +1066,15 @@ class AstToIrTranslator:
                 args.append("true" if c.value else "false")
             else:
                 args.append(str(c.value) if c.value >= 0 else f"m{-c.value}")
+        # The TEMPLATE's qualified name, as the linker resolved it: written
+        # `float_base_s<23, 8>` inside std_pkg, it is still std_pkg's type,
+        # and a consumer that tells a library type from the model's by its
+        # package must see `std_pkg::`.
+        short = base_name.rsplit("::", 1)[-1]
+        upper = (self._symbol_scope_at(ctx, ref, depth=0, drop=2)
+                 if len(path) > 1 else None)
+        prefix = self._scope_qname(ctx, upper) if upper is not None else None
+        base_name = f"{prefix}::{short}" if prefix else short
         name = "_".join([base_name] + args)
         specs = ctx.specialization_names
         existing = ctx.get_type(name)

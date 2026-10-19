@@ -398,6 +398,9 @@ class _BodyEmitter(BodyWalker):
         if self._pkg_callee(call) is not None:
             pfn = self._pkg_callee(call)
             return is_task(pfn) and pfn.returns is not None
+        if self._import_callee(call) is not None:
+            task = self._task_callee(call)
+            return task is not None and task.returns is not None
         fn = call.func
         if _dt_name(fn) != "ExprAttribute":
             return False
@@ -450,6 +453,14 @@ class _BodyEmitter(BodyWalker):
                 return None
             self._check_callable(v)
             return self._call_text(v, tgt)
+        imp = self._import_callee(v)
+        if imp is not None:
+            if func_kind(imp, self.ctor_names) is not FuncKind.IMPORT_TASK \
+                    or imp.returns is None:
+                return None
+            self._check_callable(v)
+            args = ", ".join([tgt] + self._args(v, imp))
+            return f"{IMP_MEMBER}.{mangle(imp.name)}({args})"
         fn = v.func
         if _dt_name(fn) != "ExprAttribute":
             return None
@@ -671,6 +682,10 @@ class _BodyEmitter(BodyWalker):
         pfn = self._pkg_callee(call)
         if pfn is not None:
             return pfn if is_task(pfn) else None
+        imp = self._import_callee(call)
+        if imp is not None:
+            return imp if func_kind(imp, self.ctor_names) is \
+                FuncKind.IMPORT_TASK else None
         f = call.func
         if _dt_name(f) != "ExprAttribute":
             return None
@@ -687,6 +702,23 @@ class _BodyEmitter(BodyWalker):
         return next((g for g in (getattr(t.dtype, "functions", None) or [])
                      if g.name == f.attr and func_kind(g, self.ctor_names)
                      is FuncKind.EXPORT_OP), None)
+
+    def _import_callee(self, call):
+        """The import function ``call`` reaches through the import API --
+        `f(...)` or the qualified `p_pkg::f(...)` (see `expr_call`) -- or
+        None. The component's own function of that name comes first."""
+        f = call.func
+        if _dt_name(f) == "ExprAttribute" \
+                and _dt_name(f.value) == "TypeExprRefSelf":
+            name = f.attr
+        elif _dt_name(f) == "ExprRefUnresolved":
+            name = f.name
+        else:
+            return None
+        if name not in self.import_fn_names or name in self.own_fn_names:
+            return None
+        return next((g for g in _import_fns(self.ctx, self.ctor_names)
+                     if g.name == name), None)
 
     def _callee_fn(self, call):
         """The declared function ``call`` calls -- a package function, or one

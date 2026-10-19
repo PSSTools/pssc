@@ -54,3 +54,42 @@ def test_input_coupled_to_local_rand_falls_back(tmp_path):
     # `i.x == k` (k is the consumer's own rand) is the residual joint case:
     # not expressible via forwarding -> must fall back to sv-native.
     assert _supported(tmp_path, _COUPLED_LOCAL_RAND, "T") is False
+
+
+# Handles declared in an activity block (LRM 11.2.1) reach the IR as
+# `ActivityFieldDecl`; the pure path declares them at the activity top.
+_BLOCK_HANDLES = """
+component pss_top {
+    action A { rand bit[8] x; }
+    action B { rand bit[8] y; }
+    action T { activity { A a; B b; a; b; } }
+}
+"""
+
+_BLOCK_HANDLE_NAME_TWICE = """
+component pss_top {
+    action A { rand bit[8] x; }
+    action B { rand bit[8] y; }
+    action T { activity { { A h; h; } { B h; h; } } }
+}
+"""
+
+_BLOCK_DATA_FIELD = """
+component pss_top {
+    action A { rand bit[8] x; }
+    action T { activity { action bit[4] n; A a; a; } }
+}
+"""
+
+
+def test_handles_declared_in_an_activity_block_are_supported(tmp_path):
+    assert _supported(tmp_path, _BLOCK_HANDLES, "T")
+
+
+def test_one_handle_name_in_two_blocks_falls_back(tmp_path):
+    """Declared at the activity top, the two would be one variable."""
+    assert not _supported(tmp_path, _BLOCK_HANDLE_NAME_TWICE, "T")
+
+
+def test_a_data_field_declared_in_an_activity_block_falls_back(tmp_path):
+    assert not _supported(tmp_path, _BLOCK_DATA_FIELD, "T")

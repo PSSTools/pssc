@@ -187,6 +187,12 @@ target (`targets/group_binding.py`); the one exception is a component with a
 single group whose constructor binds none, which binds it to the
 constructor's first address parameter.
 
+Overlapping members (aliased views of one aperture) are legal: C's layout
+struct (`reg_layout.build_reg_map`) makes each connected overlap one
+anonymous `UNION` member, keeping every alias's name and PSS path. The walk
+models C alignment and states every rounding byte as a pad; the emitter must
+not rediscover overlaps (`test_c_reg_map_aliases.py`).
+
 Offsets come from RUNNING the group's `get_offset_of_instance[_array]` for
 each instance name (`progseq_model._OffsetEval`): `if` chains and `match`
 both work. Anything it cannot evaluate, and the -1 sentinel for a declared

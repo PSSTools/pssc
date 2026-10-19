@@ -333,6 +333,7 @@ module top;
     task read16(addr_handle_t a, output bit [15:0] d); bit [63:0] v; rd(16, a, v); d = v; endtask
     task read32(addr_handle_t a, output bit [31:0] d); bit [63:0] v; rd(32, a, v); d = v; endtask
     task read64(addr_handle_t a, output bit [63:0] d); rd(64, a, d); endtask
+@PLAT@
   endclass
 
   initial begin
@@ -371,12 +372,14 @@ def _sv_lines(stdout):
     return out
 
 
-def _prepare_sv(tmp_path, pss, args=(), mem=None):
+def _prepare_sv(tmp_path, pss, args=(), mem=None, plat=""):
+    """``plat``: more members of the platform class -- the model's import
+    functions, which the shared platform does not implement."""
     out = compile_model(tmp_path, pss, "sv")
     preload = " ".join(f"plat.m[64'h{a:x}] = 64'h{v:x};" for a, v in
                        (mem or {}).items())
     (out / "tb.sv").write_text(
-        _SV_TB.replace("@PRELOAD@", preload).replace(
+        _SV_TB.replace("@PLAT@", plat).replace("@PRELOAD@", preload).replace(
             "@ARGS@", "".join(f", 64'h{a:x}" for a in args)))
     files = [str(out / "pssc_reg_pkg.sv"), str(out / "pss_top_pkg.sv"),
              str(out / "tb.sv")]

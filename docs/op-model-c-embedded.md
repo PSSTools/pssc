@@ -107,6 +107,18 @@ the address as a pointer first, a device address must fit a pointer here too
 device map on a 32-bit core needs `--link-style vtable`, whose per-register
 accessors carry the address by value throughout.
 
+**Overlapping register views.** A map may describe one aperture through two
+views -- a normal block and a copy view of the same bytes, a 64-bit register
+and its two halves. The layout struct makes each connected set of overlapping
+members one anonymous `union`, so every register keeps its name, its access
+path and its address, and only an access reaches the bus. A view that starts
+past the union's origin is an anonymous `struct` led by a reserved pad. Each
+alias gets its own `offsetof` assertion. Anonymous unions are C11 (GCC and
+Clang accept them under `-std=c99` too); the register header refuses, with a
+message, a compiler that is neither, unless `PSSC_ANON_MEMBERS` is defined. A
+view that C's alignment would move (a 64-bit view 4 bytes into another) is
+refused at generation, naming the register.
+
 **`--mem-access selectable`** emits neither and lets the C compile line choose:
 add `-DPSSC_MEM_ACCESS_FUNCTIONS` for the function seam, omit it for the pointer
 seam. One generated driver, two mechanisms, chosen per build.
