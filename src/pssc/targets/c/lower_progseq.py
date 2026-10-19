@@ -1628,13 +1628,25 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         idx = [c[1] for c in chain if c[1] is not None]
         base = accessor_base(prefix, segs, reg, self.style)
         idx_args = "".join(f", {self.expr(i)}" for i in idx)
-        # A value written is converted to the register's width, like any
-        # argument to a `bit[N]` parameter; a value struct is passed whole.
-        acc = self.accs.get(base)
-        val_t = PssType("int", acc.value_bits if acc else 32, False)
-        args = [self.convert_to(a, val_t) for a in call.args]
-
+        # The register itself, from the one walk that says which registers
+        # exist (`reg_layout.collect_accessors`, every component's, via
+        # `accessor_map`). There is no fallback: guessing "untyped, 32 bits"
+        # for a register the walk did not surface is what dropped a value
+        # struct's `.raw` and called accessors nothing defined. A reserved
+        # member is refused in the gate (`reserved_access`), so a miss here
+        # is the compiler's bug.
         if func.attr in _REG_ACCESSORS:
+            acc = self.accs.get(base)
+            if acc is None:
+                raise ValueError(
+                    f"internal error: register '{'.'.join(segs + [reg])}' "
+                    f"(accessor stem '{base}') is accessed in a body, but "
+                    f"the register walk surfaced no such register")
+            # A value written is converted to the register's width, like
+            # any argument to a `bit[N]` parameter; a value struct is passed
+            # whole.
+            val_t = PssType("int", acc.value_bits, False)
+            args = [self.convert_to(a, val_t) for a in call.args]
             want = _REG_ACCESSORS[func.attr]
             if len(args) != want:
                 raise ValueError(
@@ -1703,12 +1715,18 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         optimisation: on a register whose read clears its status bits,
         dropping it changes what the device does.
         """
-        prim = acc.prim if acc is not None else 32
+        prim = acc.prim
         # A register whose value is a struct is carried as its value union;
         # the primitives move a plain word, so the union is opened here. The
         # `_val` spellings are already raw and must NOT be opened again.
-        typed = acc is not None and acc.is_struct
+        typed = acc.is_struct
         path = self._reg_path(chain, base_expr, base_is_ptr)
+        if acc.strided:
+            # An element of a register array whose stride exceeds its width
+            # is a struct spanning the stride, the register its `v` member
+            # (`lower_reg_model._member_lines`; one predicate decides both,
+            # `reg_layout.is_strided`).
+            path += ".v"
         raw = f"&{path}"
         if method == "read":
             rd = f"pssc_read{prim}({raw})"
@@ -1751,16 +1769,12 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         The `_Acc` is looked up rather than reconstructed because a policy
         rendering a house macro needs the register itself -- its access mode,
         its width, its folded offset -- and none of that survives the
-        underscore-joined stem. Falls back to the stem alone when the map has
-        no entry, which happens for a register reached through a group whose
-        accessors this component does not emit; the funnel then renders the
-        plain accessor call, exactly as before.
+        underscore-joined stem. `_reg_call` has already refused a stem with
+        no entry: the map holds every component's registers (`accessor_map`),
+        sub-components' included.
         """
         h = handle or self.h
-        acc = self.accs.get(base)
-        if acc is None:
-            return f"{self.mem.accessor(base, method)}({h}{idx_args}" + \
-                   "".join(f", {a}" for a in args) + ")"
+        acc = self.accs[base]
         if method in ("read", "read_val"):
             return self.mem.reg_read(acc, h, idx_args,
                                      raw=method.endswith("_val"))

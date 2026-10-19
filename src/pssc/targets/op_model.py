@@ -879,6 +879,7 @@ class OpModelTarget(Target):
         self.check_executors(model)
         self.check_group_bindings(model)
         self.check_register_offsets(model)
+        self.check_reserved_access(model)
         self.assert_api_is_not_empty(model)
 
     def body_emitter_class(self):
@@ -936,6 +937,29 @@ class OpModelTarget(Target):
         if bad:
             raise CompileError(
                 f"{len(bad)} register offset(s) cannot be evaluated", bad)
+
+    def check_reserved_access(self, model: OpModel) -> None:
+        """Refuse a body that accesses a reserved register-group member
+        (`reserved_access.check`): no backend surfaces one, and each used to
+        lower the access by its own fallback -- an untyped C access, an SV
+        member that failed only at elaboration."""
+        from ..driver import CompileError
+        from . import reserved_access
+        from .validate_calls import rendered_bodies
+
+        bodies = rendered_bodies(
+            model.root, model.ctx, ctor_names=model.ctor_names,
+            entries=[(e.comp, fn) for e in model.entries
+                     for fn in e.functions],
+            pkg_functions=False, init_blocks=True,
+            extra_components=model.base_classes,
+            native=self.native_inheritance)
+        tm = getattr(model.ctx, "type_map", {}) or {}
+        comps = list({id(d): d for d in model.comp_dtypes}.values())
+        bad = reserved_access.check(bodies, comps, tm)
+        if bad:
+            raise CompileError(
+                f"{len(bad)} access(es) to a reserved register", bad)
 
     def check_group_bindings(self, model: OpModel) -> None:
         """Refuse a register group that no `set_handle` reaches

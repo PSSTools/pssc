@@ -94,7 +94,7 @@ def emit_reg_group_class(group_dtype) -> str:
             else:
                 et = _strip_pkg(elem.name)
             decls.append(f"    std::array<{et}, {size}> {f.name};")
-            inits.append(f"{f.name}(make_{f.name}(bus, base))")
+            inits.append(f"{f.name}({_maker(f.name)}(bus, base))")
             makers.append(_array_maker(f.name, et, size, base, stride))
 
     body = [f"class {cls} {{", "public:"]
@@ -108,15 +108,26 @@ def emit_reg_group_class(group_dtype) -> str:
     return "\n".join(body)
 
 
+def _maker(name: str) -> str:
+    """`make_<name>`, the array member's factory -- or `make<name>` for a
+    member that already starts with `_`. C++ reserves every identifier
+    containing `__`, and `_0` (a register named by its index) is an ordinary
+    member (`reg_layout.is_reserved_name`); `make__0` would be reserved. No
+    clash: a surfaced name starting with `_` is `_<digit>...`, and no other
+    member can start with a digit."""
+    return f"make{name}" if name.startswith("_") else f"make_{name}"
+
+
 def _array_maker(name: str, elem_type: str, size: int, base: int, stride: int) -> str:
     arr = f"std::array<{elem_type}, {size}>"
+    mk = _maker(name)
     return "\n".join([
         f"    template <std::size_t... I>",
-        f"    static {arr} make_{name}_impl(pssc::mem_if &bus, pssc::addr_t base, std::index_sequence<I...>) {{",
+        f"    static {arr} {mk}_impl(pssc::mem_if &bus, pssc::addr_t base, std::index_sequence<I...>) {{",
         f"        return {{ {elem_type}(bus, base + 0x{base:x} + I * 0x{stride:x})... }};",
         f"    }}",
-        f"    static {arr} make_{name}(pssc::mem_if &bus, pssc::addr_t base) {{",
-        f"        return make_{name}_impl(bus, base, std::make_index_sequence<{size}>{{}});",
+        f"    static {arr} {mk}(pssc::mem_if &bus, pssc::addr_t base) {{",
+        f"        return {mk}_impl(bus, base, std::make_index_sequence<{size}>{{}});",
         f"    }}",
     ])
 

@@ -193,6 +193,15 @@ anonymous `UNION` member, keeping every alias's name and PSS path. The walk
 models C alignment and states every rounding byte as a pad; the emitter must
 not rediscover overlaps (`test_c_reg_map_aliases.py`).
 
+A member named `_` and a NON-digit (`_reserved0`, `_rsvd`) is a reserved
+placeholder: space, no API. `_0`, `_12` are ordinary members (a generator's
+name for an index). The rule is `reg_layout.is_reserved_name`, and every
+reader asks it; an access through a reserved member is refused in the gate
+(`targets/reserved_access.py`). A register array whose stride exceeds its
+width is, in C's layout, an element struct spanning the stride with the
+register as `v` (`reg_layout.is_strided` decides the declaration and the
+`.v` access alike).
+
 Offsets come from RUNNING the group's `get_offset_of_instance[_array]` for
 each instance name (`progseq_model._OffsetEval`): `if` chains and `match`
 both work. Anything it cannot evaluate, and the -1 sentinel for a declared

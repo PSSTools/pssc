@@ -159,13 +159,14 @@ def _expected_addresses(model) -> Dict[str, List[int]]:
     which can reach into the generated expression rather than grep for a number.
     """
     from ..targets.progseq_model import OffsetFoldError
+    from ..targets.reg_layout import is_reserved_name
 
     bases = _group_bases(model)
     out: Dict[str, List[int]] = {}
     for group in model.reg_groups:
         for field in (getattr(group, "fields", None) or []):
             name = getattr(field, "name", "")
-            if not name or name.startswith("_"):
+            if not name or is_reserved_name(name):
                 continue          # reserved placeholders are never surfaced
             try:
                 off = model.offset_of(group, name)

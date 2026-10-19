@@ -730,6 +730,61 @@ component pss_top {""" + ONE + """
   }
 }""", ["write 32 0x1008 0x3", "write 32 0x1004 0x4"],
         xfail=on(ALL, M2), covers=("LIB-REG.9", "LIB-MEM")),
+
+    # Members named `_0`, `_1` are ordinary registers (an underscore before a
+    # digit is a name escape, not a reserved placeholder), and a register
+    # array whose stride exceeds its width is indexed at the stride. Every
+    # target used to drop the `_<digit>` members from its API while the body
+    # still named them, and C's layout struct packed `FILT` at 4 bytes.
+    "numbered members and a strided register array": Case("""
+struct np0_s : packed_s<> { bit[1] EN; bit[7] MODE; bit[24] RSVD; }
+pure component np_pair_c : reg_group_c {
+  reg_c<np0_s, READWRITE, 32> _0;
+  reg_c<bit[32], READWRITE, 32> _1;
+  function bit[64] get_offset_of_instance(string name) {
+    match (name) { ["_0"]: return 0x0; ["_1"]: return 0x4; }
+    return 0xFFFFFFFFFFFFFFFF;
+  }
+}
+pure component np_blk_c : reg_group_c {
+  reg_c<bit[32], READWRITE, 32> FILT[4];
+  reg_c<bit[32], READWRITE, 32> NEXT;
+  np_pair_c PAIR[4];
+  function bit[64] get_offset_of_instance(string name) {
+    match (name) { ["NEXT"]: return 0x50; }
+    return 0xFFFFFFFFFFFFFFFF;
+  }
+  function bit[64] get_offset_of_instance_array(string name, int index) {
+    match (name) {
+      ["FILT"]: return 0x30 + 8 * index;
+      ["PAIR"]: return 0x100 + 8 * index;
+    }
+    return 0xFFFFFFFFFFFFFFFF;
+  }
+}
+component pss_top {
+  np_blk_c blk;
+  solve function void initialize(addr_handle_t base) { blk.set_handle(base); }
+  function void enable_pair(int idx, bit[7] mode) {
+    np0_s p;
+    p = blk.PAIR[idx]._0.read();
+    p.EN = 1;
+    p.MODE = mode;
+    blk.PAIR[idx]._0.write(p);
+  }
+  target function void run() {
+    bit[32] v;
+    blk.FILT[2].write_val(0x22);
+    v = blk.FILT[3].read_val();
+    blk.NEXT.write_val(v + 1);
+    enable_pair(1, 3);
+    blk.PAIR[2]._1.write_val(0x77);
+  }
+}""", ["write 32 0x1040 0x22", "read 32 0x1048 0x33", "write 32 0x1050 0x34",
+       "read 32 0x1108 0xa500", "write 32 0x1108 0xa507",
+       "write 32 0x1114 0x77"],
+        mem={0x1048: 0x33, 0x1108: 0xa500},
+        covers=("DT-REG", "LIB-REG.1", "LIB-REG.2", "LIB-REG.12")),
 }
 
 test_construct = define_tests(CASES)

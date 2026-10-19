@@ -943,6 +943,54 @@ component pss_top {
   target function void run() { g.R.write_val(1); }
 }""", Refused([r"'gp_c' gives its offsets by get_offset_of_path, which is "
                r"not evaluated yet"]), covers=("LIB-REG.7",)),
+
+    # A member named `_` and a non-digit is a reserved placeholder: it holds
+    # address space and no target surfaces it. An access through one, from
+    # a body or through a sub-component, is refused where it is written;
+    # each backend used to lower it by its own fallback (C an untyped
+    # access, SV a class member that failed only at elaboration).
+    "an access to a reserved register": Case("""
+pure component gr_c : reg_group_c {
+  reg_c<bit[32], READWRITE, 32> CTL;
+  reg_c<bit[32], READONLY, 32> _reserved0;
+  function bit[64] get_offset_of_instance(string name) {
+    match (name) { ["CTL"]: return 0x0; ["_reserved0"]: return 0x4; }
+    return 0xFFFFFFFFFFFFFFFF;
+  }
+}
+pure component go_c : reg_group_c {
+  gr_c _rsvd;
+  gr_c inner;
+  function bit[64] get_offset_of_instance(string name) {
+    match (name) { ["_rsvd"]: return 0x0; ["inner"]: return 0x10; }
+    return 0xFFFFFFFFFFFFFFFF;
+  }
+}
+component sub_c {
+  go_c g;
+  solve function void initialize(addr_handle_t base) { g.set_handle(base); }
+}
+component pss_top {
+  go_c g;
+  sub_c s;
+  solve function void initialize(addr_handle_t base) {
+    g.set_handle(base);
+    s.initialize(base);
+  }
+  target function void run() {
+    bit[32] v;
+    g.inner.CTL.write_val(1);
+    v = g.inner._reserved0.read_val();
+    g._rsvd.CTL.write_val(v);
+    s.g.inner._reserved0.read_val();
+  }
+}""", Refused([r"m\.pss:\d+:\d+: pss_top::run: `g\.inner\._reserved0\.read_val"
+               r"\(\.\.\.\)` accesses `g\.inner\._reserved0`, a reserved "
+               r"register-group member",
+               r"`g\._rsvd\.CTL\.write_val\(\.\.\.\)` accesses `g\._rsvd`",
+               r"`s\.g\.inner\._reserved0\.read_val\(\.\.\.\)` accesses "
+               r"`s\.g\.inner\._reserved0`"]),
+        covers=("LIB-REG.2",)),
 }
 
 test_construct = define_tests(CASES)

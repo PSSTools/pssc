@@ -120,7 +120,8 @@ def test_the_archived_notes_say_they_are_archived():
                "mem-traffic-library-design.md",
                "compound-actions-design.md",
                "integration-reports-2026-10-19-plan.md",
-               "reg-map-overlap-unions-report.md"}
+               "reg-map-overlap-unions-report.md",
+               "reg-reserved-and-strided-plan.md"}
     assert set(unmarked) <= allowed, (
         "docs/design/%s has no archived-note banner. Add one, or move the file "
         "to docs/ if it is a current guide -- and add it to the allow-list here "

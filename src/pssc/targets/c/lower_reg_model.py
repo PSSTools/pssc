@@ -24,7 +24,8 @@ from typing import List, Optional
 from ..progseq_model import (
     _dt_name, collect_reg_groups, collect_value_structs,
 )
-from ..reg_layout import (collect_accessors, prim_bits as _prim_bits,
+from ..reg_layout import (collect_accessors, is_strided_reg_array,
+                          prim_bits as _prim_bits,
                           value_bits as _reg_value_bits, value_struct)
 from ...reg_field_resolve import field_width, struct_layout
 from ..comments import BLOCK, append_trailing, comment_lines
@@ -204,6 +205,15 @@ class _Acc:
     base_member: str = "base"
     #: The register's value width (`write_val` converts to it, 21.14.1).
     value_bits: int = 32
+    #: `RegAccessor.elem_stride`: the register array's own stride, or None.
+    elem_stride: Optional[int] = None
+
+    @property
+    def strided(self) -> bool:
+        """`RegAccessor.strided`: the layout declares the element as a struct
+        and the access path ends in `.v`."""
+        from ..reg_layout import is_strided
+        return is_strided(self.elem_stride, self.prim // 8)
 
 
 def _collect_accessors(root_dtype, prefix: str, style=None) -> List[_Acc]:
@@ -225,6 +235,7 @@ def _collect_accessors(root_dtype, prefix: str, style=None) -> List[_Acc]:
             strides=list(a.strides),
             base_member=_style(style).group_base(a.segs[0]),
             value_bits=a.value_bits,
+            elem_stride=a.elem_stride,
         )
         for a in collect_accessors(root_dtype)
     ]
@@ -462,6 +473,13 @@ def emit_reg_map(rm, style=None, tagged: bool = False) -> str:
         lines.append(
             f"PSSC_STATIC_ASSERT(offsetof({name}, {m.name}) == 0x{m.offset:x}u,"
             f" {name}_{m.name}_offset);")
+        if is_strided_reg_array(m):
+            # The element struct IS the stride; pin it, or a padding rule
+            # this generator did not model indexes every element but the
+            # first at the wrong address.
+            lines.append(
+                f"PSSC_STATIC_ASSERT(sizeof((({name} *)0)->{m.name}[0]) == "
+                f"0x{m.stride:x}u, {name}_{m.name}_stride);")
     return "\n".join(lines)
 
 
@@ -495,8 +513,20 @@ def _member_lines(m, style, ind: str) -> List[str]:
     access = getattr(m.dtype, "access_mode", "READWRITE") or "READWRITE"
     qual = "const " if (m.kind == REG and access == "READONLY") else ""
     sub = f"[{m.count}]" if m.is_array else ""
-    decl = f"{qual}{ct} {m.name}{sub};"
     note = f"0x{m.offset:03x}" + (f" {access.lower()}" if m.kind == REG else "")
+    if is_strided_reg_array(m):
+        # Elements with a gap after each: an untagged struct spanning the
+        # stride, the register its `v` member, so `X[i]` steps by the
+        # stride as the device does and the access is `X[i].v`
+        # (`_reg_map_access`). Plain C99: a named member of an unnamed
+        # struct type, not an anonymous member.
+        gap = m.stride - m.elem_size
+        words = m.elem_size % 4 == 0 and gap % 4 == 0
+        pad = (f"uint32_t _rsvd[{gap // 4}];" if words
+               else f"uint8_t _rsvd[{gap}];")
+        decl = f"struct {{ {qual}{ct} v; {pad} }} {m.name}{sub};"
+        return [f"{ind}{decl:<40} /* {note}, stride 0x{m.stride:x} */"]
+    decl = f"{qual}{ct} {m.name}{sub};"
     return [f"{ind}{decl:<40} /* {note} */"]
 
 

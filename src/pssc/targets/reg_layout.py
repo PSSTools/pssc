@@ -32,7 +32,8 @@ from .progseq_model import (OffsetFoldError, _dt_name, array_element_type,
                             array_base_stride, field_is_array, field_is_reg_group,
                             field_is_register, scalar_offset)
 
-__all__ = ["RegAccessor", "collect_accessors", "is_reserved", "prim_bits",
+__all__ = ["RegAccessor", "collect_accessors", "is_reserved",
+           "is_reserved_name", "is_strided_reg_array", "prim_bits",
            "value_bits", "value_struct"]
 
 _DT_REGISTER = "DataTypeRegister"
@@ -40,14 +41,43 @@ _DT_REGISTER_GROUP = "DataTypeRegisterGroup"
 _DT_STRUCT = "DataTypeStruct"
 
 
-def is_reserved(field) -> bool:
-    """Is *field* a reserved placeholder -- a leading underscore?
+def is_reserved_name(name: str) -> bool:
+    """Is *name* a reserved placeholder's: ``_`` followed by a non-digit?
 
-    Reserved gaps hold the address space open and are never surfaced in a
-    generated API. Their space is already accounted for in the following
-    siblings' offsets, so skipping them changes no address.
+    `_reserved0`, `_rsvd`, `_pad` and `_` are placeholders. `_0`, `_12` and
+    `_3a` are NOT: a leading underscore before a digit is the only way to
+    write an identifier that is really a number (a register generator names
+    the elements of an interleaved series `_0`, `_1`, ...), so it is a name
+    escape, and those members are ordinary registers.
     """
-    return getattr(field, "name", "").startswith("_")
+    return name.startswith("_") and not name[1:2].isdigit()
+
+
+def is_reserved(field) -> bool:
+    """Is *field* a reserved placeholder (`is_reserved_name`)?
+
+    THE rule: every backend, the conformance kit and the reserved-access
+    check (`reserved_access`) ask it here, so a member is either surfaced
+    everywhere or refused everywhere. Reserved gaps hold the address space
+    open and are never surfaced in a generated API. Their space is already
+    accounted for in the following siblings' offsets, so skipping them
+    changes no address.
+    """
+    return is_reserved_name(getattr(field, "name", "") or "")
+
+
+def is_strided(stride: Optional[int], width: int) -> bool:
+    """Is a register array with element ``width`` bytes laid out at
+    ``stride`` with a gap after each element?
+
+    THE predicate for "a strided register array": the C layout declares such
+    an array as an element struct spanning the stride, the register its `v`
+    member (`is_strided_reg_array`), and the C access path ends in `.v`
+    exactly when this says so (`RegAccessor.strided`). One function, so the
+    declaration and the access cannot disagree. ``None`` (a scalar register)
+    is never strided.
+    """
+    return stride is not None and stride != width
 
 
 def prim_bits(bits: int) -> int:
@@ -110,6 +140,16 @@ class RegAccessor:
     const_off: int
     #: One stride per array index crossed, outermost first.
     strides: Tuple[int, ...]
+    #: The register ARRAY's own stride, when the register is an element of
+    #: one (it is then also the last of ``strides``); ``None`` for a scalar
+    #: register, including one inside an array of groups.
+    elem_stride: Optional[int] = None
+
+    @property
+    def strided(self) -> bool:
+        """An element of a register array with a gap after each element
+        (`is_strided`): C reaches it as the `v` member of a struct."""
+        return is_strided(self.elem_stride, self.prim_bits // 8)
 
     @property
     def is_struct(self) -> bool:
@@ -170,7 +210,7 @@ def collect_accessors(comp_dtype) -> List[RegAccessor]:
             base, stride = array_base_stride(group_dt, f.name)
             if _dt_name(elem) == _DT_REGISTER:
                 accs.append(_mk(segs, f.name, elem, const_off + base,
-                                strides + [stride], f))
+                                strides + [stride], f, elem_stride=stride))
             elif _dt_name(elem) == _DT_REGISTER_GROUP:
                 visit(elem, segs + [f.name], const_off + base,
                       strides + [stride])
@@ -190,7 +230,8 @@ def collect_accessors(comp_dtype) -> List[RegAccessor]:
     return accs
 
 
-def _mk(segs, name, reg_dtype, const_off, strides, decl=None) -> RegAccessor:
+def _mk(segs, name, reg_dtype, const_off, strides, decl=None,
+        elem_stride: Optional[int] = None) -> RegAccessor:
     bits = value_bits(reg_dtype)
     if bits > 64:
         # The register's size selects its primitive (LRM 21.14.5 a), and the
@@ -212,6 +253,7 @@ def _mk(segs, name, reg_dtype, const_off, strides, decl=None) -> RegAccessor:
         access=getattr(reg_dtype, "access_mode", "READWRITE") or "READWRITE",
         const_off=const_off,
         strides=tuple(strides),
+        elem_stride=elem_stride,
     )
 
 
@@ -289,6 +331,13 @@ class MapMember:
     @property
     def end(self) -> int:
         return self.offset + self.total_size
+
+
+def is_strided_reg_array(m: MapMember) -> bool:
+    """A REG member that is an array whose elements are not packed: C
+    declares it as ``struct { uintN_t v; <pad> _rsvd[k]; } X[n]``, so its
+    indexing steps by the stride, not the width (`is_strided`)."""
+    return m.kind == REG and m.is_array and is_strided(m.stride, m.elem_size)
 
 
 @dc.dataclass(frozen=True)
@@ -554,7 +603,17 @@ def _place(group_dt, f, _seen, sizes) -> MapMember:
             if stride < width:
                 raise RegMapError(
                     f"'{_name(group_dt)}.{f.name}' has stride 0x{stride:x} but "
-                    f"each element is {width} bytes; the elements overlap")
+                    f"each element is {width} bytes; the elements overlap", f)
+            if stride % width:
+                # The element is a struct spanning the stride
+                # (`is_strided_reg_array`), and C rounds a struct up to its
+                # alignment -- the register's width -- so any other stride
+                # would index the array at a different one.
+                raise RegMapError(
+                    f"'{_name(group_dt)}.{f.name}' has stride 0x{stride:x}, "
+                    f"which is not a multiple of its {width}-byte element; "
+                    f"C would align each element to {width} bytes and index "
+                    f"the array at a different stride", f)
             return MapMember(kind=REG, name=f.name, dtype=elem, offset=base,
                              elem_size=width, count=count, stride=stride,
                              align=width)

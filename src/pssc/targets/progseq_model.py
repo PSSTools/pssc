@@ -728,9 +728,11 @@ def _scalar_offset(group_dtype, name: str) -> int:
 # backend emits. See design §6.2.
 
 def _is_reserved(field) -> bool:
-    """Reserved-gap fields (leading underscore) are not surfaced; their space is
-    already accounted for in following siblings' offsets."""
-    return field.name.startswith("_")
+    """Reserved-gap fields are not surfaced; their space is already accounted
+    for in following siblings' offsets. The rule is `reg_layout.is_reserved`
+    (``_`` followed by a non-digit), asked there so it has one home."""
+    from .reg_layout import is_reserved
+    return is_reserved(field)
 
 
 def collect_reg_groups(root_dtype) -> List[object]:

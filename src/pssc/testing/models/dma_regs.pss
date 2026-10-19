@@ -108,9 +108,10 @@ package dma_regs_pkg {
         reg_c<bit[32],   READONLY,  32>  INT_SRC_A;     // 0x0c pending snapshot A
         reg_c<bit[32],   READONLY,  32>  INT_SRC_B;     // 0x10 pending snapshot B
 
-        // The 0x14..0x1f gap. A leading underscore marks a field as a reserved
-        // placeholder: it holds the address space open but is never surfaced in
-        // a generated API.
+        // The 0x14..0x1f gap. A leading underscore followed by a non-digit
+        // marks a field as a reserved placeholder: it holds the address space
+        // open but is never surfaced in a generated API. (`_0`, `_1`, ... are
+        // ordinary registers: an underscore before a digit is a name escape.)
         reg_c<bit[32],   READONLY,  32>  _reserved0;    // 0x14
         reg_c<bit[32],   READONLY,  32>  _reserved1;    // 0x18
         reg_c<bit[32],   READONLY,  32>  _reserved2;    // 0x1c
