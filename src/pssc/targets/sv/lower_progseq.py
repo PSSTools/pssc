@@ -1330,6 +1330,41 @@ class _BodyEmitter(BodyWalker):
         lines.append(f"{pad}end")
         return lines
 
+    def stmt_if_chain(self, s, ind: int) -> List[str]:
+        """`if ... else if ... else`, flat.
+
+        A later clause's test runs only when every earlier one was false, so
+        a call it hoists cannot go in front of the chain with the first
+        test's: that clause opens an `else begin` holding the call and the
+        rest of the chain, one level deeper."""
+        first = s.clauses[0]
+        pad = self.pad(ind)
+        lines = [f"{pad}if ({self.expr(first.test)}) begin"]
+        lines += self.stmts(first.body, ind + 1)
+        opened: List[str] = []
+        for c in s.clauses[1:]:
+            saved_ind, self._ind = self._ind, ind + 1
+            try:
+                pre, test = self._capture(lambda: self.expr(c.test))
+            finally:
+                self._ind = saved_ind
+            if pre:
+                lines.append(f"{pad}end else begin")
+                opened.append(pad)
+                ind += 1
+                pad = self.pad(ind)
+                lines += self._placed(pre, ind)
+                lines.append(f"{pad}if ({test}) begin")
+            else:
+                lines.append(f"{pad}end else if ({test}) begin")
+            lines += self.stmts(c.body, ind + 1)
+        if s.orelse:
+            lines.append(f"{pad}end else begin")
+            lines += self.stmts(s.orelse, ind + 1)
+        lines.append(f"{pad}end")
+        lines += [f"{p}end" for p in reversed(opened)]
+        return lines
+
     def stmt_repeat_while(self, s, ind: int) -> List[str]:
         """PSS `repeat { } while (c)`: the body, then the test.
 

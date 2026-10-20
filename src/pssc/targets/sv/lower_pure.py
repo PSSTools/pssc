@@ -439,6 +439,11 @@ def _map_exec_builtins(stmts):
         elif isinstance(s, ir.StmtIf):
             out.append(dc.replace(s, body=_map_exec_builtins(s.body or []),
                                   orelse=_map_exec_builtins(s.orelse or [])))
+        elif isinstance(s, ir.StmtIfChain):
+            out.append(dc.replace(
+                s, clauses=[dc.replace(c, body=_map_exec_builtins(c.body or []))
+                            for c in s.clauses],
+                orelse=_map_exec_builtins(s.orelse or [])))
         elif isinstance(s, (ir.StmtForeach, ir.StmtWhile, ir.StmtRepeat)):
             out.append(dc.replace(s, body=_map_exec_builtins(s.body or [])))
         else:

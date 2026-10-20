@@ -2435,6 +2435,19 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         lines.append(f"{pad}}}")
         return lines
 
+    def stmt_if_chain(self, s, ind: int) -> List[str]:
+        pad = self.pad(ind)
+        lines: List[str] = []
+        for k, c in enumerate(s.clauses):
+            head = "if" if k == 0 else "} else if"
+            lines.append(f"{pad}{head} ({self.expr(c.test)}) {{")
+            lines += self.stmts(c.body, ind + 1)
+        if s.orelse:
+            lines.append(f"{pad}}} else {{")
+            lines += self.stmts(s.orelse, ind + 1)
+        lines.append(f"{pad}}}")
+        return lines
+
     def stmt_repeat_while(self, s, ind: int) -> List[str]:
         pad = self.pad(ind)
         lines = [f"{pad}do {{"]

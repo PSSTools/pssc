@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses as dc
 import warnings
+import weakref
 from contextvars import ContextVar
 from enum import Enum
 from typing import Dict, FrozenSet, List, Optional, Tuple
@@ -633,10 +634,21 @@ class _OffsetEval:
             if st.value is None:
                 self._refuse("a return with no value")
             return self._affine(st.value)
-        if cn == "StmtIf":
-            return self._run(st.body if self._truth(st.test) else st.orelse)
+        if cn in _IFS:
+            # An `if` nested alone in an `else` is walked, not recursed, so
+            # an `else if` chain written that way is no deeper here either.
+            while True:
+                branch = self._taken(st)
+                if len(branch) != 1 or _dt_name(branch[0]) not in _IFS:
+                    return self._run(branch)
+                st = branch[0]
         if cn == "StmtMatch":
             subj = self._value(st.subject)
+            index = _name_index(st) if isinstance(subj, str) else None
+            if index is not None:
+                table, default = index
+                k = table.get(subj, default)
+                return _FELL_OFF if k is None else self._run(st.cases[k].body)
             for case in st.cases:
                 if getattr(case, "guard", None) is not None:
                     self._refuse("a guarded match case")
@@ -646,6 +658,19 @@ class _OffsetEval:
         if cn == "StmtPass":
             return _FELL_OFF
         self._refuse(f"a statement of kind {cn}")
+
+    def _taken(self, st):
+        """The statements an `if` or an `else if` chain runs here."""
+        if _dt_name(st) == "StmtIf":
+            return st.body if self._truth(st.test) else st.orelse
+        table = _name_index(st, self._is_name)
+        if table is not None:
+            k = table.get(self.instance)
+            return st.orelse if k is None else st.clauses[k].body
+        for c in st.clauses:
+            if self._truth(c.test):
+                return c.body
+        return st.orelse
 
     def _matches(self, pat, subj) -> bool:
         cn = _dt_name(pat)
@@ -702,6 +727,84 @@ class _OffsetEval:
             return _affine(e, self.index_names)
         except OffsetFoldError as ex:
             raise OffsetFoldError(f"{self.where}: {ex}") from None
+
+
+_NAME_INDEX: Dict[int, object] = {}
+_NOT_INDEXED = object()
+
+
+_IFS = ("StmtIf", "StmtIfChain")
+
+
+def _name_index(st, is_name=None):
+    """``({name: case}, default_case)`` for a `match` whose choices are all
+    string literals (alone, in alternatives, or `default`), else None. For
+    an `else if` chain whose every test is the name ``==`` a string literal
+    (or an `||` of those), ``{name: clause}``; *is_name* says which
+    expression is the name.
+
+    An offset function is RUN once per instance, and a register group's is
+    a `match` over every instance name: tried case by case, a group of N
+    registers costs N*N tests, which is minutes at a few thousand. The
+    index answers each name in one lookup, and picks what the case-by-case
+    walk does -- the first choice holding the name, or `default` if that
+    comes first. Built once per `match` or chain, and dropped with it.
+    """
+    hit = _NAME_INDEX.get(id(st))
+    if hit is None:
+        hit = (_build_chain_index(st, is_name)
+               if _dt_name(st) == "StmtIfChain" else _build_name_index(st))
+        _NAME_INDEX[id(st)] = hit
+        weakref.finalize(st, _NAME_INDEX.pop, id(st), None)
+    return None if hit is _NOT_INDEXED else hit
+
+
+def _build_name_index(st):
+    table: Dict[str, int] = {}
+    default = None
+    for k, case in enumerate(st.cases):
+        if getattr(case, "guard", None) is not None:
+            return _NOT_INDEXED
+        pats = [case.pattern]
+        names = []
+        while pats:
+            pat = pats.pop()
+            cn = _dt_name(pat)
+            if cn == "PatternOr":
+                pats.extend(pat.patterns)
+            elif cn == "PatternAs" and getattr(pat, "pattern", None) is None:
+                if default is None:
+                    default = k
+            elif cn == "PatternValue" and _dt_name(pat.value) == "ExprConstant" \
+                    and isinstance(pat.value.value, str):
+                names.append(pat.value.value)
+            else:
+                return _NOT_INDEXED
+        if default is None or k < default:
+            for n in names:
+                table.setdefault(n, k)
+    return table, default
+
+
+def _build_chain_index(st, is_name):
+    table: Dict[str, int] = {}
+    for k, c in enumerate(st.clauses):
+        terms, names = [c.test], []
+        while terms:
+            e = terms.pop()
+            if _dt_name(e) == "ExprBin" and e.op.name == "Or":
+                terms += [e.lhs, e.rhs]
+                continue
+            if _dt_name(e) == "ExprBin" and e.op.name == "Eq":
+                a, b = (e.rhs, e.lhs) if is_name(e.rhs) else (e.lhs, e.rhs)
+                if is_name(a) and _dt_name(b) == "ExprConstant" \
+                        and isinstance(b.value, str):
+                    names.append(b.value)
+                    continue
+            return _NOT_INDEXED
+        for n in names:
+            table.setdefault(n, k)
+    return table
 
 
 def _strip_pkg_name(dtype) -> str:

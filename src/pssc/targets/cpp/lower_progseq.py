@@ -333,6 +333,7 @@ class _BodyEmitter(CIntSemantics):
         "ExprRefUnresolved", "ExprSubscript", "ExprUnary",
         "StmtAnnAssign", "StmtAssign", "StmtAugAssign", "StmtBreak",
         "StmtContinue", "StmtExpr", "StmtFor", "StmtForeach", "StmtIf",
+        "StmtIfChain",
         "StmtMatch", "StmtRepeatWhile", "StmtReturn", "StmtWhile",
         "StmtYield"})
 
@@ -1178,6 +1179,17 @@ class _BodyEmitter(CIntSemantics):
             lines = [f"{pad}if ({self.expr(s.test)}) {{"]
             lines += self.stmts(s.body, ind + 1)
             if getattr(s, "orelse", None):
+                lines.append(f"{pad}}} else {{")
+                lines += self.stmts(s.orelse, ind + 1)
+            lines.append(f"{pad}}}")
+            return lines
+        if cn == "StmtIfChain":
+            lines = []
+            for k, c in enumerate(s.clauses):
+                head = "if" if k == 0 else "} else if"
+                lines.append(f"{pad}{head} ({self.expr(c.test)}) {{")
+                lines += self.stmts(c.body, ind + 1)
+            if s.orelse:
                 lines.append(f"{pad}}} else {{")
                 lines += self.stmts(s.orelse, ind + 1)
             lines.append(f"{pad}}}")

@@ -3649,7 +3649,8 @@ class AstToIrTranslator:
                 if self._expr_has_name(child, name):
                     return True
         # Recurse into list child attributes
-        for attr in ('stmts', 'body', 'args', 'elts', 'ranges', 'body_exprs'):
+        for attr in ('stmts', 'body', 'orelse', 'clauses', 'args', 'elts',
+                     'ranges', 'body_exprs'):
             lst = getattr(node, attr, None)
             if isinstance(lst, list):
                 for item in lst:
@@ -4710,24 +4711,27 @@ class AstToIrTranslator:
             return ir.StmtAugAssign(target=target, op=_aug_op_map[op], value=value)
         return ir.StmtAssign(targets=[target], value=value)
 
-    def _translate_stmt_if(self, ctx: AstToIrContext, stmt: pss_ast.ProceduralStmtIfElse) -> ir.StmtIf:
-        """Translate an if / else-if / else chain into nested StmtIf nodes."""
-        def _translate_body(scope):
-            return self._translate_stmt_body(ctx, scope)
+    def _translate_stmt_if(self, ctx: AstToIrContext, stmt: pss_ast.ProceduralStmtIfElse) -> ir.Stmt:
+        """An `if` is a `StmtIf`; one with an `else if` is a `StmtIfChain`.
 
-        # Build the final else branch first
-        else_body = _translate_body(stmt.getElse_then())
-
-        # Walk if-then clauses from last to first, nesting each into the else of the previous
-        num_clauses = stmt.numIf_then()
-        result = else_body
-        for i in range(num_clauses - 1, -1, -1):
+        pssparser keeps the chain as one node with its clauses in a list, and
+        so does the IR: nested in each `else`, a generated chain of thousands
+        of links was as deep for every walker after this one."""
+        clauses = []
+        for i in range(stmt.numIf_then()):
             clause = stmt.getIf_then(i)
-            cond = self._translate_expression(ctx, clause.getCond())
-            then_body = _translate_body(clause.getBody())
-            result = [ir.StmtIf(test=cond, body=then_body, orelse=result)]
-
-        return result[0] if result else ir.StmtPass()
+            c = ir.StmtIfClause(
+                test=self._translate_expression(ctx, clause.getCond()),
+                body=self._translate_stmt_body(ctx, clause.getBody()))
+            c.loc = self._loc(clause)
+            clauses.append(c)
+        orelse = self._translate_stmt_body(ctx, stmt.getElse_then())
+        if not clauses:
+            return ir.StmtPass()
+        if len(clauses) == 1:
+            return ir.StmtIf(test=clauses[0].test, body=clauses[0].body,
+                             orelse=orelse)
+        return ir.StmtIfChain(clauses=clauses, orelse=orelse)
 
     def _translate_stmt_while(self, ctx: AstToIrContext, stmt) -> ir.StmtWhile:
         """Translate a while loop"""

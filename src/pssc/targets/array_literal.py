@@ -108,6 +108,6 @@ def _assignments(node):
             and is_literal(getattr(node, "value", None))):
         yield node
     for f in dc.fields(node):
-        if f.name in ("body", "orelse", "cases", "stmts", "handlers",
+        if f.name in ("body", "orelse", "cases", "clauses", "stmts", "handlers",
                       "finalbody"):
             yield from _assignments(getattr(node, f.name, None))

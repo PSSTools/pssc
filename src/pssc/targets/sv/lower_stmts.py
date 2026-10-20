@@ -120,6 +120,22 @@ def lower_stmt(ctx: LoweringContext, stmt: ir.Stmt) -> List[str]:
         lines.append("end")
         return lines
 
+    if isinstance(stmt, ir.StmtIfChain):
+        lines = []
+        for k, c in enumerate(stmt.clauses):
+            head = "if" if k == 0 else "end else if"
+            lines.append(f"{head} ({lower_expr(ctx, c.test)}) begin")
+            for s in c.body:
+                for l in lower_stmt(ctx, s):
+                    lines.append(f"  {l}")
+        if stmt.orelse:
+            lines.append("end else begin")
+            for s in stmt.orelse:
+                for l in lower_stmt(ctx, s):
+                    lines.append(f"  {l}")
+        lines.append("end")
+        return lines
+
     if isinstance(stmt, ir.StmtWhile):
         cond = lower_expr(ctx, stmt.test)
         lines = [f"while ({cond}) begin"]

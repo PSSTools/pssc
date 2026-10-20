@@ -158,18 +158,31 @@ class ExprTypes:
     # -- declarations ------------------------------------------------------
 
     def _collect_locals(self, node) -> None:
-        if isinstance(node, (list, tuple)):
-            for n in node:
-                self._collect_locals(n)
-            return
-        if not dc.is_dataclass(node) or isinstance(node, type):
-            return
-        if _dt_name(node) == "StmtAnnAssign":
-            tgt = getattr(node, "target", None)
-            if _dt_name(tgt) == "ExprRefLocal":
-                self.locals[tgt.name] = node.annotation
-        for f in dc.fields(node):
-            self._collect_locals(getattr(node, f.name))
+        """Every local the body declares, by name.
+
+        A local is declared by a statement, so the walk enters statements
+        and the lists that hold them, never an expression or a type: those
+        are as deep as the model (or a pass before this one) made them, and
+        a type is a link into the rest of the model. It keeps its own stack
+        for the same reason -- the depth of the IR is not the depth of the
+        interpreter's.
+        """
+        stack = [node]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, (list, tuple)):
+                stack.extend(reversed(node))
+                continue
+            if not dc.is_dataclass(node) or isinstance(node, type) \
+                    or _dt_name(node).startswith(("Expr", "DataType",
+                                                  "TypeExpr")):
+                continue
+            if _dt_name(node) == "StmtAnnAssign":
+                tgt = getattr(node, "target", None)
+                if _dt_name(tgt) == "ExprRefLocal":
+                    self.locals[tgt.name] = node.annotation
+            stack.extend(reversed([getattr(node, f.name)
+                                   for f in dc.fields(node)]))
 
     def resolve(self, dtype):
         ref = getattr(dtype, "ref_name", None)

@@ -502,26 +502,36 @@ def _sub_nodes(node) -> List[Any]:
 
 
 def _walk_exprs(node, fn, seen=None):
-    """Apply ``fn(parent, attr, expr)`` to every expression under ``node``."""
+    """Apply ``fn(parent, attr, expr)`` to every expression under ``node``.
+
+    Pre-order, each expression offered to ``fn`` before anything under it.
+    The walk keeps its own stack: an `else if` chain or a long `||` is as
+    deep as the model made it, which is not a depth Python's stack has.
+    """
     if seen is None:
         seen = set()
-    if not dc.is_dataclass(node) or id(node) in seen:
-        return
-    seen.add(id(node))
-    for f in dc.fields(node):
-        v = getattr(node, f.name, None)
-        if isinstance(v, ir.Expr):
-            fn(node, f.name, v)
-            _walk_exprs(v, fn, seen)
-        elif isinstance(v, list):
-            for i, x in enumerate(v):
-                if isinstance(x, ir.Expr):
-                    fn(v, i, x)
-                    _walk_exprs(x, fn, seen)
-                elif dc.is_dataclass(x):
-                    _walk_exprs(x, fn, seen)
-        elif dc.is_dataclass(v):
-            _walk_exprs(v, fn, seen)
+    work = [(None, None, None, node)]
+    while work:
+        parent, attr, e, v = work.pop()
+        if e is not None:
+            fn(parent, attr, e)
+            continue
+        if not dc.is_dataclass(v) or isinstance(v, type) or id(v) in seen:
+            continue
+        seen.add(id(v))
+        todo = []
+        for f in dc.fields(v):
+            x = getattr(v, f.name, None)
+            if isinstance(x, ir.Expr):
+                todo += [(v, f.name, x, None), (None, None, None, x)]
+            elif isinstance(x, list):
+                for i, y in enumerate(x):
+                    if isinstance(y, ir.Expr):
+                        todo.append((x, i, y, None))
+                    todo.append((None, None, None, y))
+            elif dc.is_dataclass(x):
+                todo.append((None, None, None, x))
+        work.extend(reversed(todo))
 
 
 def _reduce_body(comp, body: List[ir.Stmt], ctx, via=None) -> None:

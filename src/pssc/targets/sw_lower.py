@@ -237,6 +237,15 @@ def _lower_body(stmts, prefix, slot_map, bindings):
                 for k in indices:
                     out += _lower_body(stmt.body, prefix, slot_map, {**bindings, idx_var: k})
                 continue
+        if isinstance(stmt, ir.StmtIfChain):
+            clauses = [_dc.replace(
+                c, test=_rebind_fields(c.test, prefix, slot_map, bindings),
+                body=_lower_body(c.body, prefix, slot_map, bindings))
+                for c in stmt.clauses]
+            out.append(_dc.replace(
+                stmt, clauses=clauses,
+                orelse=_lower_body(stmt.orelse, prefix, slot_map, bindings)))
+            continue
         if isinstance(stmt, (ir.StmtIf, ir.StmtWhile)):
             ch = {}
             for attr in ("body", "orelse"):

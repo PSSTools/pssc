@@ -1739,6 +1739,39 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
             lines += self.block(s.orelse, ind + 1)
         return lines
 
+    def stmt_if_chain(self, s, ind: int) -> List[str]:
+        """`if` / `elif` / `else`.
+
+        A later clause's test runs only when every earlier one was false, so
+        a read it hoists cannot go in front of the chain with the first
+        test's: that clause becomes `else:` holding the read, and the rest of
+        the chain goes on inside it, one level deeper."""
+        first = s.clauses[0]
+        pad = self.pad(ind)
+        lines = [f"{pad}if {self.expr(first.test)}:"]
+        lines += self.block(first.body, ind + 1)
+        for c in s.clauses[1:]:
+            outer, self._pending = self._pending, []
+            saved_ind, self._ind = self._ind, ind + 1
+            try:
+                test = self.expr(c.test)
+                hoisted = self._pending
+            finally:
+                self._pending, self._ind = outer, saved_ind
+            if hoisted:
+                lines.append(f"{pad}else:")
+                ind += 1
+                pad = self.pad(ind)
+                lines += hoisted
+                lines.append(f"{pad}if {test}:")
+            else:
+                lines.append(f"{pad}elif {test}:")
+            lines += self.block(c.body, ind + 1)
+        if s.orelse:
+            lines.append(f"{pad}else:")
+            lines += self.block(s.orelse, ind + 1)
+        return lines
+
     def stmt_while(self, s, ind: int) -> List[str]:
         """`while (c) { ... }`.
 

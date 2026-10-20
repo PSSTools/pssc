@@ -376,7 +376,7 @@ def _rewrite_import_calls(core, solve_names, target_names) -> None:
         for attr in ("expr", "value", "condition", "test"):
             if hasattr(s, attr) and getattr(s, attr) is not None:
                 setattr(s, attr, rw_expr(getattr(s, attr)))
-        for attr in ("body", "orelse"):
+        for attr in ("body", "orelse", "clauses"):
             if hasattr(s, attr) and isinstance(getattr(s, attr), list):
                 for x in getattr(s, attr):
                     rw_stmt(x)

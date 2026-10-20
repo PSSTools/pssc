@@ -55,6 +55,8 @@ ROWS = {
     "StmtFor": RENDERED,            # `repeat (n)`, `repeat (i : n)`
     "StmtForeach": RENDERED,
     "StmtIf": RENDERED,
+    "StmtIfChain": RENDERED,        # `if ... else if ...`
+    "StmtIfClause": PART,
     "StmtMatch": RENDERED,
     "StmtMatchCase": PART,
     "StmtRepeatWhile": RENDERED,

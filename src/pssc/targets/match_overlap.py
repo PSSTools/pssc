@@ -12,7 +12,9 @@ the subject is in two of them at once:
     match (s) { ... }
 
 A `match` whose arms are constant and disjoint, which is nearly every one,
-is left exactly as it was. The subject is read once per test, so a subject
+is left exactly as it was: distinct integer intervals, and distinct string
+literals (a register group's offset function is a `match` over its
+instance names). The subject is read once per test, so a subject
 containing a call is first read into a local.
 
 Like `array_methods`, this rewrites the IR in place, before the call gate,
@@ -26,7 +28,7 @@ import zuspec.ir.core as ir
 
 from ..diag import Refusal
 from .array_methods import _nodes
-from .body_walker import match_arm_test, match_values
+from .body_walker import any_of, match_arm_test, match_values
 from .expr_types import ExprTypes
 from .progseq_model import _dt_name
 
@@ -79,38 +81,76 @@ def _guard_nested(st, types, counter) -> None:
             _guard_nested(v, types, counter)
 
 
-def _interval(v):
-    """``(lo, hi)`` of a constant value or range, else None (known only at
-    run time)."""
+def _key(v):
+    """What a choice value is known to hold: ``("int", lo, hi)`` for a
+    constant integer or range, ``("str", s)`` for a string literal, else
+    None (known only at run time)."""
     if _dt_name(v) == "ExprRange":
         lo, hi = v.lower, v.upper if v.upper is not None else v.lower
     else:
         lo = hi = v
     if _dt_name(lo) != "ExprConstant" or _dt_name(hi) != "ExprConstant":
         return None
+    if lo is hi and isinstance(lo.value, str):
+        return ("str", lo.value)
     if not all(isinstance(x.value, int) and not isinstance(x.value, bool)
                for x in (lo, hi)):
         return None
-    return (lo.value, hi.value)
+    return ("int", lo.value, hi.value)
 
 
-def _may_overlap(a, b) -> bool:
-    for x in a:
-        for y in b:
-            ix, iy = _interval(x), _interval(y)
-            if ix is None or iy is None:
-                return True
-            if ix[0] <= iy[1] and iy[0] <= ix[1]:
-                return True
-    return False
+def overlapping_pairs(arms) -> list:
+    """The pairs ``(i, j)``, ``i < j``, of arms that may both hold one value,
+    in order.
+
+    Two string literals hold one value only when they are the same string;
+    two integer intervals, when they intersect. A value known only at run
+    time may meet anything, so its arm pairs with every other. The constant
+    pairs are found by sorting, not by trying every pair: a register bank's
+    offset function is a `match` over hundreds of distinct names, and the
+    cost here must follow the overlaps there are, not the square of the
+    choices.
+    """
+    pairs = set()
+    unknown = set()
+    strs = {}
+    ivs = []
+    for i, vs in enumerate(arms):
+        for v in vs:
+            k = _key(v)
+            if k is None:
+                unknown.add(i)
+            elif k[0] == "str":
+                strs.setdefault(k[1], set()).add(i)
+            else:
+                ivs.append((k[1], k[2], i))
+
+    def add(i, j):
+        if i != j:
+            pairs.add((min(i, j), max(i, j)))
+
+    for i in unknown:
+        for j in range(len(arms)):
+            add(i, j)
+    for owners in strs.values():
+        for i, j in itertools.combinations(sorted(owners), 2):
+            add(i, j)
+    # Sweep the intervals by lower bound, keeping those still open.
+    ivs.sort()
+    active = []
+    for lo, hi, i in ivs:
+        active = [a for a in active if a[0] >= lo]
+        for _, j in active:
+            add(i, j)
+        active.append((hi, i))
+    return sorted(pairs)
 
 
 def _guard(st, types, counter):
     """The statements to put before ``st``: none when its arms cannot
     overlap."""
     arms = [vs for vs in (match_values(c.pattern) for c in st.cases) if vs]
-    pairs = [(a, b) for a, b in itertools.combinations(arms, 2)
-             if _may_overlap(a, b)]
+    pairs = [(arms[i], arms[j]) for i, j in overlapping_pairs(arms)]
     if not pairs:
         return []
     pre = []
@@ -130,12 +170,10 @@ def _guard(st, types, counter):
                                     annotation=dt, value=subject))
         subject = ir.ExprRefLocal(name=name)
         st.subject = subject
-    cond = None
-    for a, b in pairs:
-        both = ir.ExprBin(lhs=match_arm_test(subject, a), op=ir.BinOp.And,
-                          rhs=match_arm_test(subject, b))
-        cond = both if cond is None else ir.ExprBin(lhs=cond, op=ir.BinOp.Or,
-                                                    rhs=both)
+    cond = any_of([ir.ExprBin(lhs=match_arm_test(subject, a),
+                               op=ir.BinOp.And,
+                               rhs=match_arm_test(subject, b))
+                    for a, b in pairs])
     err = ir.StmtExpr(expr=ir.ExprCall(
         func=ir.ExprAttribute(value=ir.TypeExprRefSelf(), attr="error"),
         args=[ir.ExprConstant(value=MESSAGE)], keywords=[]))

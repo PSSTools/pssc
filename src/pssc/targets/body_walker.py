@@ -239,10 +239,20 @@ def in_as_compare(e, types, where: str = "?"):
                                      slice=ir.ExprConstant(value=i))))
     if not terms:
         return ir.ExprConstant(value=False)
-    out = terms[0]
-    for t in terms[1:]:
-        out = ir.ExprBin(lhs=out, op=ir.BinOp.Or, rhs=t)
-    return out
+    return any_of(terms)
+
+
+def any_of(terms):
+    """``terms`` joined by ``||`` as a balanced tree. A chain is one level
+    deeper per term, and every recursive walker after this one (typing,
+    rendering, folding) then runs out of stack on a `match` arm or an `in`
+    list of a few hundred values; balanced, a million terms are 20 deep."""
+    import zuspec.ir.core as ir
+    if len(terms) == 1:
+        return terms[0]
+    mid = (len(terms) + 1) // 2
+    return ir.ExprBin(lhs=any_of(terms[:mid]), op=ir.BinOp.Or,
+                      rhs=any_of(terms[mid:]))
 
 
 _LOOPS = ("StmtWhile", "StmtFor", "StmtForeach", "StmtRepeatWhile")
@@ -299,10 +309,7 @@ def match_arm_test(subject, values):
         else:
             v = v.lower if _dt_name(v) == "ExprRange" else v
             terms.append(ir.ExprBin(lhs=subject, op=ir.BinOp.Eq, rhs=v))
-    out = terms[0]
-    for t in terms[1:]:
-        out = ir.ExprBin(lhs=out, op=ir.BinOp.Or, rhs=t)
-    return out
+    return any_of(terms)
 
 
 def match_values(pattern) -> List[object]:

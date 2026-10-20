@@ -116,7 +116,7 @@ def _visit_stmt(s, visit):
     signature never mentions."""
     if _dt_name(s) == "StmtAnnAssign":
         visit(s.annotation)
-    for attr in ("body", "orelse"):
+    for attr in ("body", "orelse", "clauses"):
         for inner in (getattr(s, attr, None) or []):
             _visit_stmt(inner, visit)
     for case in (getattr(s, "cases", None) or []):

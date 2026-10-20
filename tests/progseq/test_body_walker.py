@@ -167,7 +167,8 @@ def test_the_scans_are_measured_on_every_operation(c_emitters):
 #: not shrink.
 _C_STMT_KINDS = {
     "StmtAnnAssign", "StmtAssign", "StmtAugAssign", "StmtExpr", "StmtReturn",
-    "StmtIf", "StmtRepeatWhile", "StmtWhile", "StmtBreak", "StmtContinue",
+    "StmtIf", "StmtIfChain", "StmtRepeatWhile", "StmtWhile", "StmtBreak",
+    "StmtContinue",
     "StmtFor", "StmtForeach", "StmtMatch", "StmtYield",
 }
 

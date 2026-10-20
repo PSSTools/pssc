@@ -129,6 +129,12 @@ after it** — `StmtForeach` → `stmt_foreach`, `ExprRefBottomUp` →
 `expr_ref_bottom_up` — so there is no cascade to read past and no table to keep
 in step with the IR. A missing hook names itself in the error.
 
+An `if` with an `else if` is ONE `ir.StmtIfChain` (clauses in a list, then
+`orelse`), never an `ir.StmtIf` nested in each `else`: a generated chain of
+thousands of links was that deep for every recursive walker. Render it flat
+(`else if`/`elif`); a call hoisted out of a LATER clause's test goes under
+that clause's `else`, never in front of the chain (`docs/design/if-chain-plan.md`).
+
 Comment attachment happens in `BodyWalker.stmt` alone, so every nesting level
 of every ported language carries its PSS prose. A statement that lowers to no
 lines takes its comment with it.

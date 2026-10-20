@@ -37,6 +37,7 @@ __all__ = ["AGGREGATES", "AGGREGATE_PLACES", "PARTS", "emitter_kinds",
 #: Kinds their parent renders: ``{kind: the parent that reads it}``.
 PARTS = {
     "StmtMatchCase": "a `match` statement",
+    "StmtIfClause": "an `else if` chain",
     "ExprRange": "an `in`, a `match` choice or a slice",
     "ExprRangeList": "an `in` or a `match` choice",
     "ExprSlice": "a subscript (a part select or a slice)",
@@ -116,7 +117,7 @@ def _place_of(parent, field: str, place: str) -> str:
         return "in" if field == "container" else "expr"
     if cn == "ExprSubscript":
         return "index" if field == "slice" else "expr"
-    if cn in ("StmtIf", "StmtWhile", "StmtRepeatWhile"):
+    if cn in ("StmtIf", "StmtIfClause", "StmtWhile", "StmtRepeatWhile"):
         return "test" if field in ("test", "condition") else "stmt"
     if cn == "StmtMatch":
         return "subject" if field == "subject" else "stmt"

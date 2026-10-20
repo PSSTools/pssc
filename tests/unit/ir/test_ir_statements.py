@@ -25,8 +25,8 @@ ROWS = {
     if (n > 0) x = 1;
     if (n > 0) { x = 1; } else if (n < 0) { x = 2; } else { x = 3; }""", [
         "If(Bin(self.n, Gt, 0), [Assign([x], 1)])",
-        "If(Bin(self.n, Gt, 0), [Assign([x], 1)], [If(Bin(self.n, Lt, 0), "
-        "[Assign([x], 2)], [Assign([x], 3)])])"]),
+        "IfChain([IfClause(Bin(self.n, Gt, 0), [Assign([x], 1)]), "
+        "IfClause(Bin(self.n, Lt, 0), [Assign([x], 2)])], [Assign([x], 3)])"]),
 
     # repeat (n) and repeat (i : n) are one node; the index is its target.
     "repeat, counted and indexed": ("int x;", """

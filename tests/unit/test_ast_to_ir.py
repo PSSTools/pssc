@@ -337,7 +337,50 @@ class TestAstToIr(unittest.TestCase):
         self.assertIsNotNone(if_stmt.test)  # condition
         self.assertGreater(len(if_stmt.body), 0)  # then branch
         self.assertGreater(len(if_stmt.orelse), 0)  # else branch
-    
+
+    def test_else_if_chain_is_one_flat_node(self):
+        """`if`/`else if`/`else` is one StmtIfChain, its clauses in order;
+        `else { if ... }` written with braces is a body, not a link."""
+        ctx = self.parse_and_translate("""
+            component C {
+                function int f(int a) {
+                    if (a == 0) { return 1; }
+                    else if (a == 1) { return 2; }
+                    else if (a == 2) { return 3; }
+                    else { if (a == 3) { return 4; } }
+                    return 0;
+                }
+            }
+        """)
+        self.assertEqual(len(ctx.errors), 0)
+        chain = ctx.type_map["C"].functions[0].body[0]
+        self.assertIsInstance(chain, ir.StmtIfChain)
+        self.assertEqual([c.test.rhs.value for c in chain.clauses], [0, 1, 2])
+        self.assertEqual(len(chain.orelse), 1)
+        self.assertIsInstance(chain.orelse[0], ir.StmtIf)
+        self.assertEqual(chain.orelse[0].orelse, [])
+
+    def test_an_else_belongs_to_the_nearest_if(self):
+        """`if (a) if (b) x; else if (c) y; else z;`: the chain is the inner
+        `if`'s, and the outer has no `else`."""
+        ctx = self.parse_and_translate("""
+            component C {
+                function int f(int a, int b) {
+                    int r = 0;
+                    if (a == 1) if (b == 1) r = 1; else if (b == 2) r = 3; else r = 2;
+                    return r;
+                }
+            }
+        """)
+        self.assertEqual(len(ctx.errors), 0)
+        outer = ctx.type_map["C"].functions[0].body[1]
+        self.assertIsInstance(outer, ir.StmtIf)
+        self.assertEqual(outer.orelse, [])
+        (inner,) = outer.body
+        self.assertIsInstance(inner, ir.StmtIfChain)
+        self.assertEqual(len(inner.clauses), 2)
+        self.assertEqual(len(inner.orelse), 1)
+
     def test_for_loop(self):
         """Test repeat statement (PSS equivalent of for loop)"""
         ctx = self.parse_and_translate("""
