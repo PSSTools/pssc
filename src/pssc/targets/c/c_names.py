@@ -52,12 +52,14 @@ def declared_names(backend, model, s) -> List[Tuple[str, str]]:
     from ..reg_layout import reg_maps_for
     from .lower_api_types import c_member_type
     from ..progseq_model import sub_components
-    from .lower_progseq import (CEnums, _ctor, _operations, _solve_operations,
-                                 mangle, regular_nodes)
+    from .lower_progseq import (CEnums, DEFAULT_API, OpCtx, _ctor,
+                                 _operations, _solve_operations, mangle,
+                                 regular_nodes)
     from .lower_reg_model import accessor_kinds, c_struct_name, map_type_name
 
     style, prefixes = backend.style, backend.prefixes
     mem = style.mem_access()
+    api = backend if hasattr(backend, "signature") else DEFAULT_API
     out: List[Tuple[str, str]] = []
 
     # -- types --------------------------------------------------------------
@@ -98,11 +100,16 @@ def declared_names(backend, model, s) -> List[Tuple[str, str]]:
             out.append((style.symbol(p, "create"), f"the factory of '{who}'"))
             out.append((style.symbol(p, "destroy"),
                         f"the destructor of '{who}'"))
+        # Named as the backend's `signature` names them, which a plugin may
+        # change: the name the clash check sees is the one emitted.
+        ctx = OpCtx(comp=comp, prefix=p, qual="", emitter_cls=None,
+                    be_kw={"style": style}, type_name=prefixes.type_name(comp),
+                    api=api)
         for fn in _operations(comp, model.ctor_names):
-            out.append((style.symbol(p, mangle(fn.name)),
+            out.append((api.signature(fn, ctx)[1],
                         f"operation '{who}.{fn.name}'"))
         for fn in _solve_operations(comp, model.ctor_names):
-            out.append((style.symbol(p, mangle(fn.name)),
+            out.append((api.signature(fn, ctx)[1],
                         f"solve function '{who}.{fn.name}'"))
         for sub in sub_components(comp):
             out.append((style.symbol(p, mangle(sub.name)),

@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from ..overridable import overridable, overridable_attr
 from ..sections import Section
@@ -140,15 +140,16 @@ class COpModelBackend:
                                      if id(x) in api]
         self.impl_value_structs = [x for x in self.value_structs
                                    if id(x) not in api]
+        # C's widest integer is 64 bits; a wider one would be truncated with
+        # no diagnostic, so it is refused before anything is rendered --
+        # `c_names` included, which types every operation's `signature`.
+        from ..int_width import refuse_too_wide
+        refuse_too_wide(model, 64, "C")
         # Before any section is rendered, so that two rules producing one C
         # name is the model's error with both sources named, not a
         # conflicting-declaration error in the header (`c_names`).
         from . import c_names
         c_names.check(self, model, s)
-        # C's widest integer is 64 bits; a wider one would be truncated with
-        # no diagnostic, so it is refused before anything is rendered.
-        from ..int_width import refuse_too_wide
-        refuse_too_wide(model, 64, "C")
         _log.info("c-progseq: prefixes: %s",
                   ", ".join(f"{getattr(c, 'name', '?')}->{self.prefixes[c]}"
                             for c in self.comps))
@@ -432,7 +433,7 @@ class COpModelBackend:
                                        link_style=s.link_style,
                                        static_inline=s.header_only,
                                        lifecycle=s.lifecycle,
-                                       style=self.style))
+                                       style=self.style, api=self))
 
     @overridable(since='0.1', stability='provisional')
     def emit_impl_inline(self, model, s: CSettings) -> List[str]:
@@ -456,6 +457,56 @@ class COpModelBackend:
         from .lower_progseq import lower_operation
         return lower_operation(fn, ctx)
 
+    # -- an operation's C API ------------------------------------------------
+    #
+    # Asked wherever an operation is declared, defined, called or named
+    # (`c_names`), through `OpCtx.api`: one answer per operation, so the
+    # prototype, the definition, a sibling's call and the clash check cannot
+    # disagree.
+
+    @overridable(since='0.3', stability='provisional')
+    def handle_param(self, fn, ctx) -> Optional[str]:
+        """The name of ``fn``'s component-handle parameter, or None for none.
+
+        The default is `c_names.HANDLE` (`_self`), first in every operation.
+        None leaves it out of the signature, out of the `(void)` that marks it
+        unused, and out of every call to ``fn``. A body that still reaches the
+        component's state (a field, a channel, a register through the handle,
+        a sub-component) is then refused with its location: C with an
+        undeclared `_self` is never generated. ``ctx`` is the operation's
+        `OpCtx`.
+        """
+        from .lower_progseq import DEFAULT_API
+        return DEFAULT_API.handle_param(fn, ctx)
+
+    @overridable(since='0.3', stability='provisional')
+    def signature(self, fn, ctx):
+        """``fn``'s C signature: ``(return type, name, [(type, parameter)])``.
+
+        Used for the prototype, the definition, a solve function's
+        declaration and `c_names`. A pointer type ends in `*`; an empty
+        parameter list prints `(void)`. The default puts the handle
+        (`handle_param`) first, then the PSS parameters, by-handle structs
+        as pointers. A signature whose parameters differ from the PSS ones
+        must be matched at its call sites: override `CBodyEmitter`'s
+        `model_call` with it.
+        """
+        from .lower_progseq import op_signature_parts
+        return op_signature_parts(fn, ctx, self.handle_param(fn, ctx))
+
+    @overridable(since='0.3', stability='provisional')
+    def linkage(self, fn, ctx) -> str:
+        """``"extern"`` (the default) or ``"static"`` for operation ``fn``.
+
+        A `static` operation is not declared in the header: the `.c`
+        declares it ahead of every definition, `static inline` so that one
+        nothing calls does not fail `-Werror=unused-function`. Under
+        `--header-only` every operation is already `static inline` and this
+        is not asked.
+        """
+        from .lower_progseq import DEFAULT_API
+        return DEFAULT_API.linkage(fn, ctx)
+
     @overridable(since='0.1', stability='provisional')
     def emit_impl(self, model, s: CSettings) -> str:
         """Lifecycle + operation bodies. Text, wherever it ends up."""
@@ -473,7 +524,8 @@ class COpModelBackend:
                           imports=self.imports,
                           style=self.style,
                           accs=self.accs,
-                          emitter_cls=self.emitter_cls)
+                          emitter_cls=self.emitter_cls,
+                          api=self)
 
     @staticmethod
     def _block(text: str) -> List[str]:

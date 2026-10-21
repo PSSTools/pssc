@@ -24,7 +24,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses as dc
 import re
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Set
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 import zuspec.ir.core as ir
 
@@ -963,6 +963,82 @@ def _op_signature(fn, prefix: str, type_name: str, qual: str = "",
             f"({style.type_name(type_name)} *{HANDLE}{_op_params(fn)})")
 
 
+#: One C signature: ``(return type, function name, [(type, parameter)])``.
+#: A pointer type ends in `*` (`"wb_dma_c *"`) and is joined to its name
+#: with no space, as the generated code has always spelled one.
+Signature = Tuple[str, str, List[Tuple[str, str]]]
+
+
+def op_signature_parts(fn, ctx: "OpCtx",
+                       handle: Optional[str] = HANDLE) -> Signature:
+    """`fn`'s C signature, in parts: the default `COpModelBackend.signature`.
+
+    ``handle`` is the component handle's parameter name, first; `None`
+    leaves it out (`COpModelBackend.handle_param`).
+    """
+    style = _style(ctx.be_kw.get("style"))
+    ret = c_type(fn.returns) if fn.returns is not None else "void"
+    params: List[Tuple[str, str]] = []
+    if handle is not None:
+        params.append((f"{style.type_name(ctx.type_name)} *", handle))
+    by_handle = by_handle_params(fn)
+    for a in fn.args.args:
+        ct = c_type(a.annotation)
+        params.append((f"{ct} *" if a.arg in by_handle else ct,
+                       mangle(a.arg)))
+    return ret, style.symbol(ctx.prefix, mangle(fn.name)), params
+
+
+def render_signature(sig: Signature, qual: str = "") -> str:
+    """``<qual><ret> <name>(<params>)``; no parameters is `(void)`."""
+    ret, name, params = sig
+    plist = ", ".join(f"{ct}{'' if ct.endswith('*') else ' '}{pn}"
+                      for ct, pn in params)
+    return f"{qual}{ret} {name}({plist or 'void'})"
+
+
+#: What `linkage` may answer.
+LINKAGES = ("extern", "static")
+
+
+class DefaultOpApi:
+    """The three questions an operation's C API is built from, answered as
+    the target always has: every operation takes the handle, is named
+    `<prefix>_<name>`, and has external linkage.
+
+    `COpModelBackend` answers them through its `signature`, `handle_param`
+    and `linkage` members, which default to these; the lowering only ever
+    asks an `OpCtx.api`, so a backend subclass reaches every place an
+    operation is declared, defined, called or named (`c_names`) at once.
+    """
+
+    def handle_param(self, fn, ctx: "OpCtx") -> Optional[str]:
+        return HANDLE
+
+    def signature(self, fn, ctx: "OpCtx") -> Signature:
+        return op_signature_parts(fn, ctx, self.handle_param(fn, ctx))
+
+    def linkage(self, fn, ctx: "OpCtx") -> str:
+        return "extern"
+
+
+DEFAULT_API = DefaultOpApi()
+
+
+def _linkage(fn, ctx: "OpCtx") -> str:
+    out = ctx.op_api.linkage(fn, ctx)
+    if out not in LINKAGES:
+        raise ValueError(f"linkage() for '{fn.name}' returned {out!r}; "
+                         f"expected one of {', '.join(LINKAGES)}")
+    return out
+
+
+#: The qualifier of a `static` operation. `inline` as well, as a solve
+#: function's is: an operation nothing in its own file calls would otherwise
+#: fail `-Werror=unused-function` (W45).
+STATIC_QUAL = "static inline "
+
+
 # --- the import surface (C4.1) ---------------------------------------------
 
 def import_map(ctx) -> Dict[str, object]:
@@ -1443,8 +1519,13 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         self.match_default = match_default
         self.message_style = message_style
         #: Name of the handle parameter in the emitted signature: `HANDLE`,
-        #: for an operation and `_init` alike.
+        #: for an operation and `_init` alike. `None` when the operation
+        #: has none (`COpModelBackend.handle_param`); reading `h` is then a
+        #: refusal, since only component state is reached through it.
         self.h = handle
+        #: The `OpCtx` this body is rendered in, set by `OpCtx.body_emitter`;
+        #: None for a body rendered outside one (a constructor).
+        self.op_ctx = None
         self.prefixes = prefixes
         self.link_style = link_style
         #: Declared package-scope imports, by PSS name. A call to one lowers to
@@ -1485,6 +1566,29 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
                 nm = s.annotation.name.split("::")[-1]
                 if nm != "addr_handle_t":
                     self.struct_locals[s.target.name] = c_type(s.annotation)
+
+    @property
+    def h(self) -> str:
+        if self._h is None:
+            raise Refusal(
+                f"'{getattr(self.fn, 'name', '?')}' is generated with no "
+                f"component handle (handle_param), but this reaches the "
+                f"component's state, which only the handle can")
+        return self._h
+
+    @h.setter
+    def h(self, value: Optional[str]) -> None:
+        self._h = value
+
+    def callee_handle(self, callee, comp, prefix: str) -> bool:
+        """Whether a call to ``callee`` (an operation of ``comp``) passes a
+        handle: whether its own `handle_param` names one."""
+        ctx = self.op_ctx
+        if ctx is None or callee is None:
+            return True
+        if comp is not ctx.comp:
+            ctx = ctx.for_comp(comp, prefix, self.prefixes.type_name(comp))
+        return ctx.op_api.handle_param(callee, ctx) is not None
 
     # channels ---------------------------------------------------------------
 
@@ -1746,6 +1850,13 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         """Follow the sub-component hops at the front of *chain*:
         ``(handle, prefix, component, rest)``, the handle being
         `&s->sub[i].inner` for the component the rest of the path is in."""
+        path, prefix, comp, rest = self._sub_walk(chain)
+        return ((f"&{self.h}->{path}" if path else self.h), prefix, comp,
+                rest)
+
+    def _sub_walk(self, chain):
+        """`_through_subs` with the member path in place of the handle
+        (`sub[i].inner`, or None for none): the hops, without reading it."""
         comp, prefix, path, k = self.comp, self.prefix, None, 0
         subs = self.subs
         while k < len(chain) and chain[k][0] in subs:
@@ -1755,12 +1866,12 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             m = mangle(sub.name)
             if chain[k][1] is not None:
                 m += f"[{self.expr(chain[k][1])}]"
-            path = f"{self.h}->{m}" if path is None else f"{path}.{m}"
+            path = m if path is None else f"{path}.{m}"
             comp = sub.dtype
             prefix = self.prefixes[comp]
             subs = {s.name: s for s in sub_components(comp)}
             k += 1
-        return (f"&{path}" if path else self.h), prefix, comp, chain[k:]
+        return path, prefix, comp, chain[k:]
 
     def _reg_access(self, base: str, method: str, idx_args: str,
                     args, handle: Optional[str] = None) -> str:
@@ -2220,21 +2331,25 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         if name is not None and name in self.model_ops:
             args = (self._c_args(call.args, own[name]) if name in own
                     else [self.expr(a) for a in call.args])
+            h = ([self.h] if self.callee_handle(own.get(name), self.comp,
+                                                self.prefix) else [])
             return f"{self.style.symbol(self.prefix, mangle(name))}(" + \
-                   ", ".join([self.h] + args) + ")"
+                   ", ".join(h + args) + ")"
         # `s.poke()` / `ch[i].status()`: an operation of a sub-component, on
         # that sub-component's handle. Its function is already emitted with
         # the sub-component's API.
         chain = (self._chain(func.value)
                  if _dt_name(func) == "ExprAttribute" else None)
         if chain and chain[0][0] in self.subs:
-            handle, prefix, comp, rest = self._through_subs(chain)
+            path, prefix, comp, rest = self._sub_walk(chain)
             callee = next((f for f in getattr(comp, "functions", []) or []
                            if f.name == func.attr), None)
             if not rest and callee is not None:
+                h = ([f"&{self.h}->{path}"]
+                     if self.callee_handle(callee, comp, prefix) else [])
                 args = self._c_args(call.args, callee)
                 return f"{self.style.symbol(prefix, mangle(func.attr))}(" + \
-                       ", ".join([handle] + args) + ")"
+                       ", ".join(h + args) + ")"
         # An `import target/solve function`: a bare call, and NO handle -- an
         # import is a platform function, not a method of this component, so
         # passing `s` would invent a parameter its declaration does not have.
@@ -2878,7 +2993,7 @@ def func_kind_name(name: str, ctor_names=None):
 
 def _sig_all(node, prefixes, link_style: str, qual: str, is_root: bool,
              lifecycle: str = "malloc", style=None,
-             ctor_names=None) -> List[str]:
+             ctor_names=None, api=None) -> List[str]:
     """Every file-scope prototype for one component.
 
     `_create`/`_destroy` are ROOT-ONLY. A sub-component lives inside its
@@ -2903,20 +3018,25 @@ def _sig_all(node, prefixes, link_style: str, qual: str, is_root: bool,
         out.append(
             f"{qual}{prefix_t} *{sym(prefix, 'create')}({cp or 'void'});")
         out.append(f"{qual}void {sym(prefix, 'destroy')}({prefix_t} *{HANDLE});")
+    ctx = OpCtx(comp=comp, prefix=prefix, qual=qual, emitter_cls=None,
+                be_kw={"style": style}, type_name=prefixes.type_name(comp),
+                api=api)
     for fn in _operations(comp, ctor_names):
+        # A `static` operation is not on the API; `lower_impl` declares it.
+        if not qual and _linkage(fn, ctx) == "static":
+            continue
         # On the prototype, which is the API surface a caller reads. Repeated
         # on the definition below, which is what someone debugging reads --
         # the same deliberate duplication the SV target makes.
         blank_line(out)
         out += doc_block(getattr(fn, "doc", None), "", BLOCK)
-        sig = _op_signature(fn, prefix, prefixes.type_name(comp), qual, style)
-        out.append(f"{sig};")
+        out.append(f"{render_signature(ctx.op_api.signature(fn, ctx), qual)};")
     return out
 
 
 def lower_decls(model, prefixes, *, link_style: str = "vtable",
                 static_inline: bool = False,
-                lifecycle: str = "malloc", style=None) -> str:
+                lifecycle: str = "malloc", style=None, api=None) -> str:
     """Prototypes for the whole tree.
 
     Emitted in ALL modes, including ``--header-only``. They used to be skipped
@@ -2932,7 +3052,7 @@ def lower_decls(model, prefixes, *, link_style: str = "vtable",
         lines += _sig_all(node, prefixes, link_style, qual,
                           is_root=model.is_root(node.dtype),
                           lifecycle=lifecycle, style=style,
-                          ctor_names=model.ctor_names)
+                          ctor_names=model.ctor_names, api=api)
         lines.append("")
     return "\n".join(lines).rstrip()
 
@@ -3085,10 +3205,25 @@ class OpCtx:
     #: The component's type name, before the style respells it
     #: (`Prefixes.type_name`).
     type_name: str = ""
+    #: What answers `signature`/`handle_param`/`linkage`: the backend, or
+    #: `None` for `DefaultOpApi`'s answers. Read it as `op_api`.
+    api: Any = None
+
+    @property
+    def op_api(self):
+        return self.api if self.api is not None else DEFAULT_API
+
+    def for_comp(self, comp, prefix: str, type_name: str) -> "OpCtx":
+        """This context, for another component: a callee's, at a call."""
+        return dc.replace(self, comp=comp, prefix=prefix, type_name=type_name)
 
     def body_emitter(self, fn):
         """The emitter that renders ``fn``'s body."""
-        return self.emitter_cls(fn, self.comp, self.prefix, **self.be_kw)
+        be = self.emitter_cls(fn, self.comp, self.prefix,
+                              handle=self.op_api.handle_param(fn, self),
+                              **self.be_kw)
+        be.op_ctx = self
+        return be
 
 
 def lower_operation(fn, ctx: OpCtx) -> List[str]:
@@ -3097,10 +3232,11 @@ def lower_operation(fn, ctx: OpCtx) -> List[str]:
     Returns LINES, with no leading or trailing blank -- the caller separates.
     """
     be = ctx.body_emitter(fn)
-    style = ctx.be_kw.get("style")
+    api = ctx.op_api
+    qual = ctx.qual or (STATIC_QUAL if _linkage(fn, ctx) == "static" else "")
+    handle = api.handle_param(fn, ctx)
     lines = list(doc_block(getattr(fn, "doc", None), "", BLOCK))
-    sig = _op_signature(fn, ctx.prefix, ctx.type_name, ctx.qual, style)
-    lines.append(f"{sig} {{")
+    lines.append(f"{render_signature(api.signature(fn, ctx), qual)} {{")
     body = be.stmts(fn.body, 1)
     # An operation that touches neither a register nor a member never
     # names the handle, and `-Wextra -Werror` -- which any real firmware
@@ -3114,18 +3250,20 @@ def lower_operation(fn, ctx: OpCtx) -> List[str]:
     # touches it look as though it did -- reinstating the
     # -Wunused-parameter error this suppresses. A user name is never
     # `HANDLE` (`mangle`), so a whole-word match is a use of the handle.
+    # With no handle (`handle_param` is None) there is nothing to suppress:
+    # a body that needed one has been refused by the emitter.
     code = [ln for ln in body
             if not ln.lstrip().startswith(("/*", "*", "//"))]
-    used = re.compile(rf"\b{HANDLE}\b")
-    if not any(used.search(ln) for ln in code):
-        lines.append(f"    (void){HANDLE};")
+    used = re.compile(rf"\b{re.escape(handle or '')}\b")
+    if handle is not None and not any(used.search(ln) for ln in code):
+        lines.append(f"    (void){handle};")
     lines += body
     lines.append("}")
     return lines
 
 
 def _solve_impl(comp, prefix, prefixes, emitter_cls, qual, be_kw,
-                style) -> List[str]:
+                style, api=None) -> List[str]:
     """The component's solve functions (`_solve_operations`), file-local.
 
     Not on the API: PSS lets only solve context call one (22.2.3), and the
@@ -3143,8 +3281,9 @@ def _solve_impl(comp, prefix, prefixes, emitter_cls, qual, be_kw,
     helper = "static inline "
     ctx = OpCtx(comp=comp, prefix=prefix, qual=helper,
                 type_name=prefixes.type_name(comp),
-                emitter_cls=ctor_emitter_cls(emitter_cls), be_kw=be_kw)
-    lines = [f"{_op_signature(fn, prefix, ctx.type_name, helper, style)};"
+                emitter_cls=ctor_emitter_cls(emitter_cls), be_kw=be_kw,
+                api=api)
+    lines = [f"{render_signature(ctx.op_api.signature(fn, ctx), helper)};"
              for fn in fns]
     for fn in fns:
         lines.append("")
@@ -3159,12 +3298,17 @@ def lower_impl(model, prefixes, *, link_style: str = "vtable",
                message_style: str = "import",
                lifecycle: str = "malloc", imports=None, style=None,
                accs=None, emitter_cls=None, emit_operation=None,
-               reg_map: bool = False) -> str:
+               reg_map: bool = False, api=None) -> str:
     """Lifecycle + operation bodies for every component, CHILDREN FIRST.
 
     ``emit_operation(fn, ctx)`` renders one operation; it defaults to
     :func:`lower_operation` and is how the backend inserts itself into this
-    loop without owning the walk.
+    loop without owning the walk. ``api`` answers each operation's
+    signature, handle and linkage (`OpCtx.api`).
+
+    A `static` operation is declared here, ahead of every definition, as a
+    solve function is: it is not on the header, and any operation may call
+    it.
     """
     qual = "static inline " if static_inline else ""
     emitter_cls = emitter_cls or _BodyEmitter
@@ -3174,6 +3318,23 @@ def lower_impl(model, prefixes, *, link_style: str = "vtable",
                  accs=accs, reg_map=reg_map, ctx=getattr(model, "ctx", None))
     ctor_names = model.ctor_names
     lines: List[str] = ["/* ----- Component lifecycle + operations. ----- */"]
+
+    def op_ctx(comp) -> OpCtx:
+        return OpCtx(comp=comp, prefix=prefixes[comp], qual=qual,
+                     type_name=prefixes.type_name(comp),
+                     emitter_cls=emitter_cls,
+                     be_kw=dict(reg_style=reg_style, prefixes=prefixes,
+                                link_style=link_style, ctor_names=ctor_names,
+                                **be_kw), api=api)
+
+    if not qual:
+        static = [f"{render_signature(c.op_api.signature(fn, c), STATIC_QUAL)};"
+                  for node in post_order(model)
+                  for c in [op_ctx(node.dtype)]
+                  for fn in _operations(node.dtype, ctor_names)
+                  if _linkage(fn, c) == "static"]
+        if static:
+            lines += static + [""]
     for node in post_order(model):
         comp = node.dtype
         prefix = prefixes[comp]
@@ -3182,7 +3343,7 @@ def lower_impl(model, prefixes, *, link_style: str = "vtable",
                              dict(reg_style=reg_style, prefixes=prefixes,
                                   link_style=link_style,
                                   ctor_names=ctor_names, **be_kw),
-                             style)
+                             style, api)
         lines += _lifecycle_impl(node, prefixes, link_style, qual, reg_style,
                                  is_root=model.is_root(comp),
                                  lifecycle=lifecycle, ctor_names=ctor_names,
@@ -3191,12 +3352,7 @@ def lower_impl(model, prefixes, *, link_style: str = "vtable",
                                           if hasattr(model, "binding")
                                           else None), **be_kw)
         lines.append("")
-        ctx = OpCtx(comp=comp, prefix=prefix, qual=qual,
-                    type_name=prefixes.type_name(comp),
-                    emitter_cls=emitter_cls,
-                    be_kw=dict(reg_style=reg_style, prefixes=prefixes,
-                               link_style=link_style, ctor_names=ctor_names,
-                               **be_kw))
+        ctx = op_ctx(comp)
         for fn in _operations(comp, ctor_names):
             blank_line(lines)
             lines += emit_operation(fn, ctx)

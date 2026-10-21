@@ -134,6 +134,10 @@
           "emit_api_types"
         ]
       },
+      "handle_param": {
+        "since": "0.3",
+        "stability": "provisional"
+      },
       "header_sections": {
         "since": "0.1",
         "stability": "stable"
@@ -150,6 +154,10 @@
         "since": "0.1",
         "stability": "stable"
       },
+      "linkage": {
+        "since": "0.3",
+        "stability": "provisional"
+      },
       "prepare": {
         "since": "0.1",
         "stability": "provisional"
@@ -161,6 +169,10 @@
       "regs_text": {
         "since": "0.1",
         "stability": "stable"
+      },
+      "signature": {
+        "since": "0.3",
+        "stability": "provisional"
       },
       "stubs_text": {
         "since": "0.1",
