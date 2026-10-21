@@ -73,6 +73,18 @@ class StylePolicy:
         """
         return []
 
+    def is_extern_type(self, dtype) -> bool:
+        """Whether the enum or struct ``dtype`` is EXTERNAL: declared by the
+        platform, not by the generated code (ruling R-H6 (a)).
+
+        An external type keeps its PSS name and is used, never defined: the
+        generated API leaves out its definition, spells an enum's items as
+        PSS names them (`CStylePolicy.enum_item_for`), and expects a header
+        that declares it (`--include`). The default is False for every type;
+        a policy decides, typically from the type's own annotation
+        (`pssc.annotations.of`)."""
+        return False
+
     def __repr__(self) -> str:      # pragma: no cover - diagnostics only
         return f"<{type(self).__name__} {self.target}:{self.name}>"
 

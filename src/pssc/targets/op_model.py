@@ -875,7 +875,8 @@ class OpModelTarget(Target):
             model, target=self.name, settings=self.abi_settings(opts),
             files=outputs, runtime_files=self.core_file_names(model, opts),
             include_files=self.include_only_files(outputs),
-            enum_symbol=lambda e, item: self.enum_item_symbol(e, item, opts))
+            enum_symbol=lambda e, item: self.enum_item_symbol(e, item, opts),
+            extern=lambda dt: self.is_extern_type(dt, opts))
         return [_manifest.write(path, doc)]
 
     def enum_item_symbol(self, enum_dtype, item: str,
@@ -883,6 +884,12 @@ class OpModelTarget(Target):
         """How the generated code spells *item* of *enum_dtype*, for the
         manifest; None if this target does not say."""
         return None
+
+    def is_extern_type(self, dtype, opts: argparse.Namespace) -> bool:
+        """Whether the generated code leaves ``dtype`` for the platform to
+        declare (`StylePolicy.is_extern_type`), for the manifest. False
+        here; a target with a style policy asks it."""
+        return False
 
     def include_only_files(self, outputs: Sequence[Path]) -> List[str]:
         """The names of the ``outputs`` another file includes, which are

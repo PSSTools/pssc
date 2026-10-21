@@ -20,7 +20,8 @@ from __future__ import annotations
 
 from typing import Dict, List, Tuple
 
-__all__ = ["HANDLE", "BUS", "RESERVED", "declared_names", "check"]
+__all__ = ["HANDLE", "BUS", "RESERVED", "declared_names", "occupied_names",
+           "check"]
 
 #: The component handle every generated function takes, and the constructor's
 #: bus parameter. Both are only ever parameters and locals, where a leading
@@ -71,12 +72,14 @@ def declared_names(backend, model, s) -> List[Tuple[str, str]]:
         type_map=getattr(model.ctx, "type_map", None) or {})
     spell = CEnums(style)
     for e in enums:
+        if style.is_extern_type(e):
+            continue                     # `occupied_names`
         out.append((c_member_type(e), f"enum '{_qual(e)}'"))
         for item in e.items:
             out.append((spell.item(e, item),
                         f"item '{item}' of enum '{_qual(e)}'"))
     for st in structs:
-        if _short(st) != "addr_handle_t":
+        if _short(st) != "addr_handle_t" and not style.is_extern_type(st):
             out.append((c_struct_name(st), f"struct '{_qual(st)}'"))
     for st in backend.value_structs:
         out.append((c_struct_name(st), f"register value '{_qual(st)}'"))
@@ -136,13 +139,42 @@ def _lifecycle_names(model, s, style, comp, p, who) -> List[Tuple[str, str]]:
     return out
 
 
+def occupied_names(backend, model, s) -> List[Tuple[str, str]]:
+    """``(C name, what it is)`` for the file-scope names the generated code
+    USES but does not declare: an external type's name and its enum items
+    (`StylePolicy.is_extern_type`), which the platform's header declares. A
+    generated name equal to one is as much a clash as two generated ones."""
+    from ..sv.lower_api_types import collect_api_types
+    from .lower_api_types import c_member_type
+    from .lower_progseq import CEnums
+    from .lower_reg_model import c_struct_name
+
+    style = backend.style
+    enums, structs = collect_api_types(
+        backend.comps, model.value_structs, model.ctor_names,
+        type_map=getattr(model.ctx, "type_map", None) or {})
+    spell = CEnums(style)
+    out: List[Tuple[str, str]] = []
+    for e in enums:
+        if style.is_extern_type(e):
+            out.append((c_member_type(e), f"external enum '{_qual(e)}'"))
+            out += [(spell.item(e, item),
+                     f"item '{item}' of external enum '{_qual(e)}'")
+                    for item in e.items]
+    for st in structs:
+        if style.is_extern_type(st):
+            out.append((c_struct_name(st), f"external struct '{_qual(st)}'"))
+    return out
+
+
 def check(backend, model, s) -> None:
     """Refuse two declarations of one C name (see the module docstring)."""
     from ...driver import CompileError
 
     seen: Dict[str, str] = {}
     bad: List[str] = []
-    for name, who in declared_names(backend, model, s):
+    for name, who in (declared_names(backend, model, s)
+                      + occupied_names(backend, model, s)):
         if name in seen and seen[name] != who:
             bad.append(f"'{name}' is both {seen[name]} and {who}")
         seen.setdefault(name, who)

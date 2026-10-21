@@ -304,6 +304,10 @@ class CProgSeqTarget(OpModelTarget):
         from .c.lower_progseq import CEnums
         return CEnums(self.style_for(opts)).item(enum_dtype, item)
 
+    def is_extern_type(self, dtype, opts) -> bool:
+        """The style's answer (`StylePolicy.is_extern_type`)."""
+        return self.style_for(opts).is_extern_type(dtype)
+
     def abi_settings(self, opts: argparse.Namespace) -> dict:
         """The C options that move a symbol, an offset or a signature.
 

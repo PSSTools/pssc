@@ -110,6 +110,11 @@ def lower_api_types(components, reg_value_structs=(),
     enum whose item a body writes (see `collect_api_types`)."""
     enums, structs = collect_api_types(components, reg_value_structs,
                                        ctor_names, type_map=type_map or {})
+    # An external type is the platform's to declare (`is_extern_type`).
+    extern = getattr(style, "is_extern_type", None)
+    if extern is not None:
+        enums = [e for e in enums if not extern(e)]
+        structs = [s for s in structs if not extern(s)]
     if not enums and not structs:
         return ""
     parts: List[str] = ["/* ----- Data types used by the export API. ----- */"]

@@ -148,7 +148,7 @@ def _value_structs(model) -> List[Dict[str, Any]]:
     return out
 
 
-def _enums(model, symbol) -> List[Dict[str, Any]]:
+def _enums(model, symbol, extern=None) -> List[Dict[str, Any]]:
     """The enums the API uses, with each item's value and, where the target
     names one, its generated spelling: C and SV prefix an item
     (`WB_DMA_STATUS_WB_DMA_DONE`), C++ and Python scope it by its enum, and a
@@ -169,9 +169,11 @@ def _enums(model, symbol) -> List[Dict[str, Any]]:
             if sym is not None:
                 item["symbol"] = sym
             items.append(item)
-        out.append({"name": (getattr(e, "name", "") or "").split("::")[-1],
-                    "items": items,
-                    "annotations": _annotations(e)})
+        out.append(dict({"name": (getattr(e, "name", "") or "").split("::")[-1],
+                         "items": items,
+                         "annotations": _annotations(e)},
+                        **({"extern": True}
+                           if extern is not None and extern(e) else {})))
     return out
 
 
@@ -223,7 +225,7 @@ def _groups(comp, model) -> List[Dict[str, Any]]:
 def build(model, *, target: str, settings: Optional[Dict[str, Any]] = None,
           files: Sequence = (), runtime_files: Sequence[str] = (),
           include_files: Sequence[str] = (),
-          enum_symbol=None) -> Dict[str, Any]:
+          enum_symbol=None, extern=None) -> Dict[str, Any]:
     """The manifest document for one generation.
 
     ``files`` is the path list the target returned, IN ORDER -- that order is a
@@ -231,7 +233,9 @@ def build(model, *, target: str, settings: Optional[Dict[str, Any]] = None,
     Each is labelled `generated` or `runtime`; one another file includes,
     and which is therefore no compilation unit, also carries `"include": true`
     (``include_files``, the target's answer). ``enum_symbol(enum, item)`` is
-    how the target spells an enum item (`OpModelTarget.enum_item_symbol`).
+    how the target spells an enum item (`OpModelTarget.enum_item_symbol`),
+    and ``extern(dtype)`` whether the platform declares a type
+    (`OpModelTarget.is_extern_type`): such an enum carries `"extern": true`.
 
     The labels come from ``runtime_files``, which is the target's own
     `core_file_names()` -- the list it copied FROM. Deciding by extension would
@@ -260,7 +264,7 @@ def build(model, *, target: str, settings: Optional[Dict[str, Any]] = None,
         # target that takes its API from exports puts on it.
         "exports": [_function(fn) for fn in getattr(model, "exports", ())],
         "value_structs": _value_structs(model),
-        "enums": _enums(model, enum_symbol),
+        "enums": _enums(model, enum_symbol, extern),
         "components": [_component(n, model) for n in model.components],
         "files": [dict({"name": Path(p).name,
                         "role": ("runtime" if Path(p).name in set(runtime_files)

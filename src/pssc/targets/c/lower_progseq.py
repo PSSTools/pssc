@@ -333,6 +333,9 @@ class CEnums(object):
         self.type_map = type_map or {}
 
     def item(self, enum_dtype, item: str) -> str:
+        fn = getattr(self.style, "enum_item_for", None)
+        if fn is not None:
+            return fn(enum_dtype, item)
         return self.style.enum_item(c_enum_name(enum_dtype), item)
 
     def constant(self, e) -> Optional[str]:

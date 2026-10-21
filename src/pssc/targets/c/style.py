@@ -177,6 +177,16 @@ class CStylePolicy(StylePolicy):
         from ..enum_names import prefixed_item
         return prefixed_item(enum_name, item)
 
+    def enum_item_for(self, enum_dtype, item: str) -> str:
+        """The enumerator for *item* of the enum *enum_dtype*: the item's PSS
+        name for an external enum (`is_extern_type`), whose items the
+        platform declares, else `enum_item` of its C name. What the emitters
+        ask; `enum_item` keeps its signature."""
+        if self.is_extern_type(enum_dtype):
+            return item
+        from .lower_progseq import c_enum_name
+        return self.enum_item(c_enum_name(enum_dtype), item)
+
     # -- register / memory access --------------------------------------------
     #
     # Every hook below returns None by default, meaning "use the funnel's own
