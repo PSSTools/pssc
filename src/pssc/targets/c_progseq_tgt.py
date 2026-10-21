@@ -254,9 +254,7 @@ class CProgSeqTarget(OpModelTarget):
     # -- entry point --------------------------------------------------------
 
     def body_emitter_class(self):
-        from .c.lower_progseq import CBodyEmitter
-        return (getattr(self.backend_class(), "body_emitter_cls", None)
-                or CBodyEmitter)
+        return self.backend_class().body_emitter_class()
 
     #: The backend class that assembles the files. `None` means pssc's own
     #: (`COpModelBackend`), resolved late so importing this module does not drag

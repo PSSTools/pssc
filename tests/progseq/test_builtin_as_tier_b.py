@@ -170,11 +170,18 @@ def test_the_lifecycle_choice_is_read_in_more_places_than_a_hook_covers():
         "pssc.targets.c.lower_progseq", "pssc.targets.c.style"}, sites
 
 
-def test_no_published_override_takes_the_lifecycle_decision_alone():
-    """The surface has no `emit_lifecycle_decls`, and that is the gap.
+def test_the_lifecycle_decision_is_published_as_a_pair():
+    """Was the gap at G8: no published override at the granularity of the
+    lifecycle. `emit_lifecycle_decls` and `emit_lifecycle` (PC-8,
+    `hal-plugin-requests-plan.md`) are it -- one component's prototypes and
+    its definitions, published as a PAIR, since a prototype with no
+    definition is a link error far from the override.
 
-    Stated as a test so the day one is added, this fails and the plan's G8 note
-    gets revisited rather than staying wrong in the file.
+    The flag still reads the choice at the sites listed above; what changed
+    is that a subclass no longer has to re-derive `emit_decls` to drop them.
     """
-    published = set(surface(COpModelBackend))
-    assert not [n for n in published if "lifecycle" in n], sorted(published)
+    published = surface(COpModelBackend)
+    assert {n for n in published if "lifecycle" in n} == {
+        "emit_lifecycle", "emit_lifecycle_decls"}
+    assert list(published["emit_lifecycle"].pairs_with) == [
+        "emit_lifecycle_decls"]

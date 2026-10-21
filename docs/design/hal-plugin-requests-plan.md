@@ -24,7 +24,7 @@ docs per phase.
 | 2 | ir-core: ZIR-1 (ZIR-2 deferred, R-H6 (a)) | **committed** (ir-core `e1523a6` on main, unpushed) |
 | 3 | pssc: walker skip-list (prerequisite), PC-1 annotations into the IR | **committed** (pssc `21a1bea` on construct-test-audit, unpushed); guide section deferred to phase 6 |
 | 4 | pssc analysis: PC-2 bindings, PC-4 provenance, PC-3 state uses | **committed** (pssc `21a1bea`). Suites green: unit 2587, progseq 2984 (goldens unchanged), compliance 925 |
-| 5 | pssc C backend: PC-7, PC-5, PC-6, PC-8 (+ c_names) | **in progress**: items 1 (funnel, `f55f9d9`) and 2 (signature/handle/linkage, `2faeeae`) committed; see §3 phase 5 notes |
+| 5 | pssc C backend: PC-7, PC-5, PC-6, PC-8 (+ c_names) | **in progress**: items 1 (funnel, `f55f9d9`), 2 (signature/handle/linkage, `2faeeae`), 3 (`CBodyEmitter`, `042b847`) and 4 (register access, `e036133`) committed; see §3 phase 5 notes |
 | 6 | End-to-end: a HAL-shaped fixture plugin, differential bus trace | not started |
 | 7 | Docs sweep, release, reply | not started |
 
@@ -442,6 +442,28 @@ group. Each repo's commit carries its own tests and docs.
   sub-component call does not read it. `refuse_too_wide` now runs before
   `c_names.check`, which types every signature. Tests:
   `tests/progseq/test_c_op_api.py`.
+- Item 3 done (`042b847`). `model_call(callee, args, ctx, handle)`: ``ctx``
+  is the callee's `OpCtx`, ``handle`` the expression or None. The default
+  calls the callee's `signature` name, so a rename reaches call sites. The
+  constructor emitter gets an `OpCtx` too. `COpModelBackend.body_emitter_class()`
+  resolves the emitter; `pssc targets --overrides` prints its members.
+- Item 4 done (`e036133`). `RegAccess` has `comp`, `via` (name, index),
+  `group`, `index_exprs`, `method`, `args`, `fields`. `resolve_reg_path`
+  gained `owner` on `RegRef` and an `accessors=` memo. Hooks:
+  `reg_access(ra, lw)` (`lw` = `LoweredRegAccess`: `acc`, `indices`, `args`,
+  `sub_path`), `reg_masked_write_inline` (None composes),
+  `reg_value_local` (type AND name, so a HAL gets `data`; declared at the
+  function top via `function_local`), `reg_read_into`,
+  `reg_value_field_set(local, fs, value, ra, lw, mask)` (value unnarrowed),
+  `reg_value_merge`, `reg_write_from`, `reg_value_field_get` (a field of a
+  whole `read()` only). **Not done:** a register-value struct LOCAL
+  (`ctl_s v = regs.ctl.read(); v.en = 1;`) still uses the value union; the
+  plan's `struct_locals` retyping is deferred (record in
+  `future-projects.md`). Tests: `tests/progseq/test_c_reg_access.py`, incl.
+  the WB DMA trace gate passing with every masked write composed.
+- Pre-existing, not caused here: `test_op_model_py.py::test_it_refuses_exactly_what_the_c_target_refuses_on_the_real_model`
+  fails when run after some other progseq modules (e.g. `-k "golden or c_"`)
+  and passes alone and in the full suite; reproduced at `b563c2c`.
 
 ### Phase 6: end to end
 

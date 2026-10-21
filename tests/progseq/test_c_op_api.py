@@ -14,6 +14,7 @@ import pytest
 from pssc import driver, targets
 from pssc.targets.c.backend import COpModelBackend
 from pssc.targets.c.lower_progseq import CBodyEmitter
+from pssc.targets.c.style import CStylePolicy
 
 MODEL = """
 package r_pkg {
@@ -193,3 +194,76 @@ def test_c_names_sees_the_signatures_name(tmp_path, monkeypatch):
     detail = "\n".join(map(str, ei.value.errors))
     assert "'hal_op' is both operation 'top_c.five' and operation " \
            "'top_c.stat'" in detail
+
+
+# -- PC-8: the lifecycle and the seam includes --------------------------------
+
+class _NoLifecycle(_NoHandle):
+    def emit_lifecycle_decls(self, node, ctx):
+        return []
+
+    def emit_lifecycle(self, node, ctx):
+        return []
+
+
+def test_the_lifecycle_can_be_left_out(tmp_path, monkeypatch):
+    out, h, c = _gen(tmp_path, monkeypatch, _NoLifecycle)
+    for name in ("top_init", "top_create", "top_destroy", "top_pss_construct",
+                 "top_pss_ctor", "top_scale"):
+        assert name not in h, name
+    for name in ("top_init", "top_create", "top_pss_construct"):
+        assert name not in c, name
+    assert "uint32_t top_twice(uint32_t x);" in h
+    _cc(out)
+
+
+class _OpNamedInit(COpModelBackend):
+    def signature(self, fn, ctx):
+        ret, name, params = super().signature(fn, ctx)
+        return ret, ("top_init" if fn.name == "five" else name), params
+
+
+class _OpNamedInitNoLifecycle(_OpNamedInit):
+    def emit_lifecycle_decls(self, node, ctx):
+        return []
+
+    def emit_lifecycle(self, node, ctx):
+        return []
+
+
+def test_c_names_follows_the_lifecycle(tmp_path, monkeypatch):
+    """An operation the plugin names `top_init` clashes with the lifecycle
+    `_init` -- unless the lifecycle is not emitted, when it is no clash."""
+    with pytest.raises(driver.CompileError) as ei:
+        _gen(tmp_path, monkeypatch, _OpNamedInit)
+    assert "'top_init' is both the constructor of 'top_c' and operation " \
+           "'top_c.five'" in "\n".join(map(str, ei.value.errors))
+    (tmp_path / "off").mkdir()
+    out, h, c = _gen(tmp_path / "off", monkeypatch, _OpNamedInitNoLifecycle)
+    assert "uint32_t top_init(top_c *_self);" in h
+
+
+def test_the_lifecycle_hooks_are_a_pair():
+    from pssc.targets.overridable import OverrideError, check_pairs
+
+    class _Half(COpModelBackend):
+        def emit_lifecycle(self, node, ctx):
+            return []
+
+    with pytest.raises(OverrideError, match="emit_lifecycle_decls"):
+        check_pairs(_Half)
+
+
+class _NoSeam(CStylePolicy):
+    def seam_includes(self, model, s):
+        return []
+
+
+class _NoSeamBackend(COpModelBackend):
+    style_cls = _NoSeam
+
+
+def test_the_seam_includes_can_be_dropped_alone(tmp_path, monkeypatch):
+    out, h, c = _gen(tmp_path, monkeypatch, _NoSeamBackend)
+    assert '#include "pssc_' not in h
+    assert "#include <stdint.h>" in h

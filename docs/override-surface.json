@@ -89,6 +89,20 @@
         "since": "0.1",
         "stability": "stable"
       },
+      "emit_lifecycle": {
+        "since": "0.3",
+        "stability": "provisional",
+        "pairs_with": [
+          "emit_lifecycle_decls"
+        ]
+      },
+      "emit_lifecycle_decls": {
+        "since": "0.3",
+        "stability": "provisional",
+        "pairs_with": [
+          "emit_lifecycle"
+        ]
+      },
       "emit_operation": {
         "since": "0.1",
         "stability": "stable"

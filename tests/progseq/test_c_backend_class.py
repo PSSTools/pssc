@@ -77,11 +77,11 @@ def test_no_emit_method_writes_files(prepared, monkeypatch):
     assert emitters, "no emit_* methods found -- the introspection is wrong"
     for name in emitters:
         params = list(inspect.signature(getattr(be, name)).parameters)
-        if params[:2] == ["fn", "ctx"]:
-            # A per-operation emitter, which has no meaning without an
-            # operation. It is still covered by this test's monkeypatch --
+        if params[:2] in (["fn", "ctx"], ["node", "ctx"]):
+            # A per-operation or per-component emitter, which has no meaning
+            # without one. It is still covered by this test's monkeypatch --
             # `emit_impl` below runs the whole loop through it -- and by
-            # `test_emit_operation_is_reached`.
+            # `test_emit_operation_is_reached` / `test_c_op_api.py`.
             continue
         assert params[:2] == ["model", "s"], (
             f"{name} takes {params}, which no caller here recognises. Either "

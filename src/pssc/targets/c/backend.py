@@ -441,7 +441,8 @@ class COpModelBackend:
                                        link_style=s.link_style,
                                        static_inline=s.header_only,
                                        lifecycle=s.lifecycle,
-                                       style=self.style, api=self))
+                                       style=self.style, api=self,
+                                       lifecycle_decls=self.emit_lifecycle_decls))
 
     @overridable(since='0.1', stability='provisional')
     def emit_impl_inline(self, model, s: CSettings) -> List[str]:
@@ -515,6 +516,34 @@ class COpModelBackend:
         from .lower_progseq import DEFAULT_API
         return DEFAULT_API.linkage(fn, ctx)
 
+    @overridable(since='0.3', stability='provisional',
+                 pairs_with=['emit_lifecycle'])
+    def emit_lifecycle_decls(self, node, ctx) -> List[str]:
+        """One component's lifecycle prototypes, as LINES: `_init`, and on
+        the root under `--lifecycle malloc` `_create`/`_destroy`. Called in
+        `emit_decls`, before the component's operations. ``node`` is the
+        component's tree node, ``ctx`` its `OpCtx`. `[]` declares none, and
+        `c_names` then gathers no lifecycle name for the component. Pairs
+        with `emit_lifecycle`: a prototype with no definition, or the
+        reverse, is a link error far from the override."""
+        from .lower_progseq import lifecycle_decls
+        s = self.settings
+        return lifecycle_decls(node, self.prefixes, s.link_style, ctx.qual,
+                               self.model.is_root(node.dtype), s.lifecycle,
+                               self.style, self.model.ctor_names)
+
+    @overridable(since='0.3', stability='provisional',
+                 pairs_with=['emit_lifecycle_decls'])
+    def emit_lifecycle(self, node, ctx) -> List[str]:
+        """One component's lifecycle definitions, as LINES: the file-local
+        `_pss_construct` and `_pss_ctor` (LRM 20.1.2), `_init`, and on the
+        root `_create`/`_destroy`. Called where they have always been, after
+        the component's solve functions and before its operations. `[]`
+        defines none -- for an API with no component object, whose
+        operations take no handle (`handle_param`)."""
+        from .lower_progseq import lifecycle_lines
+        return lifecycle_lines(node, ctx, self.model, self.settings.lifecycle)
+
     @overridable(since='0.1', stability='provisional')
     def emit_impl(self, model, s: CSettings) -> str:
         """Lifecycle + operation bodies. Text, wherever it ends up."""
@@ -533,7 +562,7 @@ class COpModelBackend:
                           style=self.style,
                           accs=self.accs,
                           emitter_cls=self.emitter_cls,
-                          api=self)
+                          api=self, lifecycle_impl=self.emit_lifecycle)
 
     @staticmethod
     def _block(text: str) -> List[str]:

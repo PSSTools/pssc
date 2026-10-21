@@ -347,7 +347,16 @@ class CStylePolicy(StylePolicy):
             # an unused include is the kind of thing that fails the build on
             # the part rather than on the workstation.
             out.append("#include <stdlib.h>")
-        out.append(f'#include "{s.seam_include}"')
+        out += self.seam_includes(model, s)
+        return out
+
+    def seam_includes(self, model, s: CSettings) -> List[str]:
+        """The seam headers pssc copies out (`pssc_mem*.h`, `pssc_env.h`,
+        `pssc_chan.h`), last in `include_order`. A policy that returns `[]`
+        drops them alone -- for an API whose bodies spell their own
+        accesses; `seam_headers` returning `[]` stops copying the files.
+        Everything before them keeps its order."""
+        out = [f'#include "{s.seam_include}"']
         if s.reg_map:
             # The pointer-in primitives (write32/read32). AFTER the address
             # seam, which they are built on (pssc_mem_reg.h calls its

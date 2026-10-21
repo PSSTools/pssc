@@ -3214,8 +3214,39 @@ def func_kind_name(name: str, ctor_names=None):
 
 def _sig_all(node, prefixes, link_style: str, qual: str, is_root: bool,
              lifecycle: str = "malloc", style=None,
-             ctor_names=None, api=None) -> List[str]:
-    """Every file-scope prototype for one component.
+             ctor_names=None, api=None, lifecycle_decls_fn=None) -> List[str]:
+    """Every file-scope prototype for one component: the lifecycle's
+    (``lifecycle_decls_fn(node, ctx)``, default :func:`lifecycle_decls`),
+    then the operations'."""
+    style = _style(style)
+    comp = node.dtype
+    prefix = prefixes[comp]
+    ctx = OpCtx(comp=comp, prefix=prefix, qual=qual, emitter_cls=None,
+                be_kw={"style": style}, type_name=prefixes.type_name(comp),
+                api=api)
+    if lifecycle_decls_fn is not None:
+        out = list(lifecycle_decls_fn(node, ctx))
+    else:
+        out = lifecycle_decls(node, prefixes, link_style, qual, is_root,
+                              lifecycle, style, ctor_names)
+    for fn in _operations(comp, ctor_names):
+        # A `static` operation is not on the API; `lower_impl` declares it.
+        if not qual and _linkage(fn, ctx) == "static":
+            continue
+        # On the prototype, which is the API surface a caller reads. Repeated
+        # on the definition below, which is what someone debugging reads --
+        # the same deliberate duplication the SV target makes.
+        blank_line(out)
+        out += doc_block(getattr(fn, "doc", None), "", BLOCK)
+        out.append(f"{render_signature(ctx.op_api.signature(fn, ctx), qual)};")
+    return out
+
+
+def lifecycle_decls(node, prefixes, link_style: str, qual: str,
+                    is_root: bool, lifecycle: str = "malloc", style=None,
+                    ctor_names=None) -> List[str]:
+    """The lifecycle prototypes of one component: `_init`, and on the root
+    under ``lifecycle="malloc"`` `_create`/`_destroy`.
 
     `_create`/`_destroy` are ROOT-ONLY. A sub-component lives inside its
     parent's storage, so a `wb_dma_ch_create()` returning a malloc'd channel
@@ -3239,25 +3270,13 @@ def _sig_all(node, prefixes, link_style: str, qual: str, is_root: bool,
         out.append(
             f"{qual}{prefix_t} *{sym(prefix, 'create')}({cp or 'void'});")
         out.append(f"{qual}void {sym(prefix, 'destroy')}({prefix_t} *{HANDLE});")
-    ctx = OpCtx(comp=comp, prefix=prefix, qual=qual, emitter_cls=None,
-                be_kw={"style": style}, type_name=prefixes.type_name(comp),
-                api=api)
-    for fn in _operations(comp, ctor_names):
-        # A `static` operation is not on the API; `lower_impl` declares it.
-        if not qual and _linkage(fn, ctx) == "static":
-            continue
-        # On the prototype, which is the API surface a caller reads. Repeated
-        # on the definition below, which is what someone debugging reads --
-        # the same deliberate duplication the SV target makes.
-        blank_line(out)
-        out += doc_block(getattr(fn, "doc", None), "", BLOCK)
-        out.append(f"{render_signature(ctx.op_api.signature(fn, ctx), qual)};")
     return out
 
 
 def lower_decls(model, prefixes, *, link_style: str = "vtable",
                 static_inline: bool = False,
-                lifecycle: str = "malloc", style=None, api=None) -> str:
+                lifecycle: str = "malloc", style=None, api=None,
+                lifecycle_decls=None) -> str:
     """Prototypes for the whole tree.
 
     Emitted in ALL modes, including ``--header-only``. They used to be skipped
@@ -3273,9 +3292,28 @@ def lower_decls(model, prefixes, *, link_style: str = "vtable",
         lines += _sig_all(node, prefixes, link_style, qual,
                           is_root=model.is_root(node.dtype),
                           lifecycle=lifecycle, style=style,
-                          ctor_names=model.ctor_names, api=api)
+                          ctor_names=model.ctor_names, api=api,
+                          lifecycle_decls_fn=lifecycle_decls)
         lines.append("")
     return "\n".join(lines).rstrip()
+
+
+def lifecycle_lines(node, ctx: OpCtx, model,
+                    lifecycle: str = "malloc") -> List[str]:
+    """One component's lifecycle definitions (`_pss_construct`, `_pss_ctor`,
+    `_init`, and `_create`/`_destroy` on the root): the default
+    `COpModelBackend.emit_lifecycle`. ``ctx`` is the component's `OpCtx`
+    as `lower_impl` builds it."""
+    kw = dict(ctx.be_kw)
+    prefixes, link_style = kw.pop("prefixes"), kw.pop("link_style")
+    reg_style, ctor_names = kw.pop("reg_style"), kw.pop("ctor_names")
+    comp = node.dtype
+    return _lifecycle_impl(node, prefixes, link_style, ctx.qual, reg_style,
+                           is_root=model.is_root(comp), lifecycle=lifecycle,
+                           ctor_names=ctor_names, emitter_cls=ctx.emitter_cls,
+                           binding=(model.binding(comp)
+                                    if hasattr(model, "binding") else None),
+                           api=ctx.api, **kw)
 
 
 def _lifecycle_impl(node, prefixes, link_style: str, qual: str,
@@ -3524,7 +3562,7 @@ def lower_impl(model, prefixes, *, link_style: str = "vtable",
                message_style: str = "import",
                lifecycle: str = "malloc", imports=None, style=None,
                accs=None, emitter_cls=None, emit_operation=None,
-               reg_map: bool = False, api=None) -> str:
+               reg_map: bool = False, api=None, lifecycle_impl=None) -> str:
     """Lifecycle + operation bodies for every component, CHILDREN FIRST.
 
     ``emit_operation(fn, ctx)`` renders one operation; it defaults to
@@ -3570,15 +3608,10 @@ def lower_impl(model, prefixes, *, link_style: str = "vtable",
                                   link_style=link_style,
                                   ctor_names=ctor_names, **be_kw),
                              style, api)
-        lines += _lifecycle_impl(node, prefixes, link_style, qual, reg_style,
-                                 is_root=model.is_root(comp),
-                                 lifecycle=lifecycle, ctor_names=ctor_names,
-                                 emitter_cls=emitter_cls,
-                                 binding=(model.binding(comp)
-                                          if hasattr(model, "binding")
-                                          else None), api=api, **be_kw)
-        lines.append("")
         ctx = op_ctx(comp)
+        lines += (lifecycle_impl(node, ctx) if lifecycle_impl is not None
+                  else lifecycle_lines(node, ctx, model, lifecycle))
+        lines.append("")
         for fn in _operations(comp, ctor_names):
             blank_line(lines)
             lines += emit_operation(fn, ctx)

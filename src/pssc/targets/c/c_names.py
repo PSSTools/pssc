@@ -89,22 +89,14 @@ def declared_names(backend, model, s) -> List[Tuple[str, str]]:
     for node in regular_nodes(model):
         comp = node.dtype
         p, who = prefixes[comp], _short(comp)
-        out.append((style.symbol(p, "init"), f"the constructor of '{who}'"))
-        # `_init`'s two file-local halves (`lower_progseq._lifecycle_impl`).
-        out.append((style.symbol(p, "pss_construct"),
-                    f"the construction of '{who}'"))
-        if _ctor(comp, model.ctor_names) is not None:
-            out.append((style.symbol(p, "pss_ctor"),
-                        f"the constructor body of '{who}'"))
-        if model.is_root(comp) and s.lifecycle == "malloc":
-            out.append((style.symbol(p, "create"), f"the factory of '{who}'"))
-            out.append((style.symbol(p, "destroy"),
-                        f"the destructor of '{who}'"))
         # Named as the backend's `signature` names them, which a plugin may
         # change: the name the clash check sees is the one emitted.
         ctx = OpCtx(comp=comp, prefix=p, qual="", emitter_cls=None,
                     be_kw={"style": style}, type_name=prefixes.type_name(comp),
                     api=api)
+        decls = getattr(backend, "emit_lifecycle_decls", None)
+        if decls is None or decls(node, ctx):
+            out += _lifecycle_names(model, s, style, comp, p, who)
         for fn in _operations(comp, model.ctor_names):
             out.append((api.signature(fn, ctx)[1],
                         f"operation '{who}.{fn.name}'"))
@@ -124,6 +116,23 @@ def declared_names(backend, model, s) -> List[Tuple[str, str]]:
         out.append((mangle(name), f"import '{name}'"))
     if s.yield_mode == "import":
         out.append(("yield_", "the platform's yield (`--yield import`)"))
+    return out
+
+
+def _lifecycle_names(model, s, style, comp, p, who) -> List[Tuple[str, str]]:
+    """A component's lifecycle functions, unless its backend emits none
+    (`emit_lifecycle_decls` returns `[]`)."""
+    from .lower_progseq import _ctor
+    out = [(style.symbol(p, "init"), f"the constructor of '{who}'")]
+    # `_init`'s two file-local halves (`lower_progseq._lifecycle_impl`).
+    out.append((style.symbol(p, "pss_construct"),
+                f"the construction of '{who}'"))
+    if _ctor(comp, model.ctor_names) is not None:
+        out.append((style.symbol(p, "pss_ctor"),
+                    f"the constructor body of '{who}'"))
+    if model.is_root(comp) and s.lifecycle == "malloc":
+        out.append((style.symbol(p, "create"), f"the factory of '{who}'"))
+        out.append((style.symbol(p, "destroy"), f"the destructor of '{who}'"))
     return out
 
 

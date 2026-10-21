@@ -1843,6 +1843,8 @@ not hold.
 > other candidate the plan named could not be expressed at all: the surface has
 > no hook at the granularity of "the lifecycle declarations", which is a real
 > gap in P6b.T1's marked set and is now a failing-when-fixed test.
+> (Closed 2026-10-21: `emit_lifecycle_decls`/`emit_lifecycle`, a provisional
+> pair; `hal-plugin-requests-plan.md` PC-8.)
 >
 > **What G8 does not close:**
 >
