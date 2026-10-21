@@ -20,10 +20,10 @@ docs per phase.
 | Phase | Content | State |
 |-------|---------|-------|
 | 0 | Rulings R-H1..R-H10 (§2) | **done** 2026-10-21: R-H2, R-H6, R-H7, R-H8, R-H9 ruled as recommended; the rest stand as recommended |
-| 1 | pssparser: PP-4, PP-6, PP-1, PP-2, PP-3, PP-5; release | **implemented, uncommitted** (`packages/pssparser`, `packages/pyastbuilder`): all six items, tests and docs. Open: pssc suites against it, commit, release (needs user OK). See §3 phase 1 notes |
-| 2 | ir-core: ZIR-1 (ZIR-2 deferred, R-H6 (a)) | **implemented, uncommitted** (`packages/zuspec-ir-core`): `Annotation`, `AnnotationEnum`, `Base.annotations`; tests pass (107) |
-| 3 | pssc: walker skip-list (prerequisite), PC-1 annotations into the IR | **implemented, uncommitted**: `targets/ir_walk.py`, ast2ir `_annotations`, `pssc/annotations.py`, manifest; docs except the guide section (deferred to phase 6, which provides the quoted fixture). Full-suite rerun pending |
-| 4 | pssc analysis: PC-2 bindings, PC-4 provenance, PC-3 state uses | **implemented, uncommitted**: PC-2, PC-4, PC-3 and docs. Suites green after phase 4: unit 2587, progseq 2984 (goldens unchanged), compliance 925 |
+| 1 | pssparser: PP-4, PP-6, PP-1, PP-2, PP-3, PP-5; release | **committed** 2026-10-21 (pssparser `c904f33`, pyastbuilder `fb6577c`, both on master, unpushed). Open: tag/release pssparser 3.5.0 and pyastbuilder (needs user OK). See §3 phase 1 notes |
+| 2 | ir-core: ZIR-1 (ZIR-2 deferred, R-H6 (a)) | **committed** (ir-core `e1523a6` on main, unpushed) |
+| 3 | pssc: walker skip-list (prerequisite), PC-1 annotations into the IR | **committed** (pssc `21a1bea` on construct-test-audit, unpushed); guide section deferred to phase 6 |
+| 4 | pssc analysis: PC-2 bindings, PC-4 provenance, PC-3 state uses | **committed** (pssc `21a1bea`). Suites green: unit 2587, progseq 2984 (goldens unchanged), compliance 925 |
 | 5 | pssc C backend: PC-7, PC-5, PC-6, PC-8 (+ c_names) | not started |
 | 6 | End-to-end: a HAL-shaped fixture plugin, differential bus trace | not started |
 | 7 | Docs sweep, release, reply | not started |
