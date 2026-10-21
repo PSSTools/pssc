@@ -301,24 +301,24 @@ def test_enum_items_carry_their_generated_spelling(tmp_path, target):
 # --- annotations (PC-1) -----------------------------------------------------
 
 ANNOTATED = """
-package hal_pkg {
+package gen_pkg {
     enum mode_e { M0, M1 = 5 };
-    annotation hal_s { string name; string prefix = ""; mode_e m = mode_e::M1; }
+    annotation block_s { string name; string prefix = ""; mode_e m = mode_e::M1; }
 }
 
-@hal_pkg::hal_s {.name = "status"}
+@gen_pkg::block_s {.name = "status"}
 enum status_e { OK, ERR };
 
-@hal_pkg::hal_s {.name = "DEV"}
+@gen_pkg::block_s {.name = "DEV"}
 component dev_c {
-    @hal_pkg::hal_s {.name = "en", .prefix = "x_"}
+    @gen_pkg::block_s {.name = "en", .prefix = "x_"}
     target function status_e enable(int n) { return status_e::OK; }
 }
 """
 
 
 def test_annotations_are_reported_on_components_operations_and_enums(tmp_path):
-    src = tmp_path / "hal.pss"
+    src = tmp_path / "gen.pss"
     src.write_text(ANNOTATED)
     out = tmp_path / "out"
     with compile_op_model("op-model-c", sources=[str(src)], root="dev_c",
@@ -326,8 +326,8 @@ def test_annotations_are_reported_on_components_operations_and_enums(tmp_path):
                           progseq_manifest=str(out / "m.json")):
         doc = json.loads((out / "m.json").read_text())
     comp = next(c for c in doc["components"] if c["name"] == "dev_c")
-    m1 = {"enum": "hal_pkg::mode_e", "item": "M1", "value": 5}
-    assert comp["annotations"] == [{"type": "hal_pkg::hal_s", "values": {
+    m1 = {"enum": "gen_pkg::mode_e", "item": "M1", "value": 5}
+    assert comp["annotations"] == [{"type": "gen_pkg::block_s", "values": {
         "name": "DEV", "prefix": "", "m": m1}}]
     op = next(o for o in comp["operations"] if o["name"] == "enable")
     assert op["annotations"][0]["values"] == {"name": "en", "prefix": "x_",

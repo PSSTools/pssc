@@ -1,6 +1,6 @@
 """Overlapping register views in the C layout struct: anonymous unions.
 
-A register map commonly describes one aperture through two views -- a normal
+A register map commonly describes one register window through two views -- a normal
 block and a copy view of the same bytes, a
 register at two widths, a 64-bit register and its two halves. Those are
 ALIASES: one piece of hardware, two names. `build_reg_map` used to refuse them
@@ -96,7 +96,7 @@ package alias_pkg {
         }
     }
 
-    // The reported shape: a normal view and a copy view of one aperture,
+    // The reported shape: a normal view and a copy view of one register window,
     // both at 0, the copy starting with padding and shorter. Each holds
     // arrays; a third view is a distinct array of banks at another origin.
     pure component normal_c : reg_group_c {
@@ -122,7 +122,7 @@ package alias_pkg {
         }
     }
 
-    pure component aperture_c : reg_group_c {
+    pure component window_c : reg_group_c {
         normal_c normal; copy_c copy; bank_c bank_view[2]; w_r AFTER;
         function bit[64] get_offset_of_instance(string name) {
             match (name) {
@@ -169,7 +169,7 @@ package alias_pkg {
     }
 
     pure component alias_top_regs_c : reg_group_c {
-        widths_c widths; chain_c chain; aperture_c ap; round_c rnd; span_c span;
+        widths_c widths; chain_c chain; window_c ap; round_c rnd; span_c span;
         function bit[64] get_offset_of_instance(string name) {
             match (name) {
                 ["widths"]: return 0x000; ["chain"]: return 0x100;
@@ -361,8 +361,8 @@ def _struct(regs: str, name: str) -> str:
 
 def test_a_block_and_its_copy_view_are_one_anonymous_union(tmp_path):
     regs = (_gen(tmp_path, *_FUNCTIONS) / "alias_regs.h").read_text()
-    assert _struct(regs, "aperture_c") == """\
-struct aperture_c {
+    assert _struct(regs, "window_c") == """\
+struct window_c {
     union {                                  /* 0x000..0x60 aliases */
         normal_c normal;                         /* 0x000 */
         copy_c copy;                             /* 0x000 */
@@ -376,9 +376,9 @@ struct aperture_c {
 """
     for p, v in (("normal", 0), ("copy", 0), ("bank_view", 0x40),
                  ("AFTER", 0x60)):
-        assert (f"PSSC_STATIC_ASSERT(offsetof(aperture_c, {p}) == 0x{v:x}u,"
+        assert (f"PSSC_STATIC_ASSERT(offsetof(window_c, {p}) == 0x{v:x}u,"
                 in regs)
-    assert "PSSC_STATIC_ASSERT(sizeof(aperture_c) == 0x64u" in regs
+    assert "PSSC_STATIC_ASSERT(sizeof(window_c) == 0x64u" in regs
 
 
 def test_every_alias_keeps_its_name_and_gets_an_offset_assertion(tmp_path):

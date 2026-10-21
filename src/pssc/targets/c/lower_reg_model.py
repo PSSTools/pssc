@@ -492,7 +492,7 @@ def _member_lines(m, style, ind: str) -> List[str]:
     from ..reg_layout import PAD, REG, UNION
 
     if m.kind == UNION:
-        # Aliases of one aperture: anonymous, so `regs->a` and `regs->b` are
+        # Aliases of one register window: anonymous, so `regs->a` and `regs->b` are
         # still the PSS paths. A view that starts past the union's origin is
         # an anonymous struct led by its own pad, named for the member it
         # leads so two leads never promote one name.

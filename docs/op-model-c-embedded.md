@@ -107,7 +107,7 @@ the address as a pointer first, a device address must fit a pointer here too
 device map on a 32-bit core needs `--link-style vtable`, whose per-register
 accessors carry the address by value throughout.
 
-**Overlapping register views.** A map may describe one aperture through two
+**Overlapping register views.** A map may describe one register window through two
 views -- a normal block and a copy view of the same bytes, a 64-bit register
 and its two halves. The layout struct makes each connected set of overlapping
 members one anonymous `union`, so every register keeps its name, its access

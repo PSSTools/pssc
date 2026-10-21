@@ -276,7 +276,7 @@ def test_a_group_that_contains_itself_is_refused():
 
 # -- overlapping views: unions -------------------------------------------------
 #
-# Aliases of one aperture. Every source member keeps its name and address;
+# Aliases of one register window. Every source member keeps its name and address;
 # the members whose byte ranges connect become ONE union.
 
 def _alts(u):
@@ -296,7 +296,7 @@ def test_two_widths_at_one_offset_are_one_union():
 
 
 def test_same_origin_groups_of_different_extents_are_one_union():
-    """The reported shape: a normal view and a copy view of one aperture,
+    """The reported shape: a normal view and a copy view of one register window,
     both at 0, the copy starting with its own padding."""
     big = _Group("big_c", [_Field(f"r{i}", _Reg()) for i in range(8)],
                  {f"r{i}": i * 4 for i in range(8)})

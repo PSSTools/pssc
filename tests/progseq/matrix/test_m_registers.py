@@ -73,7 +73,7 @@ component pss_top {
 }""", ["write 32 0x1004 0x1", "write 32 0x1010 0x2"],
         covers=("DT-REG", "LIB-REG.8")),
 
-    # Four apertures, bound in an order unlike their declaration, one holding
+    # Four register windows, bound in an order unlike their declaration, one holding
     # an array of registers reached with a run-time index: each access must
     # land at its own group's handle (the shape of an external D1 report).
     "four groups, one with an indexed register array": Case("""

@@ -69,7 +69,7 @@ class Binding:
     #: `<path>.set_handle(<parameter>)` on a path with no index, a
     #: sub-component's constructor call, or a `super.` constructor that is
     #: itself only bindings -- with no control flow. One parameter may bind
-    #: two groups (aliased views of one aperture are legal). A component
+    #: two groups (two views of one register window are legal). A component
     #: with no constructor, or an empty one, is pure.
     pure_bindings: bool = True
 

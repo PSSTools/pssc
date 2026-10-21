@@ -3,7 +3,7 @@
 Three reports came from a downstream integration of a packaged pssc release
 ("1.1.0" of the packaging, observed 2026-10-19). As with the D1–D9 report,
 this file does not name the reporter or their IP. Their example is called
-"the four-aperture model" here.
+"the four-window model" here.
 
 ## Status (updated 2026-10-19)
 

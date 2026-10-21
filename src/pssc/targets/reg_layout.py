@@ -290,7 +290,7 @@ def _mk(segs, name, reg_dtype, const_off, strides, decl=None,
 # claim about addresses that nothing checks is the one defect a golden snapshot
 # can never catch.
 #
-# OVERLAP is legal. A register map commonly describes one aperture through
+# OVERLAP is legal. A register map commonly describes one register window through
 # two views -- a normal block and a debug/copy view of the same bytes, two
 # widths of one register -- and those are aliases of the same hardware, not
 # two storage locations and not alternatives a discriminator picks between. A

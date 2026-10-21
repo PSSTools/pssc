@@ -13,49 +13,49 @@ from pssc.frontend import Parser
 from pssc.targets import comp_inherit
 
 PKG = """
-package hal_pkg {
+package gen_pkg {
     enum mode_e { M0, M1 = 5 };
-    annotation hal_s { string name; string prefix = ""; mode_e m = mode_e::M1; }
+    annotation block_s { string name; string prefix = ""; mode_e m = mode_e::M1; }
     annotation note_s { string text = ""; }
     annotation extern_s { string c_name; }
 }
 """
 
 SRC = PKG + """
-@hal_pkg::note_s {.text = "pkg enum"}
+@gen_pkg::note_s {.text = "pkg enum"}
 enum result_e { OK, ERR };
 
-@hal_pkg::hal_s {.name = "UART"}
+@gen_pkg::block_s {.name = "UART"}
 component dev_c {
-    @hal_pkg::note_s {.text = "field"} int count;
+    @gen_pkg::note_s {.text = "field"} int count;
 
-    @hal_pkg::hal_s {.name = "en"}
+    @gen_pkg::block_s {.name = "en"}
     function void enable() { }
 
-    @hal_pkg::note_s {.text = "exec 1"}
+    @gen_pkg::note_s {.text = "exec 1"}
     exec init_down { count = 0; }
-    @hal_pkg::note_s {.text = "exec 2"}
+    @gen_pkg::note_s {.text = "exec 2"}
     exec init_down { }
 
-    @hal_pkg::note_s {.text = "standalone"};
+    @gen_pkg::note_s {.text = "standalone"};
 
-    @hal_pkg::note_s {.text = "action"}
+    @gen_pkg::note_s {.text = "action"}
     action A { }
 
-    @hal_pkg::note_s {.text = "struct"}
+    @gen_pkg::note_s {.text = "struct"}
     struct s_s { int x; }
 
-    @hal_pkg::note_s {.text = "nested enum"}
+    @gen_pkg::note_s {.text = "nested enum"}
     enum inner_e { I0 };
 }
 
-@hal_pkg::note_s {.text = "extension"}
+@gen_pkg::note_s {.text = "extension"}
 extend component dev_c { }
 
-@hal_pkg::note_s {.text = "enum extension"}
+@gen_pkg::note_s {.text = "enum extension"}
 extend enum result_e { WARN };
 
-@hal_pkg::note_s {.text = "import fn"}
+@gen_pkg::note_s {.text = "import fn"}
 import target function void plat_init();
 
 component pss_top {
@@ -79,16 +79,16 @@ def ctx():
 
 def _texts(node):
     return [a.values.get("text") for a in node.annotations
-            if a.type_qname == "hal_pkg::note_s"]
+            if a.type_qname == "gen_pkg::note_s"]
 
 
 def test_component_annotation_has_every_field(ctx):
     dev = ctx.type_map["dev_c"]
-    hal = annotations.of(dev, "hal_pkg::hal_s")
-    assert hal == {"name": "UART", "prefix": "",
-                   "m": ir.AnnotationEnum(enum="hal_pkg::mode_e", item="M1",
+    blk = annotations.of(dev, "gen_pkg::block_s")
+    assert blk == {"name": "UART", "prefix": "",
+                   "m": ir.AnnotationEnum(enum="gen_pkg::mode_e", item="M1",
                                           value=5)}
-    a = next(a for a in dev.annotations if a.type_qname == "hal_pkg::hal_s")
+    a = next(a for a in dev.annotations if a.type_qname == "gen_pkg::block_s")
     assert a.loc is not None and a.loc.file == "m.pss"
 
 
@@ -101,7 +101,7 @@ def test_field_function_and_nested_declarations(ctx):
     dev = ctx.type_map["dev_c"]
     assert _texts(next(f for f in dev.fields if f.name == "count")) == ["field"]
     en = next(f for f in dev.functions if f.name == "enable")
-    assert annotations.of(en, "hal_pkg::hal_s")["name"] == "en"
+    assert annotations.of(en, "gen_pkg::block_s")["name"] == "en"
     assert _texts(ctx.type_map["dev_c::A"]) == ["action"]
     struct = next(t for n, t in ctx.type_map.items() if n.endswith("s_s"))
     assert _texts(struct) == ["struct"]
@@ -137,12 +137,12 @@ def test_unannotated_nodes_have_none(ctx):
 def test_unresolved_annotation_type_is_disregarded():
     ctx = _translate(PKG + """
     component pss_top {
-        @nosuch_s {.x = 1} @hal_pkg::note_s {.text = "kept"}
+        @nosuch_s {.x = 1} @gen_pkg::note_s {.text = "kept"}
         function void f() { }
     }
     """)
     f = next(f for f in ctx.type_map["pss_top"].functions if f.name == "f")
-    assert [a.type_qname for a in f.annotations] == ["hal_pkg::note_s"]
+    assert [a.type_qname for a in f.annotations] == ["gen_pkg::note_s"]
 
 
 def test_equality_ignores_annotations(ctx):
@@ -156,13 +156,13 @@ def test_equality_ignores_annotations(ctx):
 
 INHERIT = PKG + """
 component base_c {
-    @hal_pkg::note_s {.text = "base h"}
+    @gen_pkg::note_s {.text = "base h"}
     function void h() { }
-    @hal_pkg::note_s {.text = "base g"}
+    @gen_pkg::note_s {.text = "base g"}
     function void g() { }
 }
 component der_c : base_c {
-    @hal_pkg::note_s {.text = "der g"}
+    @gen_pkg::note_s {.text = "der g"}
     function void g() { super.g(); }
 }
 component pss_top {
@@ -186,32 +186,32 @@ def test_an_inherited_function_keeps_its_annotations_an_override_its_own():
 
 def test_reader_requires_the_qualified_name(ctx):
     dev = ctx.type_map["dev_c"]
-    with pytest.raises(ValueError, match="hal_pkg::hal_s"):
-        annotations.of(dev, "hal_s")
-    assert annotations.of(dev, "::hal_pkg::hal_s")["name"] == "UART"
-    assert annotations.of(dev, "hal_pkg::extern_s") is None
+    with pytest.raises(ValueError, match="gen_pkg::block_s"):
+        annotations.of(dev, "block_s")
+    assert annotations.of(dev, "::gen_pkg::block_s")["name"] == "UART"
+    assert annotations.of(dev, "gen_pkg::extern_s") is None
 
 
 def test_reader_refuses_a_repeated_type_and_all_of_reads_each():
     ctx = _translate(PKG + """
     component pss_top {
-        @hal_pkg::note_s {.text = "a"} @hal_pkg::note_s {.text = "b"}
+        @gen_pkg::note_s {.text = "a"} @gen_pkg::note_s {.text = "b"}
         function void f() { }
     }
     """)
     f = next(f for f in ctx.type_map["pss_top"].functions if f.name == "f")
     with pytest.raises(ValueError, match="all_of"):
-        annotations.of(f, "hal_pkg::note_s")
-    assert [v["text"] for v in annotations.all_of(f, "hal_pkg::note_s")] == ["a", "b"]
+        annotations.of(f, "gen_pkg::note_s")
+    assert [v["text"] for v in annotations.all_of(f, "gen_pkg::note_s")] == ["a", "b"]
 
 
 def test_an_exported_actions_entry_carries_the_actions_annotations():
     from pssc.targets.export_action import entry_point
     ctx = _translate(PKG + """
     component pss_top {
-        @hal_pkg::note_s {.text = "action"}
+        @gen_pkg::note_s {.text = "action"}
         action A {
-            @hal_pkg::note_s {.text = "body"}
+            @gen_pkg::note_s {.text = "body"}
             exec body { }
         }
     }

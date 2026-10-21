@@ -7,16 +7,16 @@ defaults included, as pssparser folded it. A plug-in reads them here::
 
     from pssc import annotations
 
-    hal = annotations.of(comp, "hal_pkg::hal_s")     # None if not annotated
-    if hal is not None:
-        hal["name"], hal["prefix"]
+    blk = annotations.of(comp, "gen_pkg::block_s")   # None if not annotated
+    if blk is not None:
+        blk["name"], blk["prefix"]
 
 A value is a ``str``, ``int``, ``bool``, ``zuspec.ir.core.AnnotationEnum``
 (``enum``, ``item``, ``value``) or ``None`` (it did not fold, or the field is
 unset and has no default).
 
 The name is the annotation type's *qualified* name, as the front end resolved
-it. A spelling is not resolved here: ``hal_s`` means different types in
+it. A spelling is not resolved here: ``block_s`` means different types in
 different scopes, and only the linker knows which. Asking for one that
 matches only by its last component raises, naming the candidates.
 """
