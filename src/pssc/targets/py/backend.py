@@ -33,7 +33,6 @@ from ..progseq_model import (INIT_EXEC_KINDS, FuncKind, _dt_name,
                              sub_components)
 from .. import comp_inherit as ci
 from .. import executors as xtr
-from .. import group_binding
 from .. import pkg_functions as pf
 from . import lower_api_types as api
 from . import lower_import_api as impapi
@@ -1108,8 +1107,7 @@ class PyOpModelBackend(object):
         """
         implicit = None
         if ctor is not None:
-            implicit = group_binding.bindings(
-                [comp], model.ctor_names)[id(comp)].implicit
+            implicit = model.binding(comp).implicit
         out = []
         for f in getattr(comp, "fields", None) or []:
             if not field_is_reg_group(f):

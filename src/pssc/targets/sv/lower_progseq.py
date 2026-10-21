@@ -1138,7 +1138,13 @@ class _BodyEmitter(BodyWalker):
         mask_e, val_e = call.args
         if _dt_name(mask_e) != "ExprConstant" or not isinstance(mask_e.value, int):
             return None
-        refs = self.namer.fields_for(callee.value, int(mask_e.value))
+        # The fields the source named (`reg_rmw` provenance) when it named
+        # them whole; otherwise recovered from the mask. Both are whole fields,
+        # LSB first, so the two agree wherever both answer.
+        from .reg_field_names import whole_fields
+        slices = whole_fields(call)
+        refs = (self.namer.refs(callee.value, slices) if slices is not None
+                else self.namer.fields_for(callee.value, int(mask_e.value)))
         if not refs:
             return None
         recv = self.expr(callee.value)

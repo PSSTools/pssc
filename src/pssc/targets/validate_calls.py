@@ -27,6 +27,7 @@ from . import pkg_functions as pf
 from .call_legality import Ctx, Outcome, classify, core_function
 from .progseq_model import (FuncKind, INIT_EXEC_KINDS, exec_kind, func_kind,
                             is_reg_group, _dt_name, sub_components)
+from .ir_walk import NON_CHILD_FIELDS
 
 
 def _site(comp, fn) -> str:
@@ -156,6 +157,8 @@ def _walk_calls(node, out: List[object]) -> None:
     if _dt_name(node) == "ExprCall":
         out.append(node)
     for fname in fields:
+        if fname in NON_CHILD_FIELDS:
+            continue
         child = getattr(node, fname, None)
         if child is not node:
             _walk_calls(child, out)

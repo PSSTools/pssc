@@ -33,6 +33,7 @@ from .array_methods import _nodes
 from .body_walker import assigns_local, foreach_parts
 from .expr_types import ExprTypes
 from .progseq_model import _dt_name
+from .ir_walk import NON_CHILD_FIELDS
 
 __all__ = ["lower", "index_bound", "MESSAGE"]
 
@@ -82,7 +83,7 @@ def _walk(node, types, bounds: Dict[str, int], where: str) -> None:
                 and not assigns_local(node.body, name):
             inner = dict(bounds, **{name: k})
     for f in dc.fields(node):
-        if f.name in ("loc", "provenance", "doc", "doc_trailing"):
+        if f.name in NON_CHILD_FIELDS:
             continue
         v = getattr(node, f.name, None)
         _walk(v, types, inner if f.name == "body" else bounds, where)

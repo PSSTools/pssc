@@ -297,10 +297,16 @@ def entry_point(ctx, name: str) -> EntryPoint:
             md["super_of"] = q
         if _has_super(stmts):
             md["super"] = super_name
+        # The entry stands for the action: it carries the action's
+        # annotations, then its exec body's. A base body reached by `super;`
+        # carries its body's own only.
+        anns = list(getattr(act, "annotations", None) or []) if not k else []
+        anns += list(getattr(body, "annotations", None) or [])
         return ir.Function(
             loc=getattr(body, "loc", None) or getattr(act, "loc", None),
             name=name, args=ir.Arguments(args=[]), body=scope(stmts),
-            returns=None, is_async=False, metadata=md), bool(md.get("super"))
+            returns=None, is_async=False, metadata=md,
+            annotations=anns), bool(md.get("super"))
 
     if levels[0][1] is None and len(levels) > 1:
         # No body of its own: the entry IS the nearest base body.

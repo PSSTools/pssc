@@ -22,6 +22,8 @@ methods were designed to be wrapped from which merely happen to be callable.
 | The backend override surface | methods marked `@overridable` | `docs/override-surface.json` (checked in) |
 | Call legality | `pssc.targets.call_legality` — `Entry`, `Disposition`, `Ctx`, `register_extension`, `COMMON` | the Tier-1 contract test |
 | The shared services | `pssc.targets.body_walker`, `pssc.targets.reg_layout`, `pssc.targets.sections`, `pssc.targets.comments` | their own test files |
+| Model queries (provisional) | `OpModel.bindings`, `.binding(comp)`, `.handle_params()`, `.state_uses(fn)`, `.unpacked_signature(fn)`; `pssc.targets.state_uses` (`StateUses`, `RegRef`, `resolve_reg_path`, `callees`); `pssc.targets.reg_field_names` (`written_fields`, `whole_fields`) | `tests/unit/test_group_binding.py`, `test_state_uses.py`, `test_reg_ir_equivalence.py` |
+| Source annotations | `pssc.annotations` (`of`, `all_of`), read from `annotations` on a component, action, struct, enum, field or function of the IR | `tests/unit/test_annotations.py` |
 | The testing kit | `pssc.testing` | used by pssc's own suite |
 | Entry-point groups | `pssc.targets`, `pssc.styles` | `tests/unit/test_plugin_integration.py`, against a really-installed plugin |
 | CLI options | `pssc compile`, `pssc targets` | [`cli.md`](cli.md) |

@@ -27,6 +27,7 @@ import zuspec.ir.core as ir
 from ..diag import Refusal
 from .expr_types import ExprTypes
 from .progseq_model import _dt_name
+from .ir_walk import NON_CHILD_FIELDS
 
 __all__ = ["lower"]
 
@@ -146,7 +147,7 @@ def _rewrite(node, fn) -> None:
             or type(node).__name__.startswith("DataType"):
         return
     for f in dc.fields(node):
-        if f.name in ("loc", "provenance", "doc", "doc_trailing"):
+        if f.name in NON_CHILD_FIELDS:
             continue
         v = getattr(node, f.name, None)
         if isinstance(v, list):

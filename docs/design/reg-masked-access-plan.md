@@ -201,6 +201,21 @@ that happens to be spelled as a string because the LRM's signature is
 This invariant gets a dedicated test (phase 2) rather than being implied by the
 other tests, because it is the property everything else here depends on.
 
+**Amendment (2026-10-21, ruling R-H7; `hal-plugin-requests-plan.md` PC-4).**
+The *arguments* are identical across spellings, as above; the call's
+*provenance* is not, and is advisory. `reg_rmw` records on each reduced call a
+`RegWriteProvenance` whose `fields` list the fields the source named, each
+with its `FieldSlice`, the value as written (before it was placed) and the
+bits it writes. `fields` is `None` for a `write_val_masked` written out or a
+`write_masked` of a whole struct. Every backend still renders the arguments;
+a backend or plug-in may read the provenance (`targets/reg_field_names.py`) to
+spell the modify step one field at a time, but never to change the number or
+order of bus operations. The equivalence test now normalises `provenance` as
+well as `loc`, and pins the provenance of each spelling separately. A field
+*name* therefore does reach the IR, but only on the provenance, never in an
+argument a backend renders; the "no name table" consequence above still
+holds.
+
 ### 1.2 Where the resolution goes, and why it is not one place
 
 The first draft of this plan put the whole of it in `pssc`, reasoning that

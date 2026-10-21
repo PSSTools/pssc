@@ -31,6 +31,7 @@ import dataclasses as dc
 from typing import Dict, FrozenSet, Iterable, List, Optional, Tuple
 
 from .call_legality import BOTH, Ctx, SOLVE_ONLY, TARGET_ONLY
+from .ir_walk import children
 
 
 def declared(ctx) -> Dict[str, object]:
@@ -90,8 +91,7 @@ def calls_in(node) -> List[object]:
             return
         if type(n).__name__ == "ExprCall":
             out.append(n)
-        for f in dc.fields(n):
-            c = getattr(n, f.name, None)
+        for c in children(n):
             if c is not n:
                 walk(c)
 

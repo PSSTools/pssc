@@ -352,6 +352,9 @@ def _rewrite(node, *, self_fields=None, bound=frozenset(), super_fields=None,
                     and n.attr in self_fields and n.attr not in bound):
                 return dc.replace(n, attr=self_fields[n.attr])
         changes = {}
+        # Every field, NON_CHILD_FIELDS included (targets/ir_walk.py): a
+        # copied body's provenance names its fields too, and is rewritten
+        # with it.
         for f in dc.fields(n):
             v = getattr(n, f.name)
             nv = walk(v)

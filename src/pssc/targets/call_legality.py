@@ -139,6 +139,17 @@ _COMMON_LIST = [
 
 COMMON: Dict[str, Entry] = {e.name: e for e in _COMMON_LIST}
 
+#: What each REG method does to its register, beside the rows above: "r"
+#: reads it, "w" writes it, "rw" is a read-modify-write (21.14.1 defines the
+#: masked forms as one). `state_uses` reads it; a REG row with no entry here
+#: fails `test_state_uses.py`.
+REG_DIRECTION: Dict[str, str] = {
+    "read": "r", "read_val": "r", "read_field": "r",
+    "write": "w", "write_val": "w",
+    "write_val_masked": "rw", "write_field": "rw", "write_fields": "rw",
+    "write_masked": "rw",
+}
+
 
 #: The packages of the PSS core library (LRM 21). A call qualified by one of
 #: them -- `addr_reg_pkg::write32(h, d)` -- names the same core-library function

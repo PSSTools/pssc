@@ -214,6 +214,30 @@ both work. Anything it cannot evaluate, and the -1 sentinel for a declared
 register, is a `CompileError` raised before any file is written -- never a
 fallback to the dense `offset_map`.
 
+Which constructor parameter gives each group its handle is `group_binding`,
+computed ONCE over the whole model (`OpModel.bindings`): the gate, C and
+Python all read that table, because a component computed alone misses a
+parent's `sub.g.set_handle(p)` and binds the group implicitly as well.
+`Binding.params` maps each bound path to the constructor parameter (a
+parameter is written `self.p` in the IR, so a name is a parameter first), and
+`OpModel.handle_params()` composes them to the root's parameters.
+
+A reduced masked write (`write_val_masked`) carries the fields its source
+named on its provenance (`reg_rmw.RegWriteProvenance`; ruling R-H7). The
+arguments are what a backend renders and are identical for every spelling;
+the provenance is advisory (`targets/reg_field_names.py`: `written_fields`,
+`whole_fields`). Any pass that rebuilds such a call must carry it:
+`check_reduced` raises if a `write_field(s)` lost it.
+
+What an operation touches, transitively -- register groups and registers,
+component fields, imports, memory, unbounded loops -- is
+`targets/state_uses.py` (`OpModel.state_uses(fn)`). It owns
+`resolve_reg_path` (which `reserved_access` uses) and the model's call graph
+(`callees`, which `field_writes` uses). `REG_DIRECTION` in `call_legality.py`
+says what each register method does to its register; add a row with a REG
+entry. `OpModel.unpacked_signature(fn)` is the groups a stateless API takes
+in place of the handle, in root-constructor order.
+
 ## Integers are PSS-wide
 
 Every integer operation in a generated body is carried out at its PSS width
@@ -423,6 +447,26 @@ Its `PyOpModelBackend` follows `COpModelBackend`'s two rules (every `emit_*`
 returns text; the module is exactly its `module_sections()`) but carries no
 `@overridable` marks and is NOT a published surface. Publishing one is a
 manifest edit when an extension actually needs it.
+
+## Source annotations
+
+A PSS annotation (LRM 7.13) reaches the IR as `Base.annotations`: a list of
+`ir.Annotation(type_qname, values, loc)` on the component, action, struct,
+enum, field, function or exec block it was written on. A standalone one
+(`@a_s {...};`) goes on the type whose body holds it, and an `extend`'s on the
+type it extends. ast2ir takes every value from `pssparser.annotations` (ruling
+R-H1) and never folds one itself; `_annotations` is its one entry point.
+`annotations` is `compare=False`, so an annotated model compares equal to an
+unannotated one. A plug-in reads it with `pssc.annotations.of(node,
+"pkg::ann_s")`, which takes only the qualified name the front end resolved,
+never a spelling. The manifest reports it on components, functions and enums.
+
+A generic walk over IR nodes descends into `targets/ir_walk.children(node)`,
+never into every `dc.fields`: `loc`, `doc`, `doc_trailing`, `provenance` and
+`annotations` describe a node and are not its children
+(`ir_walk.NON_CHILD_FIELDS`; `tests/unit/test_ir_walk.py`). The exception is
+`comp_inherit._rewrite`, which copies a base's body and rewrites its
+provenance along with it.
 
 ## The manifest
 

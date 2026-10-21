@@ -21,6 +21,7 @@ import zuspec.ir.core as ir
 from .array_methods import _rewrite
 from .expr_types import ExprTypes
 from .progseq_model import _dt_name
+from .ir_walk import children
 
 __all__ = ["lower"]
 
@@ -44,9 +45,8 @@ def _lower(node, types, counter) -> None:
     if not dc.is_dataclass(node) or isinstance(node, type) \
             or _dt_name(node).startswith("DataType"):
         return
-    for f in dc.fields(node):
-        if f.name not in ("loc", "provenance", "doc", "doc_trailing"):
-            _lower(getattr(node, f.name, None), types, counter)
+    for c in children(node):
+        _lower(c, types, counter)
     if _dt_name(node) == "StmtForeach":
         _rewrite_loop(node, types, counter)
 

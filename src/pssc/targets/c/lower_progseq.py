@@ -33,7 +33,7 @@ from ..enum_names import item_of
 from ..progseq_model import (
     func_kind, FuncKind, field_is_reg_group, _dt_name, CompKind,
     sub_components, channel_fields, array_base_stride, scalar_offset,
-    enum_first_item,
+    enum_first_item, field_is_array,
 )
 from .lower_reg_model import (accessor_base, c_struct_name, _prim_bits,
                              map_type_name)
@@ -2726,12 +2726,40 @@ class _CtorMixin:
     is the whole reason a C model needs no register objects at all.
     """
 
+    def _sub_group_set_handle(self, call, chain) -> Optional[str]:
+        """`sub.g.set_handle(h)` / `sub[i].g.set_handle(h)`: an enclosing
+        component binding a sub-component's register group (LRM 21.14.1; the
+        gate counts it, `group_binding`). The sub-component is embedded by
+        value, so its group's base is a member of that storage."""
+        if (len(chain) != 2 or chain[0][0] not in self.subs
+                or chain[1][1] is not None
+                or call.func.attr != "set_handle"):
+            return None
+        sub = self.subs[chain[0][0]]
+        g = chain[1][0]
+        gf = next((f for f in getattr(sub.dtype, "fields", None) or []
+                   if f.name == g and f.name in group_fields(sub.dtype)), None)
+        if gf is None or field_is_array(gf):
+            return None
+        idx = chain[0][1]
+        elem = (f"{self.h}->{mangle(sub.name)}[{self.expr(idx)}]"
+                if idx is not None else f"{self.h}->{mangle(sub.name)}")
+        base = f"{elem}.{self.style.group_base(g)}"
+        h = self.expr(call.args[0])
+        if self.reg_map:
+            mt = map_type_name(gf.datatype, self.style)
+            return (f"({base} = {h}, {elem}.{mangle(g)} = "
+                    f"({mt} *)(uintptr_t){base})")
+        return f"({base} = {h})"
+
     def _group_call(self, call) -> Optional[str]:
         """A call on a register GROUP (not on a register inside one)."""
         func = call.func
         if _dt_name(func) != "ExprAttribute":
             return None
         chain = self._chain(func.value)
+        if chain and len(chain) == 2:
+            return self._sub_group_set_handle(call, chain)
         if not chain or len(chain) != 1 or chain[0][0] not in self.reg_groups:
             return None
         group = self.reg_groups[chain[0][0]]
@@ -2913,7 +2941,7 @@ def _lifecycle_impl(node, prefixes, link_style: str, qual: str,
                     reg_style: str, is_root: bool, lifecycle: str = "malloc",
                     reg_map: bool = False,
                     style=None, emitter_cls=None, ctor_names=None,
-                    **be_kw) -> List[str]:
+                    binding=None, **be_kw) -> List[str]:
     style = _style(style)
     comp = node.dtype
     prefix = prefixes[comp]
@@ -2965,7 +2993,12 @@ def _lifecycle_impl(node, prefixes, link_style: str, qual: str,
     # says so: "the binding is the generator's job, not the model's". Every
     # other group is bound by the `set_handle` the body states -- a group
     # nothing binds was refused before generation started.
-    implicit = group_binding.bindings([comp], ctor_names)[id(comp)].implicit
+    # The model's table (`OpModel.bindings`), which the gate read: computed
+    # for this component alone, it missed a parent's `sub.g.set_handle(...)`
+    # and bound the group implicitly as well.
+    if binding is None:
+        binding = group_binding.bindings([comp], ctor_names)[id(comp)]
+    implicit = binding.implicit
     if ctor is not None:
         ctor_p = "".join(f", {c_type(a.annotation)} {mangle(a.arg)}"
                          for a in ctor.args.args)
@@ -3153,7 +3186,10 @@ def lower_impl(model, prefixes, *, link_style: str = "vtable",
         lines += _lifecycle_impl(node, prefixes, link_style, qual, reg_style,
                                  is_root=model.is_root(comp),
                                  lifecycle=lifecycle, ctor_names=ctor_names,
-                                 emitter_cls=emitter_cls, **be_kw)
+                                 emitter_cls=emitter_cls,
+                                 binding=(model.binding(comp)
+                                          if hasattr(model, "binding")
+                                          else None), **be_kw)
         lines.append("")
         ctx = OpCtx(comp=comp, prefix=prefix, qual=qual,
                     type_name=prefixes.type_name(comp),

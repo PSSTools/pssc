@@ -27,6 +27,7 @@ from typing import Dict, List, Optional, Tuple
 
 from ..diag import at
 from .progseq_model import _dt_name
+from .ir_walk import children
 
 __all__ = ["refusals", "target_code", "reached_from"]
 
@@ -40,9 +41,8 @@ def _walk(node):
             or _dt_name(node).startswith("DataType"):
         return
     yield node
-    for f in dc.fields(node):
-        if f.name not in ("loc", "provenance", "doc", "doc_trailing"):
-            yield from _walk(getattr(node, f.name, None))
+    for c in children(node):
+        yield from _walk(c)
 
 
 def _params(fn) -> set:
@@ -86,32 +86,13 @@ def _writes(fn, comp) -> List[Tuple[str, object]]:
     return out
 
 
-def _callees(fn, comp, ctx, fns_of) -> List[Tuple[object, object]]:
-    """The model's own functions ``fn`` calls: ``(component, function)``."""
-    from .expr_types import ExprTypes
-    types = None
-    out = []
-    for n in _walk(getattr(fn, "body", None)):
-        if _dt_name(n) != "ExprCall":
-            continue
-        f = n.func
-        if _dt_name(f) == "ExprAttribute":
-            if _dt_name(f.value) == "TypeExprRefSelf":
-                owner = comp
-            else:
-                types = types or ExprTypes(fn, comp, ctx)
-                t = types.type_of(f.value)
-                owner = getattr(t, "dtype", None) if t is not None else None
-                owner = types.resolve(owner) if owner is not None else None
-            name = f.attr
-        elif _dt_name(f) == "ExprRefLocal":
-            owner, name = comp, f.name
-        else:
-            continue
-        callee = fns_of(owner).get(name) if owner is not None else None
-        if callee is not None:
-            out.append((owner, callee))
-    return out
+def _callees(fn, comp, ctx, fns_of=None) -> List[Tuple[object, object]]:
+    """The model's own member functions ``fn`` calls: ``(component,
+    function)``. The call graph is `state_uses.callees`; this keeps the shape
+    the callers here want."""
+    from .state_uses import callees
+    return [(c.owner, c.function) for c in callees(fn, comp, ctx)
+            if c.kind == "member"]
 
 
 def target_code(comps, ctx, entries=(), ctor_names=None):

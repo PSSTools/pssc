@@ -79,12 +79,33 @@ def _params(fn) -> List[Dict[str, str]]:
             for a in fn.args.args]
 
 
+def _annotation_value(v):
+    if isinstance(v, (list, tuple)):
+        return [_annotation_value(x) for x in v]
+    if isinstance(v, dict):
+        return {str(k): _annotation_value(x) for k, x in v.items()}
+    if hasattr(v, "enum") and hasattr(v, "item"):          # AnnotationEnum
+        return {"enum": v.enum, "item": v.item, "value": v.value}
+    return v
+
+
+def _annotations(node) -> List[Dict[str, Any]]:
+    """The source annotations (LRM 7.13) on *node*, as the front end resolved
+    and folded them: `type` is the qualified annotation type, `values` every
+    field's value, defaults included. An enum item is
+    `{"enum", "item", "value"}`."""
+    return [{"type": a.type_qname,
+             "values": {k: _annotation_value(v) for k, v in a.values.items()}}
+            for a in getattr(node, "annotations", None) or []]
+
+
 def _function(fn) -> Dict[str, Any]:
     return {
         "name": fn.name,
         "returns": _type_name(getattr(fn, "returns", None)),
         "params": _params(fn),
         "doc": getattr(fn, "doc", None) or "",
+        "annotations": _annotations(fn),
     }
 
 
@@ -149,7 +170,8 @@ def _enums(model, symbol) -> List[Dict[str, Any]]:
                 item["symbol"] = sym
             items.append(item)
         out.append({"name": (getattr(e, "name", "") or "").split("::")[-1],
-                    "items": items})
+                    "items": items,
+                    "annotations": _annotations(e)})
     return out
 
 
@@ -160,6 +182,7 @@ def _component(node, model) -> Dict[str, Any]:
         "name": (getattr(comp, "name", "") or "").split("::")[-1],
         "is_root": model.is_root(comp),
         "doc": getattr(comp, "doc", None) or "",
+        "annotations": _annotations(comp),
         "constructor": _function(ctor) if ctor is not None else None,
         "operations": [_function(fn) for fn in model.operations(comp)],
         "entries": [{"name": e.name, "action": e.action}
@@ -175,7 +198,26 @@ def _component(node, model) -> Dict[str, Any]:
                       "depth": int(getattr(f.datatype, "depth", 1) or 1)}
                      for f in model.channels(comp)],
         "registers": _registers(comp),
+        "groups": _groups(comp, model),
     }
+
+
+def _groups(comp, model) -> List[Dict[str, Any]]:
+    """Each register group of *comp* and the constructor parameter that gives
+    its handle (`group_binding`): `param` is that parameter's name when the
+    handle is the parameter alone, else `null` (an expression, a binding
+    outside the constructor, or one from an enclosing component), and
+    `implicit` says the generator bound it, the constructor having bound no
+    group (the single-group convention)."""
+    b = model.binding(comp) if hasattr(model, "binding") else None
+    if b is None:
+        return []
+    out = []
+    for g in b.groups:
+        out.append({"name": g,
+                    "param": b.params.get((g,)),
+                    "implicit": b.implicit is not None and b.implicit[0] == g})
+    return out
 
 
 def build(model, *, target: str, settings: Optional[Dict[str, Any]] = None,

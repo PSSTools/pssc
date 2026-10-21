@@ -53,6 +53,32 @@ _PRIMITIVE = "write_val_masked"
 #: Every register method a masked/field-wise call can become or already be.
 _RMW_METHODS = _REDUCED_METHODS + (_PRIMITIVE,)
 
+@dc.dataclass(frozen=True)
+class RegFieldWrite:
+    """One field a reduced masked write writes: where it is, the value as the
+    model wrote it (before it was truncated and shifted into place), and the
+    bits of the register it writes for that field."""
+    slice: FieldSlice
+    value: ir.Expr
+    mask: int
+
+
+@dc.dataclass
+class RegWriteProvenance(ir.Provenance):
+    """How a ``write_val_masked`` came to be: which fields of the register
+    the source named (ruling R-H7).
+
+    The call's arguments are what every backend renders, and they are the
+    same for all four spellings (``test_reg_ir_equivalence.py``). This
+    record is ADVISORY: a backend may use it to spell the modify step one
+    field at a time, but never to change the number or the order of bus
+    operations -- one read, then one write. ``fields`` is ``None`` when the
+    source named no field: a ``write_val_masked`` written out, or a
+    ``write_masked`` given a whole struct value rather than a literal.
+    """
+    fields: Optional[Tuple[RegFieldWrite, ...]] = None
+
+
 _DT_REGISTER = "DataTypeRegister"
 _DT_REGISTER_GROUP = "DataTypeRegisterGroup"
 _DT_ARRAY = "DataTypeArray"
@@ -271,7 +297,8 @@ def _mask_and_val(reg, call, ctx) -> Optional[Tuple[ir.Expr, ir.Expr]]:
         except RegFieldError as e:
             err(str(e))
             return None
-        return _lit(fs.mask), _place(call.args[1], fs, reg_size_bits(reg))
+        return (_lit(fs.mask), _place(call.args[1], fs, reg_size_bits(reg)),
+                (RegFieldWrite(fs, call.args[1], fs.mask),))
 
     if method == "write_fields":
         if len(call.args) != 2:
@@ -297,7 +324,7 @@ def _mask_and_val(reg, call, ctx) -> Optional[Tuple[ir.Expr, ir.Expr]]:
                     "(PSS 3.1 §21.14.1)")
                 return None
             seen.add(n)
-        masks, vals = [], []
+        masks, vals, fields = [], [], []
         for n, v in zip(names, vals_e.elts):
             try:
                 fs = resolve_field(reg, n, resolve)
@@ -306,9 +333,10 @@ def _mask_and_val(reg, call, ctx) -> Optional[Tuple[ir.Expr, ir.Expr]]:
                 return None
             masks.append(_lit(fs.mask))
             vals.append(_place(v, fs, reg_size_bits(reg)))
+            fields.append(RegFieldWrite(fs, v, fs.mask))
         # One write_val_masked, not N: coalescing the fields into a single bus
         # read-modify-write is the whole reason the plural form exists.
-        return _or_all(masks), _or_all(vals)
+        return _or_all(masks), _or_all(vals), tuple(fields)
 
     if method == "write_masked":
         if len(call.args) != 2:
@@ -318,9 +346,33 @@ def _mask_and_val(reg, call, ctx) -> Optional[Tuple[ir.Expr, ir.Expr]]:
         val = _pack_struct(reg, call.args[1], ctx, call, "value")
         if mask is None or val is None:
             return None
-        return mask, val
+        return mask, val, _masked_fields(reg, call.args[0], call.args[1], ctx)
 
     return None
+
+
+def _masked_fields(reg, mask_e, val_e, ctx) -> Optional[Tuple[RegFieldWrite, ...]]:
+    """The fields a `write_masked` with literal arguments writes, in the
+    mask literal's order: each with the value literal's value for it (0 if
+    the value literal leaves it out) and the bits its mask selects. None
+    when either argument is a whole struct, or a mask is not a constant."""
+    if _dt_name(mask_e) != "ExprStructLiteral" \
+            or _dt_name(val_e) != "ExprStructLiteral":
+        return None
+    resolve = ctx.get_type
+    size = reg_size_bits(reg)
+    vals = {sf.name: sf.value for sf in val_e.fields}
+    out = []
+    for sf in mask_e.fields:
+        try:
+            fs = resolve_field(reg, sf.name, resolve)
+        except RegFieldError:
+            return None
+        m = _const(_place(sf.value, fs, size))
+        if m is None:
+            return None
+        out.append(RegFieldWrite(fs, vals.get(sf.name, _lit(0)), m))
+    return tuple(out)
 
 
 def _pack_struct(reg, e, ctx, call, role: str) -> Optional[ir.Expr]:
@@ -400,16 +452,19 @@ def _reduce_call(comp, call, ctx, via=None) -> Optional[ir.Expr]:
         # decides nothing once converted to it.
         mask, val = (_lit(_const(a)) if _const(a) is not None else a
                      for a in call.args)
+        fields = None
     else:
         mv = _mask_and_val(reg, call, ctx)
         if mv is None:
             return None
-        mask, val = mv
+        mask, val, fields = mv
 
     out = ir.ExprCall(
         func=ir.ExprAttribute(value=func.value, attr=_PRIMITIVE),
         args=[mask, val])
     out.loc = getattr(call, "loc", None)
+    out.provenance = RegWriteProvenance(
+        pass_name="reg_rmw", description=func.attr, fields=fields)
     return out
 
 
@@ -467,8 +522,11 @@ class _Expander:
         new = _bin(keep, ir.BinOp.BitOr,
                    _and_lit(val, mc) if mc is not None
                    else _bin(val, ir.BinOp.BitAnd, mask))
-        write = ir.StmtExpr(expr=ir.ExprCall(
-            func=ir.ExprAttribute(value=func.value, attr="write_val"), args=[new]))
+        wcall = ir.ExprCall(
+            func=ir.ExprAttribute(value=func.value, attr="write_val"), args=[new])
+        # The fields the source named, still: the write is the same write.
+        wcall.provenance = getattr(call, "provenance", None)
+        write = ir.StmtExpr(expr=wcall)
         write.loc = getattr(s, "loc", None)
         return [read, write]
 
@@ -695,6 +753,15 @@ def check_reduced(ctx) -> None:
                              f"register field access; the receiver is not a "
                              f"register reachable from the enclosing "
                              f"component"))
+        p = e.provenance
+        if (isinstance(p, RegWriteProvenance) and p.fields is None
+                and p.description in ("write_field", "write_fields")):
+            # A plug-in spells the modify step from these (R-H7); a pass that
+            # rebuilt the call and dropped them would make it fall back to
+            # guessing from the mask without a word.
+            raise ValueError(
+                f"internal error: a {p.description}() lost the fields it "
+                f"names on its way to {f.attr if isinstance(f, ir.ExprAttribute) else '?'}")
 
     for dt in list(ctx.type_map.values()):
         _walk_exprs(dt, visit)

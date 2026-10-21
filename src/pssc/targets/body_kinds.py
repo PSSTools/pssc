@@ -30,6 +30,7 @@ from typing import FrozenSet, Iterable, List, Optional
 
 from ..diag import at
 from .progseq_model import _dt_name
+from .ir_walk import NON_CHILD_FIELDS
 
 __all__ = ["AGGREGATES", "AGGREGATE_PLACES", "PARTS", "emitter_kinds",
            "refusals"]
@@ -173,9 +174,9 @@ def refusals(bodies: Iterable, kinds: FrozenSet[str],
                                 f"{language}")
                 return
             for f in dc.fields(n):
-                if f.name in ("loc", "provenance", "doc", "doc_trailing",
-                              "annotation", "comment", "comment_trailing",
-                              "target_type", "ir_type"):
+                if f.name in NON_CHILD_FIELDS or f.name in (
+                        "annotation", "comment", "comment_trailing",
+                        "target_type", "ir_type"):
                     continue
                 child_place = _place_of(n, f.name, place)
                 if child_place == "skip":

@@ -130,12 +130,14 @@ Each entry of `components`:
 | `name` | string | component type name, unqualified |
 | `is_root` | bool | true for the `--root` component |
 | `doc` | string | the PSS doc comment, verbatim (`""` if none) |
+| `annotations` | [annotation] | the component's source annotations (below) |
 | `constructor` | function or `null` | the `solve function` matched by `ctor_names` |
 | `operations` | [function] | the export API, in declaration order |
 | `entries` | [{`name`, `action`}] | exported actions (`--export-action`) that run in this component, each a method with no parameters and no result; `action` is the qualified action name |
 | `sub_components` | [{`name`, `type`, `count`}] | instances; `count` is the array size |
 | `channels` | [{`name`, `element`, `depth`}] | declared channels |
 | `registers` | [register] | every register reachable from this component |
+| `groups` | [{`name`, `param`, `implicit`}] | each register group and the constructor parameter that gives its handle: `param` is the parameter's name when the handle is that parameter alone, else `null`; `implicit` is true for the one group the generator binds to the constructor's address parameter |
 
 The constructor is reported **separately from the operations**, because it is
 separate in the generated API: it takes the address handle and is called once.
@@ -148,9 +150,26 @@ A function is:
   "returns": "int",
   "params": [{"name": "channel", "type": "int"},
              {"name": "src", "type": "bit[32]"}],
-  "doc": "Move `nbytes` bytes from `src` to `dst` ..."
+  "doc": "Move `nbytes` bytes from `src` to `dst` ...",
+  "annotations": []
 }
 ```
+
+An annotation (LRM 7.13) is reported as the front end resolved and folded it:
+`type` is the annotation type's qualified name, and `values` holds every field
+of the type, defaults included. A value is a string, a number, a bool, `null`
+(it did not fold, or the field has no default and was left unset), or an enum
+item:
+
+```json
+{"type": "hal_pkg::hal_s",
+ "values": {"name": "DTPM", "prefix": "",
+            "mode": {"enum": "hal_pkg::mode_e", "item": "M1", "value": 5}}}
+```
+
+Components, functions (operations and the constructor) and enums carry
+`annotations`; it is `[]` where there are none. In Python, read the same
+values from the IR with `pssc.annotations.of(node, "hal_pkg::hal_s")`.
 
 Types are spelled the way the **model** spells them — `bit[32]` stays `bit[32]`
 rather than becoming `uint32_t` in one manifest and `logic [31:0]` in another. A
@@ -234,7 +253,8 @@ item an operation writes:
 ```json
 {"name": "wb_dma_status_e",
  "items": [{"name": "WB_DMA_DONE", "value": 0,
-            "symbol": "WB_DMA_STATUS_WB_DMA_DONE"}, ...]}
+            "symbol": "WB_DMA_STATUS_WB_DMA_DONE"}, ...],
+ "annotations": []}
 ```
 
 `name` is the PSS item and `value` its value. `symbol` is how the target

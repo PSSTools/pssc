@@ -20,14 +20,15 @@ a backend stores the handle.
 from __future__ import annotations
 
 import dataclasses as dc
-from typing import Any, Dict, FrozenSet, Iterator, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, Iterator, List, Mapping, Optional, Tuple
 
 from ..diag import at
 from .progseq_model import (FuncKind, _dt_name, array_element_type,
                             field_is_array, func_kind, is_reg_group,
                             sub_components)
+from .ir_walk import children
 
-__all__ = ["Binding", "bindings", "check", "group_fields"]
+__all__ = ["Binding", "bindings", "check", "group_fields", "handle_params"]
 
 
 def group_fields(comp) -> List[str]:
@@ -55,6 +56,22 @@ class Binding:
     #: The one group the convention binds to this constructor parameter (its
     #: IR name), or ``None``.
     implicit: Optional[Tuple[str, str]] = None
+    #: Every group path this component's functions bind -- its own groups,
+    #: ``(g,)``, and a sub-component's, ``(sub, g)`` -- to the constructor
+    #: parameter that gives the handle: the parameter's name when the
+    #: argument is that parameter alone (through a `super.` call too),
+    #: otherwise ``None``. The implicit binding is here as well.
+    params: Mapping[Tuple[str, ...], Optional[str]] = dc.field(
+        default_factory=dict, compare=False, hash=False)
+    #: The constructor, or ``None``.
+    init_fn: Any = dc.field(default=None, compare=False, hash=False)
+    #: The constructor does nothing but bind: every statement is
+    #: `<path>.set_handle(<parameter>)` on a path with no index, a
+    #: sub-component's constructor call, or a `super.` constructor that is
+    #: itself only bindings -- with no control flow. One parameter may bind
+    #: two groups (aliased views of one aperture are legal). A component
+    #: with no constructor, or an empty one, is pure.
+    pure_bindings: bool = True
 
     @property
     def unbound(self) -> Tuple[str, ...]:
@@ -65,7 +82,12 @@ class Binding:
 
 
 def bindings(comps, ctor_names=None, tm=None) -> Dict[int, Binding]:
-    """`{id(comp): Binding}` for every component type in *comps*."""
+    """`{id(comp): Binding}` for every component type in *comps*.
+
+    A sub-component's group bound by an enclosing component counts only when
+    the enclosing component is in *comps*: pass the whole model (as
+    ``OpModel.bindings`` does), never one component, or the implicit binding
+    of a group its parent binds disagrees with the gate's."""
     tm = tm or {}
     bound: Dict[int, set] = {id(c): set() for c in comps}
     by_name = {}
@@ -85,19 +107,207 @@ def bindings(comps, ctor_names=None, tm=None) -> Dict[int, Binding]:
     for c in comps:
         groups = tuple(group_fields(c))
         b = frozenset(g for g in bound[id(c)] if g in groups)
+        ctor = _ctor(c, ctor_names)
         implicit = None
         if len(groups) == 1 and not b:
-            arg = _first_addr_arg(_ctor(c, ctor_names), tm)
+            arg = _first_addr_arg(ctor, tm)
             if arg is not None:
                 implicit = (groups[0], arg)
-        out[id(c)] = Binding(groups, b, implicit)
+        params = _ctor_params(c, ctor)
+        if implicit is not None:
+            params[(implicit[0],)] = implicit[1]
+        out[id(c)] = Binding(groups, b, implicit, params=params, init_fn=ctor,
+                             pure_bindings=_pure(c, ctor, ctor_names))
     return out
 
 
-def check(comps, ctor_names=None, tm=None) -> List[str]:
-    """One diagnostic per register group that nothing binds."""
+def handle_params(model, table=None) -> Dict[Tuple[str, ...], Optional[str]]:
+    """Every register group in the tree under ``model.root``, by instance
+    path from the root (``("a",)``, ``("sub", "a")``), mapped to the ROOT
+    constructor's parameter whose handle it is bound to, or ``None`` when it
+    is not one parameter passed down unchanged.
+
+    Composes a sub-component's bindings through the constructor call that
+    passes it the parameter (`sub.initialize(base)`) and through a
+    `super.initialize(base)`. An enclosing component's own
+    `sub.g.set_handle(p)` takes precedence over the sub-component's. A group
+    in an array of sub-components, or reached through an index, is ``None``.
+    """
+    table = table if table is not None else model.bindings
+    root = model.root
+    rctor = model.ctor(root)
+    env = {a.arg: a.arg for a in _args(rctor)}
+    out: Dict[Tuple[str, ...], Optional[str]] = {}
+    _compose(model, table, root, (), env, out, set())
+    return out
+
+
+def _compose(model, table, comp, prefix, env, out, active):
+    if id(comp) in active:
+        return
+    active = active | {id(comp)}
+    b = table.get(id(comp))
+    ctor = model.ctor(comp)
+    for sub in sub_components(comp):
+        sub_env: Dict[str, Optional[str]] = {}
+        sctor = model.ctor(sub.dtype)
+        call = _sub_ctor_call(ctor, sub.name, model.ctor_names)
+        if call is not None and sctor is not None and not sub.size:
+            for i, a in enumerate(_args(sctor)):
+                arg = call.args[i] if i < len(call.args) else None
+                q = _bare(arg, ctor)
+                sub_env[a.arg] = env.get(q) if q is not None else None
+        if sub.size:
+            # An array of sub-components: one path for every element.
+            for g in group_fields(sub.dtype):
+                out[prefix + (sub.name, g)] = None
+            continue
+        _compose(model, table, sub.dtype, prefix + (sub.name,), sub_env,
+                 out, active)
+    if b is None:
+        return
+    for g in b.groups:
+        out.setdefault(prefix + (g,), None)
+    for path, p in b.params.items():
+        out[prefix + path] = env.get(p) if p is not None else None
+
+
+def _args(fn) -> List[Any]:
+    return list(getattr(getattr(fn, "args", None), "args", None) or [])
+
+
+def _bare(e, fn) -> Optional[str]:
+    """The parameter of *fn* that *e* is, alone, or None. The front end
+    spells a parameter `self.p`, as it does a field, so a name is looked up
+    parameter first (AGENTS.md)."""
+    params = {a.arg for a in _args(fn)}
+    cn = _dt_name(e)
+    if cn == "ExprRefLocal" and e.name in params:
+        return e.name
+    if cn == "ExprAttribute" and _dt_name(e.value) == "TypeExprRefSelf" \
+            and e.attr in params:
+        return e.attr
+    return None
+
+
+def _sub_ctor_call(ctor, sub_name, ctor_names):
+    """`<sub_name>.initialize(...)` in *ctor*'s body, or None."""
+    if ctor is None:
+        return None
+    from .progseq_model import current_ctor_names
+    names = set(ctor_names or current_ctor_names())
+    for call in _walk(getattr(ctor, "body", None)):
+        if _dt_name(call) != "ExprCall" or _dt_name(call.func) != "ExprAttribute":
+            continue
+        if call.func.attr in names and _path(call.func.value) == (sub_name,):
+            return call
+    return None
+
+
+def _self_callee(comp, call):
+    """The function of *comp* that *call* (`self.f(...)`) calls, or None."""
+    f = call.func
+    if _dt_name(f) != "ExprAttribute" or _dt_name(f.value) != "TypeExprRefSelf":
+        return None
+    for fn in getattr(comp, "functions", None) or []:
+        if fn.name == f.attr:
+            return fn
+    return None
+
+
+def _ctor_params(comp, ctor) -> Dict[Tuple[str, ...], Optional[str]]:
+    """Binding.params: what each `set_handle` in the constructor binds,
+    followed through the constructor's own calls (`super.initialize(...)`).
+    A group bound outside the constructor, or bound twice to different
+    parameters, maps to None."""
+    out: Dict[Tuple[str, ...], Optional[str]] = {}
+    reached: set = set()
+
+    def walk(fn, env, seen):
+        if id(fn) in seen:
+            return
+        seen = seen | {id(fn)}
+        reached.add(id(fn))
+        for call in _walk(getattr(fn, "body", None)):
+            if _dt_name(call) != "ExprCall":
+                continue
+            func = call.func
+            if _dt_name(func) == "ExprAttribute" and func.attr == "set_handle":
+                path = _path(func.value)
+                if not path:
+                    continue
+                p = _bare(call.args[0], fn) if call.args else None
+                p = env.get(p) if p is not None else None
+                if path in out and out[path] != p:
+                    out[path] = None
+                else:
+                    out[path] = p
+                continue
+            callee = _self_callee(comp, call)
+            if callee is not None:
+                sub_env = {}
+                for i, a in enumerate(_args(callee)):
+                    arg = call.args[i] if i < len(call.args) else None
+                    q = _bare(arg, fn)
+                    sub_env[a.arg] = env.get(q) if q is not None else None
+                walk(callee, sub_env, seen)
+
+    if ctor is not None:
+        walk(ctor, {a.arg: a.arg for a in _args(ctor)}, set())
+    # Bound outside the constructor (an init block): no parameter.
+    for fn in getattr(comp, "functions", None) or []:
+        if id(fn) not in reached:
+            for path in _set_handle_paths(fn):
+                out[path] = None
+    return out
+
+
+def _pure(comp, ctor, ctor_names, seen=None) -> bool:
+    """Binding.pure_bindings."""
+    if ctor is None:
+        return True
+    seen = (seen or set()) | {id(ctor)}
+    from .progseq_model import current_ctor_names
+    names = set(ctor_names or current_ctor_names())
+    for st in getattr(ctor, "body", None) or []:
+        if _dt_name(st) != "StmtExpr" or _dt_name(st.expr) != "ExprCall":
+            return False
+        call, func = st.expr, st.expr.func
+        if _dt_name(func) != "ExprAttribute":
+            return False
+        if not all(_bare(a, ctor) is not None for a in call.args):
+            return False
+        if func.attr == "set_handle":
+            if not _plain_path(func.value):
+                return False
+            continue
+        callee = _self_callee(comp, call)
+        if callee is not None:
+            if id(callee) in seen or not _pure(comp, callee, ctor_names, seen):
+                return False
+            continue
+        if func.attr in names and _plain_path(func.value) \
+                and len(_path(func.value) or ()) == 1:
+            continue                    # a sub-component's constructor
+        return False
+    return True
+
+
+def _plain_path(e) -> bool:
+    """A self-rooted path with no index."""
+    cn = _dt_name(e)
+    if cn in ("TypeExprRefSelf", "ExprRefLocal"):
+        return True
+    if cn == "ExprAttribute":
+        return _plain_path(e.value)
+    return False
+
+
+def check(comps, ctor_names=None, tm=None, table=None) -> List[str]:
+    """One diagnostic per register group that nothing binds. *table* is the
+    model's `bindings` when the caller has it (``OpModel.bindings``)."""
     errs = []
-    table = bindings(comps, ctor_names, tm)
+    table = table if table is not None else bindings(comps, ctor_names, tm)
     for c in comps:
         name = (getattr(c, "name", None) or "?").split("::")[-1]
         fields = {f.name: f for f in getattr(c, "fields", None) or []}
@@ -152,8 +362,8 @@ def _walk(node) -> Iterator[Any]:
     if not dc.is_dataclass(node) or isinstance(node, type):
         return
     yield node
-    for f in dc.fields(node):
-        yield from _walk(getattr(node, f.name))
+    for c in children(node):
+        yield from _walk(c)
 
 
 def _ctor(comp, ctor_names):

@@ -296,3 +296,54 @@ def test_enum_items_carry_their_generated_spelling(tmp_path, target):
     for sym in (enums["dir_e"]["items"][1]["symbol"],
                 enums["op_e"]["items"][0]["symbol"]):
         assert re.search(r"(?<![\w.:])" + re.escape(sym) + r"\b", text), sym
+
+
+# --- annotations (PC-1) -----------------------------------------------------
+
+ANNOTATED = """
+package hal_pkg {
+    enum mode_e { M0, M1 = 5 };
+    annotation hal_s { string name; string prefix = ""; mode_e m = mode_e::M1; }
+}
+
+@hal_pkg::hal_s {.name = "status"}
+enum status_e { OK, ERR };
+
+@hal_pkg::hal_s {.name = "DEV"}
+component dev_c {
+    @hal_pkg::hal_s {.name = "en", .prefix = "x_"}
+    target function status_e enable(int n) { return status_e::OK; }
+}
+"""
+
+
+def test_annotations_are_reported_on_components_operations_and_enums(tmp_path):
+    src = tmp_path / "hal.pss"
+    src.write_text(ANNOTATED)
+    out = tmp_path / "out"
+    with compile_op_model("op-model-c", sources=[str(src)], root="dev_c",
+                          output_dir=str(out),
+                          progseq_manifest=str(out / "m.json")):
+        doc = json.loads((out / "m.json").read_text())
+    comp = next(c for c in doc["components"] if c["name"] == "dev_c")
+    m1 = {"enum": "hal_pkg::mode_e", "item": "M1", "value": 5}
+    assert comp["annotations"] == [{"type": "hal_pkg::hal_s", "values": {
+        "name": "DEV", "prefix": "", "m": m1}}]
+    op = next(o for o in comp["operations"] if o["name"] == "enable")
+    assert op["annotations"][0]["values"] == {"name": "en", "prefix": "x_",
+                                              "m": m1}
+    enum = next(e for e in doc["enums"] if e["name"] == "status_e")
+    assert enum["annotations"][0]["values"]["name"] == "status"
+
+
+def test_an_unannotated_node_reports_an_empty_list(c_manifest):
+    doc, _ = c_manifest
+    assert all(c["annotations"] == [] for c in doc["components"])
+
+
+def test_register_groups_name_their_constructor_parameter(c_manifest):
+    """PC-2: the bundled model's one group is bound implicitly."""
+    doc, _ = c_manifest
+    root = next(c for c in doc["components"] if c["is_root"])
+    assert root["groups"] == [{"name": "regs", "param": "base",
+                               "implicit": True}]

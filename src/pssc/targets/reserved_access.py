@@ -18,10 +18,9 @@ import dataclasses as dc
 from typing import Any, Iterator, List, Optional, Tuple
 
 from ..diag import at
-from .group_binding import _path, _resolve
-from .progseq_model import (_dt_name, array_element_type, field_is_array,
-                            is_reg_group, sub_components)
-from .reg_layout import is_reserved
+from .group_binding import _path
+from .progseq_model import _dt_name
+from .ir_walk import NON_CHILD_FIELDS
 
 __all__ = ["check", "reserved_prefix"]
 
@@ -67,37 +66,11 @@ def reserved_prefix(comp, path: Tuple[str, ...], tm=None,
     reserved register-group member, or ``None`` if it crosses none.
 
     The path is followed through sub-components and register groups as
-    declared; anything else (a channel, a plain field, a name the component
-    does not have) ends the walk with ``None``."""
-    tm = tm or {}
-    by_name = by_name or {}
-    dt, in_group = comp, False
-    for k, seg in enumerate(path):
-        if in_group:
-            f = next((x for x in getattr(dt, "fields", None) or []
-                      if x.name == seg), None)
-            if f is None:
-                return None
-            if is_reserved(f):
-                return tuple(path[:k + 1])
-            ft = array_element_type(f) if field_is_array(f) else f.datatype
-            if not is_reg_group(ft):
-                return None                # a register: the rest is a method
-            dt = ft
-            continue
-        subs = {s.name: s.dtype for s in sub_components(dt)}
-        if seg in subs:
-            dt = _resolve(subs[seg], tm, by_name)
-            continue
-        f = next((x for x in getattr(dt, "fields", None) or []
-                  if x.name == seg), None)
-        if f is None:
-            return None
-        ft = array_element_type(f) if field_is_array(f) else f.datatype
-        if not is_reg_group(ft):
-            return None
-        dt, in_group = ft, True
-    return None
+    declared (`state_uses.resolve_reg_path`, the one walk that says what a
+    path names); anything else ends the walk with ``None``."""
+    from .state_uses import resolve_reg_path
+    ref = resolve_reg_path(comp, path, tm, by_name)
+    return ref.reserved if ref is not None else None
 
 
 def _calls(node, stmt) -> Iterator[Tuple[Any, Any]]:
@@ -114,6 +87,6 @@ def _calls(node, stmt) -> Iterator[Tuple[Any, Any]]:
     if _dt_name(node) == "ExprCall":
         yield node, stmt
     for f in dc.fields(node):
-        if f.name in ("loc", "metadata"):
+        if f.name in NON_CHILD_FIELDS or f.name == "metadata":
             continue
         yield from _calls(getattr(node, f.name), stmt)

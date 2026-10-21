@@ -57,11 +57,14 @@ def _fn_body(ctx, name):
 
 
 def _norm(node):
-    """A comparable rendering of an IR subtree, with ``loc`` normalised away.
+    """A comparable rendering of an IR subtree, with ``loc`` and
+    ``provenance`` normalised away.
 
     The spellings sit on different source lines, and discarding that to make a
     dump compare equal would be the wrong trade -- so the test drops it here
-    instead, and requires everything else to match exactly (§1.1).
+    instead, and requires everything else to match exactly (§1.1). Provenance
+    differs by spelling on purpose: it records which fields the source named
+    (ruling R-H7; `test_provenance_*` below pins it), and is advisory.
     """
     import dataclasses as dc
     if isinstance(node, list):
@@ -69,7 +72,8 @@ def _norm(node):
     if dc.is_dataclass(node):
         return (type(node).__name__,
                 {f.name: _norm(getattr(node, f.name))
-                 for f in dc.fields(node) if f.name != "loc"})
+                 for f in dc.fields(node)
+                 if f.name not in ("loc", "provenance")})
     return node
 
 
@@ -179,3 +183,139 @@ def test_write_fields_coalesces_to_one_call():
     assert call.func.attr == "write_val_masked"
     # ch_en is bit 0 (mask 0x1), prio is [3:1] (mask 0xe) -> 0xf; 1 | (2<<1) = 5
     assert [a.value for a in call.args] == [0xf, 0x5]
+
+
+# --- provenance: which fields the source named (PC-4, ruling R-H7) ----------
+
+def _the_write(ctx, name):
+    (st,) = _fn_body(ctx, name)
+    call = st.expr
+    assert call.func.attr == "write_val_masked"
+    return call
+
+
+def _fields(call):
+    f = call.provenance.fields
+    if f is None:
+        return None
+    return [(w.slice.name, w.slice.lsb, w.slice.width,
+             getattr(w.value, "value", type(w.value).__name__), w.mask)
+            for w in f]
+
+
+def test_provenance_names_the_fields_of_each_spelling():
+    ctx = translate("""
+        target function void a() { regs.csr.write_field("prio", 2); }
+        target function void b() { regs.csr.write_masked({.prio=7}, {.prio=2}); }
+        target function void c() { regs.csr.write_val_masked(0xe, 4); }
+        target function void d() {
+            regs.csr.write_fields({"use_ed", "ch_en"}, {1, 0});
+        }
+        target function void e() { regs.csr.write_masked({.prio=1}, {.prio=3}); }
+    """)
+    assert ctx.errors == []
+    assert _fields(_the_write(ctx, "a")) == [("prio", 1, 3, 2, 0xe)]
+    assert _fields(_the_write(ctx, "b")) == [("prio", 1, 3, 2, 0xe)]
+    # A primitive written out names no field.
+    assert _fields(_the_write(ctx, "c")) is None
+    # Both fields keep their identity although the values fold into one
+    # constant: `_or_all` merges them in the arguments, not here.
+    assert _fields(_the_write(ctx, "d")) == [
+        ("use_ed", 4, 1, 1, 0x10), ("ch_en", 0, 1, 0, 0x1)]
+    # A partial mask: the bits written for the field, not the whole field.
+    assert _fields(_the_write(ctx, "e")) == [("prio", 1, 3, 3, 0x2)]
+    for n in "abcde":
+        p = _the_write(ctx, n).provenance
+        assert p.pass_name == "reg_rmw"
+
+
+def test_provenance_keeps_a_runtime_value_as_written():
+    ctx = translate("""
+        target function void a(bit[3] v) { regs.csr.write_field("prio", v); }
+    """)
+    assert ctx.errors == []
+    (w,) = _the_write(ctx, "a").provenance.fields
+    # Before `_place`: the model's `v`, not `(bit[32])v & 7 << 1`.
+    assert type(w.value).__name__ in ("ExprRefLocal", "ExprAttribute")
+    assert w.mask == 0xe
+
+
+def test_a_whole_struct_names_no_field():
+    ctx = translate("""
+        target function void a() {
+            p::csr_s m;
+            p::csr_s v;
+            regs.csr.write_masked(m, v);
+        }
+    """)
+    assert ctx.errors == []
+    call = [s for s in _fn_body(ctx, "a")
+            if type(s).__name__ == "StmtExpr"][-1].expr
+    assert call.provenance.fields is None
+
+
+def test_expand_mode_carries_the_provenance_to_the_write():
+    from pssc import reg_rmw
+    ctx = translate("""
+        target function void a() { regs.csr.write_field("ch_en", 1); }
+    """)
+    reg_rmw.expand_all(ctx)
+    body = _fn_body(ctx, "a")
+    write = [s.expr for s in body if type(s).__name__ == "StmtExpr"
+             and s.expr.func.attr == "write_val"][0]
+    assert _fields(write) == [("ch_en", 0, 1, 1, 0x1)]
+
+
+def test_an_inherited_bodys_provenance_is_rewritten_with_it():
+    """comp_inherit copies a base's body into the derived component and
+    renames the base's shadowed field there; the provenance's value names
+    the same field, so it is renamed too (`comp_inherit._rewrite`)."""
+    from pssc.targets import comp_inherit
+    parser = Parser()
+    parser.parses([("test.pss", """
+    package p {
+        import std_pkg::*;
+        import addr_reg_pkg::*;
+        struct csr_s : packed_s<> { rand bit[1] ch_en; rand bit[31] rsvd; }
+        pure component csr_r : reg_c<csr_s, READWRITE, 32> {}
+        pure component grp_c : reg_group_c { csr_r csr; }
+        component base_c {
+            grp_c regs;
+            bit[1] k;
+            target function void f() { regs.csr.write_field("ch_en", k); }
+        }
+        component der_c : base_c {
+            bit[1] k;
+        }
+    }
+    """)])
+    ctx = AstToIrTranslator(debug=False).translate(parser.link())
+    assert ctx.errors == []
+    comp_inherit.complete(ctx)
+    der = ctx.type_map["p::der_c"]
+    f = next(fn for fn in der.functions if fn.name == "f")
+    call = f.body[0].expr
+    (w,) = call.provenance.fields
+    placed = repr(call.args[1])
+    # Whatever name the copy reads the base's `k` by, the provenance says
+    # the same.
+    attr = getattr(w.value, "attr", getattr(w.value, "name", None))
+    assert attr is not None and f"'{attr}'" in placed
+    assert attr != "k"
+
+
+def test_the_shared_reader_gives_whole_fields_lsb_first():
+    from pssc.targets.reg_field_names import whole_fields, written_fields
+    ctx = translate("""
+        target function void a() {
+            regs.csr.write_fields({"use_ed", "ch_en"}, {1, 0});
+        }
+        target function void b() { regs.csr.write_masked({.prio=1}, {.prio=3}); }
+        target function void c() { regs.csr.write_val_masked(1, 1); }
+    """)
+    assert [fs.name for fs in whole_fields(_the_write(ctx, "a"))] == \
+        ["ch_en", "use_ed"]
+    assert [w.slice.name for w in written_fields(_the_write(ctx, "a"))] == \
+        ["use_ed", "ch_en"]
+    assert whole_fields(_the_write(ctx, "b")) is None      # a partial mask
+    assert written_fields(_the_write(ctx, "c")) is None

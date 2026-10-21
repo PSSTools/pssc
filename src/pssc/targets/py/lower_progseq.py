@@ -56,6 +56,7 @@ from ..validate_calls import callee_name, is_super_call
 from ..comments import HASH
 from .. import executors as xtr
 from ..array_literal import is_literal
+from ..group_binding import group_fields
 from ..enum_names import item_of
 from ..progseq_model import (FuncKind, INIT_EXEC_KINDS, _dt_name,
                              array_base_stride, channel_fields, exec_kind,
@@ -2179,6 +2180,17 @@ class _CtorMixin:
         if _dt_name(func) != "ExprAttribute":
             return None
         chain = self._chain(func.value)
+        if (chain and len(chain) == 2 and chain[0][0] in self.subs
+                and chain[1][1] is None and func.attr == "set_handle"
+                and chain[1][0] in group_fields(self.subs[chain[0][0]].dtype)):
+            # `sub.g.set_handle(h)`: an enclosing component binding a
+            # sub-component's group (the gate counts it, `group_binding`).
+            sub = self.subs[chain[0][0]]
+            idx = chain[0][1]
+            target = (f"self.{mangle(sub.name)}[{self.expr(idx)}]"
+                      if idx is not None else f"self.{mangle(sub.name)}")
+            return (f"{target}.{group_base(chain[1][0])} = "
+                    f"{self.expr(call.args[0])}")
         if not chain or len(chain) != 1 or chain[0][0] not in self.reg_groups:
             return None
         group = self.reg_groups[chain[0][0]]

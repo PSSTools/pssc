@@ -61,6 +61,15 @@ def _exec(t, name):
 # expectation is a predicate over the translation context, or Err.
 CASES = {
     # -- translated ----------------------------------------------------------
+    # A standalone annotation (7.13) describes the body it is written in. An
+    # element annotation is carried by the declaration it precedes, and never
+    # reaches a body on its own.
+    "Annotation":        ("package a_pkg { annotation a_s { int n = 0; } } "
+                          "component pss_top { @a_pkg::a_s {.n = 3}; }",
+                          "pss_top",
+                          lambda c: [(a.type_qname, a.values) for a in
+                                     _comp(c).annotations]
+                          == [("a_pkg::a_s", {"n": 3})]),
     "Field":             ("component pss_top { int x; }", "pss_top",
                           lambda c: "x" in _fields(_comp(c))),
     "ExecBlock":         ("component pss_top { exec init_down { } }", "pss_top",
@@ -192,7 +201,6 @@ NOT_A_BODY_ELEMENT_FAMILIES = {
     "Covergroup":  "a covergroup's contents",
     "Coverpoint":  "a covergroup's contents",
     "Dist":        "a dist constraint's contents",
-    "Annotation":  "an annotation, carried by the declaration it precedes",
     "PyImport":    "a package-level Python import",
     "Function":    "a function's signature or its parts",
     "Exec":        "an exec block's parts",
@@ -209,6 +217,9 @@ NOT_A_BODY_ELEMENT = {
     "Component": "pssparser rejects a component in a type body",
     "ActionFieldInitializer": "a traversal's `with` initializer",
     "Comment": "carried by the declaration it is attached to",
+    "AnnotationDecl": "an annotation type is declared at package scope only "
+                      "(7.13 b)",
+    "AnnotationParam": "an annotation's parameter list",
     "ActionHandleField": "declared in an activity block (LRM 11.8.2); in an "
                          "action body `B b1;` parses as a Field",
     "InstanceOverride": "an override block's contents",

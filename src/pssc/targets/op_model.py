@@ -28,6 +28,7 @@ from __future__ import annotations
 import abc
 import argparse
 import dataclasses as dc
+import functools
 import os
 import shutil
 import stat
@@ -271,6 +272,116 @@ class OpModel:
         """The entry points that run in ``comp``, in `--export-action` order."""
         dtype = getattr(comp, "dtype", comp)
         return [e for e in self.entries if e.comp is dtype]
+
+    @functools.cached_property
+    def bindings(self) -> Dict[int, Any]:
+        """``{id(comp): group_binding.Binding}`` for every component type
+        the backends render (`comp_dtypes` and `classes`), computed once over
+        the WHOLE model: an enclosing component's `sub.g.set_handle(...)`
+        counts. The gate and every backend read this one table, so they cannot
+        disagree about which group is bound implicitly."""
+        from . import group_binding
+        comps = list({id(c): c for c in list(self.comp_dtypes)
+                      + list(self.classes)}.values())
+        tm = getattr(self.ctx, "type_map", {}) or {}
+        return group_binding.bindings(comps, self.ctor_names, tm)
+
+    def binding(self, comp):
+        """*comp*'s ``Binding`` (see `bindings`)."""
+        dtype = getattr(comp, "dtype", comp)
+        b = self.bindings.get(id(dtype))
+        if b is None:
+            from . import group_binding
+            tm = getattr(self.ctx, "type_map", {}) or {}
+            b = group_binding.bindings([dtype], self.ctor_names, tm)[id(dtype)]
+        return b
+
+    def handle_params(self) -> Dict[Tuple[str, ...], Optional[str]]:
+        """Each register group under the root, by instance path, mapped to
+        the root constructor's parameter that gives its handle
+        (`group_binding.handle_params`)."""
+        from . import group_binding
+        return group_binding.handle_params(self)
+
+    def owner_of(self, fn):
+        """The component type in the tree that declares ``fn``, or None."""
+        for c in self.comp_dtypes:
+            if any(f is fn for f in getattr(c, "functions", None) or []):
+                return c
+        return None
+
+    def state_uses(self, fn):
+        """What ``fn`` touches, transitively (`state_uses.StateUses`):
+        register groups and registers, component fields, imports, unbounded
+        loops. Memoised per function. Provisional (see
+        `extension-stability.md`)."""
+        cache = self.__dict__.setdefault("_state_uses_cache", {})
+        hit = cache.get(id(fn))
+        if hit is not None:
+            return hit
+        from . import executors as xtr
+        from .state_uses import state_uses
+        su = state_uses(fn, self.owner_of(fn), self.ctx)
+        if xtr.has_executors(self) and (su.regs_read or su.regs_written
+                                         or su.mem_accessed):
+            su = dc.replace(su, executor_delegated=True)
+        cache[id(fn)] = su
+        return su
+
+    def unpacked_signature(self, fn) -> List[Tuple[Tuple[str, ...], str]]:
+        """``[(group_path, root_param)]`` for every register group ``fn``
+        uses, transitively, ordered by the root constructor's parameter list:
+        what a stateless API takes in place of the component handle.
+        ``group_path`` is the instance path from the root.
+
+        Raises a located ``diag.Refusal`` for a group whose handle is not a
+        root constructor parameter passed down unchanged (`handle_params`), and
+        for a function of a component type that appears more than once in the
+        tree (its groups have no single path from the root)."""
+        from ..diag import Refusal
+        owner = self.owner_of(fn)
+        prefix = self._instance_path(owner)
+        if prefix is None:
+            raise Refusal(
+                f"'{fn.name}': its component appears more than once in the "
+                f"tree, so its register groups have no single path from the "
+                f"root", fn)
+        hp = self.handle_params()
+        rctor = self.ctor(self.root)
+        order = {a.arg: i for i, a in enumerate(
+            getattr(getattr(rctor, "args", None), "args", None) or [])}
+        out = []
+        for g in sorted(self.state_uses(fn).groups):
+            path = prefix + g
+            p = hp.get(path)
+            if p is None:
+                raise Refusal(
+                    f"'{fn.name}' uses register group '{'.'.join(path)}', "
+                    f"whose handle is not a parameter of the root "
+                    f"constructor passed down unchanged", fn)
+            out.append((path, p))
+        out.sort(key=lambda e: (order.get(e[1], len(order)), e[0]))
+        return out
+
+    def _instance_path(self, comp) -> Optional[Tuple[str, ...]]:
+        """The one instance path of ``comp`` from the root (``()`` for the
+        root), or None if it has none or several."""
+        from .group_binding import _resolve
+        tm = getattr(self.ctx, "type_map", {}) or {}
+        by_name = {getattr(c, "name", None): c for c in self.comp_dtypes}
+        found: List[Tuple[str, ...]] = []
+
+        def walk(dt, path, depth):
+            if dt is comp:
+                found.append(path)
+            if depth > 64:
+                return
+            for sub in pm.sub_components(dt):
+                walk(_resolve(sub.dtype, tm, by_name), path + (sub.name,),
+                     depth + 1)
+
+        walk(self.root, (), 0)
+        return found[0] if len(found) == 1 else None
 
     def ctor(self, comp):
         """The component's constructor, or ``None``."""
@@ -970,7 +1081,8 @@ class OpModelTarget(Target):
 
         tm = getattr(model.ctx, "type_map", {}) or {}
         comps = list({id(d): d for d in model.comp_dtypes}.values())
-        bad = group_binding.check(comps, model.ctor_names, tm)
+        bad = group_binding.check(comps, model.ctor_names, tm,
+                                  table=model.bindings)
         if bad:
             raise CompileError(
                 f"{len(bad)} register group(s) are never bound", bad)

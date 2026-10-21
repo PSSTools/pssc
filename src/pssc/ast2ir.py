@@ -1227,6 +1227,7 @@ class AstToIrTranslator:
             is_solve=(int(plat) == 2),
         )
         ir_func.loc = self._loc(node) or self._loc(proto)
+        ir_func.annotations = self._annotations(ctx, node, proto)
         self._signature_metadata(ir_func, const_params, dirs)
         # The name a qualified call reaches it by (`p_pkg::f(...)`); see
         # `_translate_expr_ref_static_rooted`.
@@ -1302,6 +1303,10 @@ class AstToIrTranslator:
         # A declaration only: each call expands its body where it is written
         # (`_expand_symbol`), so a symbol nothing calls lowers to nothing.
         'SymbolDeclaration':          (None,                   {'action'}),
+        # A standalone annotation (`@a_s {...};`, 7.13) describes the scope
+        # it is written in. An element annotation never reaches here: it is
+        # carried by the declaration it precedes.
+        'Annotation':                 ('_body_annotation',     _ALL_BODIES),
     }
 
     #: How a refused element is named to the user. The class name otherwise.
@@ -1429,6 +1434,8 @@ class AstToIrTranslator:
                         f"(LRM 22.1) is not supported yet")
                     return
                 fn.body.extend(stmts)
+                # One block, so one list: each block's annotations, in order.
+                fn.annotations.extend(self._annotations(ctx, child))
                 return
         # `exec_kind` says what this function IS. The name alone says it
         # too (an exec kind is a keyword, so no declared function can take
@@ -1436,7 +1443,8 @@ class AstToIrTranslator:
         # block from an operation.
         target_ir.functions.append(
             ir.Function(name=name, is_async=is_async, body=stmts,
-                        metadata={"exec_kind": name}))
+                        metadata={"exec_kind": name},
+                        annotations=self._annotations(ctx, child)))
 
     @staticmethod
     def _top_locals(stmts) -> set:
@@ -1493,6 +1501,13 @@ class AstToIrTranslator:
     def _body_enum(self, ctx, child, target_ir, qualified_name):
         self._translate_enum(ctx, child)
 
+    def _body_annotation(self, ctx, child, target_ir, qualified_name):
+        from pssparser import annotations as pa
+        root = getattr(ctx, "symbol_root", None)
+        if child.getIs_standalone() and root is not None \
+                and pa.type_of(root, child) is not None:
+            target_ir.annotations.append(self._ir_annotation(root, child))
+
     def _body_pool(self, ctx, child, target_ir, qualified_name):
         self._translate_declared_pool(ctx, child, target_ir)
 
@@ -1541,6 +1556,9 @@ class AstToIrTranslator:
 
         if self.debug:
             self.logger.debug(f"Translating extend for: {target_name}")
+
+        # An `extend` is the same type (17.2): its annotations join the type's.
+        target_ir.annotations.extend(self._annotations(ctx, extend))
 
         ctx.push_scope(target_ir)
         # The extended type's own name, so a nested action declared here is
@@ -1596,6 +1614,7 @@ class AstToIrTranslator:
         target_ir.items.update(self._enum_items(
             ctx, extend, target_name,
             max(target_ir.items.values(), default=-1) + 1))
+        target_ir.annotations.extend(self._annotations(ctx, extend))
 
     def _record_scope_function(self, ctx: AstToIrContext, fdef,
                                namespace_prefix: str = "") -> None:
@@ -1687,6 +1706,7 @@ class AstToIrTranslator:
             comp = ir.DataTypeComponent(name=qualified_name, super=None)
             comp.loc = self._loc(component)
         comp.doc = ast_doc(component)
+        comp.annotations = self._annotations(ctx, component)
 
         # Register in type map (both short and qualified names)
         ctx.add_type(qualified_name, comp)
@@ -1966,6 +1986,7 @@ class AstToIrTranslator:
             
         # Create IR class for action
         action_ir = ir.DataTypeClass(name=action_name, super=None)
+        action_ir.annotations = self._annotations(ctx, action)
         
         # Register under qualified name if nested in a component, simple name otherwise
         if parent_comp_name:
@@ -3523,6 +3544,7 @@ class AstToIrTranslator:
         struct_ir = ir.DataTypeStruct(name=qualified_name, super=None)
         struct_ir.loc = self._loc(struct)
         struct_ir.doc = ast_doc(struct)
+        struct_ir.annotations = self._annotations(ctx, struct)
 
         # Set flow_kind from StructKind (buffer/stream/state/resource)
         if hasattr(struct, 'getKind'):
@@ -4241,6 +4263,8 @@ class AstToIrTranslator:
             width = int(getattr(base_ir, "bits", 0) or 0)
 
         enum_ir = ir.DataTypeEnum(name=enum_name, items=items, width=width)
+        enum_ir.loc = self._loc(enum_decl)
+        enum_ir.annotations = self._annotations(ctx, enum_decl)
         ctx.add_type(enum_name, enum_ir)
         return enum_ir
 
@@ -4340,6 +4364,7 @@ class AstToIrTranslator:
             doc=field_doc,
             doc_trailing=field_doc_trailing,
             loc=self._loc(field),
+            annotations=self._annotations(ctx, field),
         )
 
         # A domain (`int in [0..3] x`, 7.3.1; `e_e in [A..B] e`, 7.5.1) is
@@ -4422,6 +4447,7 @@ class AstToIrTranslator:
             is_target=is_target,
             doc=ast_doc(function),
             loc=self._loc(function) or self._loc(prototype),
+            annotations=self._annotations(ctx, function, prototype),
         )
         self._signature_metadata(ir_func, const_params, dirs)
         if getattr(prototype, 'getIs_static', lambda: False)():
@@ -4571,6 +4597,47 @@ class AstToIrTranslator:
         """*node*'s source location, or None (also for no node)."""
         return (ast_loc(node, getattr(self, "_files", {}))
                 if node is not None else None)
+
+    def _annotations(self, ctx: AstToIrContext, *nodes) -> List[ir.Annotation]:
+        """The source annotations (LRM 7.13) on a declaration, as IR.
+
+        *nodes* are the AST nodes one declaration is written as -- a
+        function's definition and prototype, an import and the prototype it
+        names -- and an annotation on more than one of them counts once.
+        The type is the one the linker resolved, and the values are
+        pssparser's (``pssparser.annotations``, ruling R-H1): ast2ir never
+        folds an annotation itself. An annotation whose type did not resolve
+        is disregarded, as 7.13 says (pssparser warns, LINT403).
+        """
+        root = getattr(ctx, "symbol_root", None)
+        if root is None:
+            return []
+        from pssparser import annotations as pa
+        out, seen = [], set()
+        for node in nodes:
+            if node is None:
+                continue
+            for ann in pa.on(root, node):
+                loc = ann.getLocation()
+                key = (loc.fileid, loc.lineno, loc.linepos)
+                if key not in seen:
+                    seen.add(key)
+                    out.append(self._ir_annotation(root, ann))
+        return out
+
+    def _ir_annotation(self, root, ann) -> ir.Annotation:
+        from pssparser import annotations as pa
+
+        def value(v):
+            if isinstance(v, pa.EnumValue):
+                return ir.AnnotationEnum(enum=v.enum, item=v.name, value=v.value)
+            return v
+
+        return ir.Annotation(
+            type_qname=pa.qualified_name(pa.type_of(root, ann)),
+            values={k: value(v.value)
+                    for k, v in pa.effective(root, ann).items()},
+            loc=self._loc(ann))
 
     def _translate_statement(self, ctx: AstToIrContext, stmt_node: Any) -> Optional[ir.Stmt]:
         """Translate a statement node to IR, carrying its comments across.
