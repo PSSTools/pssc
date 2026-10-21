@@ -163,7 +163,7 @@ item:
 
 ```json
 {"type": "hal_pkg::hal_s",
- "values": {"name": "DTPM", "prefix": "",
+ "values": {"name": "UART", "prefix": "",
             "mode": {"enum": "hal_pkg::mode_e", "item": "M1", "value": 5}}}
 ```
 

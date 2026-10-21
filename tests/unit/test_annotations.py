@@ -23,7 +23,7 @@ package hal_pkg {
 
 SRC = PKG + """
 @hal_pkg::note_s {.text = "pkg enum"}
-enum std_rv_e { OK, ERR };
+enum result_e { OK, ERR };
 
 @hal_pkg::hal_s {.name = "UART"}
 component dev_c {
@@ -53,7 +53,7 @@ component dev_c {
 extend component dev_c { }
 
 @hal_pkg::note_s {.text = "enum extension"}
-extend enum std_rv_e { WARN };
+extend enum result_e { WARN };
 
 @hal_pkg::note_s {.text = "import fn"}
 import target function void plat_init();
@@ -118,7 +118,7 @@ def test_merged_exec_blocks_keep_each_blocks_annotations(ctx):
 
 
 def test_enum_and_its_extension(ctx):
-    e = ctx.type_map["std_rv_e"]
+    e = ctx.type_map["result_e"]
     assert _texts(e) == ["pkg enum", "enum extension"]
     assert e.loc is not None and e.loc.line > 0
 

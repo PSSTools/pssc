@@ -21,15 +21,15 @@ MODEL = """
 package plat_pkg {
     annotation extern_s { }
     @extern_s
-    enum std_rv_e { STD_CMN_RETVAL_OK = 0, STD_CMN_RETVAL_FAIL = 1 }
+    enum result_e { RC_OK = 0, RC_FAIL = 1 }
     enum mode_e { M_OFF, M_ON }
 }
 component top_c {
-    target function plat_pkg::std_rv_e go(plat_pkg::mode_e m) {
+    target function plat_pkg::result_e go(plat_pkg::mode_e m) {
         if (m == plat_pkg::mode_e::M_ON) {
-            return plat_pkg::std_rv_e::STD_CMN_RETVAL_OK;
+            return plat_pkg::result_e::RC_OK;
         }
-        return plat_pkg::std_rv_e::STD_CMN_RETVAL_FAIL;
+        return plat_pkg::result_e::RC_FAIL;
     }
 }
 """
@@ -38,7 +38,7 @@ component top_c {
 PLATFORM_H = """\
 #ifndef PLAT_H
 #define PLAT_H
-typedef enum { STD_CMN_RETVAL_OK = 0, STD_CMN_RETVAL_FAIL = 1 } std_rv_e;
+typedef enum { RC_OK = 0, RC_FAIL = 1 } result_e;
 #endif
 """
 
@@ -67,11 +67,11 @@ def _gen(tmp_path, monkeypatch, src=MODEL, **opts):
 def test_an_external_enum_is_used_and_not_defined(tmp_path, monkeypatch):
     out, h, c = _gen(tmp_path, monkeypatch)
     # Not defined here; the platform's header is included instead.
-    assert "STD_CMN_RETVAL_OK =" not in h
+    assert "RC_OK =" not in h
     assert '#include "plat.h"' in h
-    assert "std_rv_e top_go(top_c *_self, mode_e m);" in h
+    assert "result_e top_go(top_c *_self, mode_e m);" in h
     # Its items keep their PSS names; another enum's are prefixed as ever.
-    assert "return STD_CMN_RETVAL_OK;" in c
+    assert "return RC_OK;" in c
     assert "MODE_M_ON" in c and "MODE_M_ON = 1" in h
     cc = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
     if cc is None:
@@ -88,17 +88,17 @@ def test_an_external_name_still_clashes(tmp_path, monkeypatch):
     declares it, so C would see it twice."""
     src = MODEL.replace("enum mode_e { M_OFF, M_ON }",
                         "enum mode_e { M_OFF, M_ON }\n"
-                        "    enum std_cmn_retval_e { OK }")
-    src = src.replace("target function plat_pkg::std_rv_e go(",
-                      "target function plat_pkg::std_cmn_retval_e k() "
-                      "{ return plat_pkg::std_cmn_retval_e::OK; }\n"
-                      "    target function plat_pkg::std_rv_e go(")
+                        "    enum rc_e { OK }")
+    src = src.replace("target function plat_pkg::result_e go(",
+                      "target function plat_pkg::rc_e k() "
+                      "{ return plat_pkg::rc_e::OK; }\n"
+                      "    target function plat_pkg::result_e go(")
     with pytest.raises(driver.CompileError) as ei:
         _gen(tmp_path, monkeypatch, src)
     # (An enum's IR name is not yet qualified; phase 3 left it.)
-    assert ("'STD_CMN_RETVAL_OK' is both item 'OK' of enum "
-            "'std_cmn_retval_e' and item 'STD_CMN_RETVAL_OK' of "
-            "external enum 'std_rv_e'") in "\n".join(
+    assert ("'RC_OK' is both item 'OK' of enum "
+            "'rc_e' and item 'RC_OK' of "
+            "external enum 'result_e'") in "\n".join(
                 map(str, ei.value.errors))
 
 
@@ -106,7 +106,7 @@ def test_the_manifest_marks_an_external_enum(tmp_path, monkeypatch):
     man = tmp_path / "m.json"
     _gen(tmp_path, monkeypatch, progseq_manifest=str(man))
     enums = {e["name"]: e for e in json.loads(man.read_text())["enums"]}
-    assert enums["std_rv_e"]["extern"] is True
+    assert enums["result_e"]["extern"] is True
     assert "extern" not in enums["mode_e"]
-    assert [i["symbol"] for i in enums["std_rv_e"]["items"]] == [
-        "STD_CMN_RETVAL_OK", "STD_CMN_RETVAL_FAIL"]
+    assert [i["symbol"] for i in enums["result_e"]["items"]] == [
+        "RC_OK", "RC_FAIL"]

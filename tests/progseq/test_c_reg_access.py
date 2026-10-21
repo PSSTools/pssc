@@ -161,7 +161,7 @@ def test_a_group_call_is_no_register_access(tmp_path):
 # -- the composed masked write -------------------------------------------------
 
 class _Hal(CBodyEmitter):
-    """The shape a HAL spells: a `data` word, a macro per step."""
+    """The shape a device-access macro set spells: a `data` word, a macro per step."""
 
     def reg_masked_write_inline(self, ra, lw):
         return None
@@ -170,17 +170,17 @@ class _Hal(CBodyEmitter):
         return "uint32_t", "data"
 
     def reg_read_into(self, ra, lw, local):
-        return f"HAL_RD32({ra.group}, R_{ra.accessor.name.upper()}, {local})"
+        return f"DEV_READ32({ra.group}, R_{ra.accessor.name.upper()}, {local})"
 
     def reg_value_field_set(self, local, fs, value, ra, lw, mask):
-        return (f"HAL_SET_FIELD(R_{ra.accessor.name.upper()}, {fs.name}, "
+        return (f"DEV_FIELD_SET(R_{ra.accessor.name.upper()}, {fs.name}, "
                 f"({value}), {local})")
 
     def reg_write_from(self, ra, lw, local):
-        return f"HAL_WR32({ra.group}, R_{ra.accessor.name.upper()}, {local})"
+        return f"DEV_WRITE32({ra.group}, R_{ra.accessor.name.upper()}, {local})"
 
     def reg_value_field_get(self, value, fs, ra, lw):
-        return f"HAL_GET_FIELD(R_{ra.accessor.name.upper()}, {fs.name}, {value})"
+        return f"DEV_FIELD_GET(R_{ra.accessor.name.upper()}, {fs.name}, {value})"
 
 
 class _HalBackend(COpModelBackend):
@@ -193,12 +193,12 @@ def test_a_composed_masked_write_is_one_step_per_field(tmp_path, monkeypatch):
     lines = [ln.strip() for ln in body.splitlines()]
     # The local first; the handle, unused by these macros, marked so.
     assert lines[:2] == ["uint32_t data;", "(void)_self;"]
-    assert lines[2:] == ["HAL_RD32(regs, R_CTL, data);",
-                          "HAL_SET_FIELD(R_CTL, en, (1), data);",
-                          "HAL_SET_FIELD(R_CTL, mode, (m), data);",
-                          "HAL_WR32(regs, R_CTL, data);"]
+    assert lines[2:] == ["DEV_READ32(regs, R_CTL, data);",
+                          "DEV_FIELD_SET(R_CTL, en, (1), data);",
+                          "DEV_FIELD_SET(R_CTL, mode, (m), data);",
+                          "DEV_WRITE32(regs, R_CTL, data);"]
     # A field of a whole read goes through its hook.
-    assert "HAL_GET_FIELD(R_CTL, mode, " in _body(
+    assert "DEV_FIELD_GET(R_CTL, mode, " in _body(
         c, "uint32_t top_get_mode(top_c *_self)")
 
 
