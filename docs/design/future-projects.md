@@ -120,6 +120,25 @@ and does not do it.
   in the reporter's build. Get a cut-down model first. The reporter's C HAL
   is not usable until this is fixed.
 
+## HAL-plugin follow-ups (`hal-plugin-requests-plan.md`)
+
+- **Register-value struct locals in a HAL.** `ctl_s v = regs.ctl.read();
+  v.en = 1; regs.ctl.write(v);` still declares `v` as the value union and
+  reads and writes its members. `reg_value_local`/`reg_value_field_get/set`
+  reach only a composed masked write's local and a field of a whole
+  `read()`. Retyping a struct local (the plan's `struct_locals` extension)
+  needs the read, the write, a field read/write and passing it to a function
+  to agree on the local's type.
+- **External types beyond C.** `StylePolicy.is_extern_type` is asked only by
+  op-model-c: C++, SV and Python have no style policy. Give them one (or a
+  backend hook) when a plugin for one of them needs it. An external type
+  keeps its PSS name; `extern_type_name` was not added.
+- **ZIR-2 / a pssc-shipped `pssc_pkg::extern_type_s`** (R-H6 (b), (c)) until
+  a second user needs to mark a type external in the model itself.
+- **Field-level reads in `state_uses`** (`regs_read` is register-level).
+- **An enum's IR name is unqualified** (`std_rv_e`, not `plat_pkg::std_rv_e`),
+  so `c_names` messages name it so; qualifying it moves `_qual` diagnostics.
+
 ## Test rot found during the 0.2.0 wave
 
 These fail the same way before and after the release changes, so they are

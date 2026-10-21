@@ -24,7 +24,7 @@ docs per phase.
 | 2 | ir-core: ZIR-1 (ZIR-2 deferred, R-H6 (a)) | **committed** (ir-core `e1523a6` on main, unpushed) |
 | 3 | pssc: walker skip-list (prerequisite), PC-1 annotations into the IR | **committed** (pssc `21a1bea` on construct-test-audit, unpushed); guide section deferred to phase 6 |
 | 4 | pssc analysis: PC-2 bindings, PC-4 provenance, PC-3 state uses | **committed** (pssc `21a1bea`). Suites green: unit 2587, progseq 2984 (goldens unchanged), compliance 925 |
-| 5 | pssc C backend: PC-7, PC-5, PC-6, PC-8 (+ c_names) | **in progress**: items 1 (funnel, `f55f9d9`), 2 (signature/handle/linkage, `2faeeae`), 3 (`CBodyEmitter`, `042b847`) and 4 (register access, `e036133`) committed; see §3 phase 5 notes |
+| 5 | pssc C backend: PC-7, PC-5, PC-6, PC-8 (+ c_names) | **committed** 2026-10-21 (pssc `f55f9d9`..`5fdf4fc` on construct-test-audit, unpushed). Suites green: unit 2592, progseq 3005 (goldens unchanged). Guide section (Level 2) deferred to phase 6, which builds the fixture it quotes; see §3 phase 5 notes |
 | 6 | End-to-end: a HAL-shaped fixture plugin, differential bus trace | not started |
 | 7 | Docs sweep, release, reply | not started |
 
@@ -461,6 +461,22 @@ group. Each repo's commit carries its own tests and docs.
   plan's `struct_locals` retyping is deferred (record in
   `future-projects.md`). Tests: `tests/progseq/test_c_reg_access.py`, incl.
   the WB DMA trace gate passing with every masked write composed.
+- Item 5 done (`affcbc4`): `emit_lifecycle_decls`/`emit_lifecycle(node,
+  ctx)`, a `pairs_with` pair; `lifecycle_decls`/`lifecycle_lines` are the
+  defaults. `c_names` gathers lifecycle names iff `emit_lifecycle_decls` is
+  non-empty. `CStylePolicy.seam_includes` (the tail of `include_order`);
+  `seam_headers` `[]` already stopped the copies. The G8 tripwire in
+  `test_builtin_as_tier_b.py` now pins the pair.
+- Item 6 done (`5fdf4fc`), **C only**: `StylePolicy.is_extern_type` on the
+  base class, but only op-model-c has a policy to ask; C++/SV/Python and
+  `extern_type_name` are in `future-projects.md`. `CStylePolicy.enum_item_for`;
+  `c_names.occupied_names`; manifest `"extern": true` via
+  `OpModelTarget.is_extern_type`. Tests: `test_c_extern_types.py`.
+- Docs: `extension-stability.md` §1 (surfaces, and `body_walker` removed
+  from the shared-services row, reconciling it with AGENTS.md), AGENTS.md
+  (memory seam, backend class, `CBodyEmitter`), `future-projects.md`
+  (HAL-plugin follow-ups), the G8 note in
+  `generator-style-extensions-plan.md`.
 - Pre-existing, not caused here: `test_op_model_py.py::test_it_refuses_exactly_what_the_c_target_refuses_on_the_real_model`
   fails when run after some other progseq modules (e.g. `-k "golden or c_"`)
   and passes alone and in the full suite; reproduced at `b563c2c`.

@@ -60,12 +60,22 @@ you need a memory access in the C backend, call the funnel rather than writing
 the primitive out — that test will fail otherwise. It also owns the accessor
 name scheme (`<base>_read_val`, `<base>_write_masked`, …), which
 `lower_reg_model` uses to DEFINE the accessors and `lower_progseq` to CALL
-them; those were two hand-kept tables before.
+them; those were two hand-kept tables before. The layout-struct primitives
+(`pssc_read<N>`/`pssc_write<N>`/`pssc_write_masked<N>`, `reg_ptr_*`) live
+there too, and the test's pattern covers them.
 
 ## The C backend is a class
 
 `targets/c/backend.py` (`COpModelBackend`) assembles the generated files;
 `c_progseq_gen.generate()` only turns command-line keywords into a `CSettings`.
+
+An operation's C API is three backend answers, `signature(fn, ctx)`,
+`handle_param(fn, ctx)` and `linkage(fn, ctx)`, asked through `OpCtx.api`
+wherever an operation is declared, defined, called (`model_call`) or named
+(`c_names`), so they cannot disagree. A body that reaches component state
+in an operation with no handle is a located `Refusal` (the emitter's `h`).
+The lifecycle is the pair `emit_lifecycle_decls`/`emit_lifecycle`; `[]`
+leaves it out, and `c_names` then gathers none of its names.
 Two rules hold it together, and both are tested
 (`tests/progseq/test_c_backend_class.py`):
 
@@ -152,6 +162,20 @@ that is correct for everything, so there is nothing for a table to decide.
 
 `body_walker.py` is NOT part of the published override surface. `body_emitter_cls`
 is marked `provisional` for exactly this kind of change.
+
+The C emitter is `CBodyEmitter` (`_BodyEmitter` is an alias for a release),
+and it is a published surface of its own (`docs/override-surface.json`) for
+a few hooks only, all `provisional` (ruling R-H9): `model_call` (every call
+to an operation) and the register hooks. A register access reaches
+`reg_access(ra, lw)` resolved: `ra` is `reg_layout.RegAccess`
+(`resolve_access`, on `state_uses.resolve_reg_path` -- never a third walk),
+`lw` the C side (`LoweredRegAccess`). A masked write's SHAPE is pssc's
+(ruling R-H8): `reg_masked_write_inline` gives one call, or None to compose
+read (`reg_read_into`) -> one `reg_value_field_set` per field the source
+named (or `reg_value_merge`) -> `reg_write_from`, on a function-top local
+(`reg_value_local`, `function_local`). pssc writes the read, so a plugin
+cannot drop it. `stmt_*`/`expr_*` stay unpublished: printing is to move to
+be-* (D15).
 
 ## A refusal says where
 

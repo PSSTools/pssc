@@ -18,16 +18,22 @@ methods were designed to be wrapped from which merely happen to be callable.
 | Surface | Where | How it is pinned |
 | --- | --- | --- |
 | The target contract | `pssc.targets.Target`, `pssc.targets.op_model.OpModelTarget` | `Target.PSSC_TARGET_API`, checked at registration |
-| Style policies | `pssc.targets.style.StylePolicy`, `pssc.targets.c.style.CStylePolicy` | `tests/progseq/test_style_policy.py` |
-| The backend override surface | methods marked `@overridable` | `docs/override-surface.json` (checked in) |
+| Style policies | `pssc.targets.style.StylePolicy` (incl. `is_extern_type`), `pssc.targets.c.style.CStylePolicy` (incl. `enum_item_for`, `seam_includes`) | `tests/progseq/test_style_policy.py`, `test_c_extern_types.py` |
+| The backend override surface | methods marked `@overridable` on `COpModelBackend` (an operation's `signature`, `handle_param` and `linkage`; the lifecycle pair `emit_lifecycle_decls`/`emit_lifecycle`; the sections) and on the C body emitter `pssc.targets.c.lower_progseq.CBodyEmitter` (`model_call` and the register hooks `reg_access`, `reg_masked_write_inline`, `reg_value_local`, `reg_read_into`, `reg_value_field_set`, `reg_value_merge`, `reg_write_from`, `reg_value_field_get`; all provisional). The emitter's other methods are not published | `docs/override-surface.json` (checked in), one entry per class |
 | Call legality | `pssc.targets.call_legality` — `Entry`, `Disposition`, `Ctx`, `register_extension`, `COMMON` | the Tier-1 contract test |
-| The shared services | `pssc.targets.body_walker`, `pssc.targets.reg_layout`, `pssc.targets.sections`, `pssc.targets.comments` | their own test files |
+| The shared services | `pssc.targets.reg_layout` (incl. `RegAccess`, `resolve_access`), `pssc.targets.sections`, `pssc.targets.comments` | their own test files |
 | Model queries (provisional) | `OpModel.bindings`, `.binding(comp)`, `.handle_params()`, `.state_uses(fn)`, `.unpacked_signature(fn)`; `pssc.targets.state_uses` (`StateUses`, `RegRef`, `resolve_reg_path`, `callees`); `pssc.targets.reg_field_names` (`written_fields`, `whole_fields`) | `tests/unit/test_group_binding.py`, `test_state_uses.py`, `test_reg_ir_equivalence.py` |
 | Source annotations | `pssc.annotations` (`of`, `all_of`), read from `annotations` on a component, action, struct, enum, field or function of the IR | `tests/unit/test_annotations.py` |
 | The testing kit | `pssc.testing` | used by pssc's own suite |
 | Entry-point groups | `pssc.targets`, `pssc.styles` | `tests/unit/test_plugin_integration.py`, against a really-installed plugin |
 | CLI options | `pssc compile`, `pssc targets` | [`cli.md`](cli.md) |
 | The manifest schema | `--emit-manifest` | `pssc.targets.manifest.SCHEMA`, versioned in the emitted document |
+
+`pssc.targets.body_walker` is **not** listed: the walk over an operation body,
+and every `stmt_*`/`expr_*` hook of an emitter, are expected to move to the
+be-* emitters (`compound-actions-design.md`, D15). An extension reaches a body
+through the published `CBodyEmitter` hooks above, never by overriding a node
+kind's hook.
 
 Everything else — every underscore-prefixed name, every module not listed above,
 the internal shape of the IR, and the *bytes* of generated output — is private
