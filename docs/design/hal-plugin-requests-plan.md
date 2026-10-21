@@ -26,9 +26,9 @@ docs per phase.
 | 4 | pssc analysis: PC-2 bindings, PC-4 provenance, PC-3 state uses | **committed** (pssc `21a1bea`). Suites green: unit 2587, progseq 2984 (goldens unchanged), compliance 925 |
 | 5 | pssc C backend: PC-7, PC-5, PC-6, PC-8 (+ c_names) | **committed** 2026-10-21 (pssc `f55f9d9`..`5fdf4fc` on construct-test-audit, unpushed). Suites green: unit 2592, progseq 3005 (goldens unchanged). Guide section (Level 2) deferred to phase 6, which builds the fixture it quotes; see §3 phase 5 notes |
 | 6 | End-to-end: a HAL-shaped fixture plugin, differential bus trace | **committed** 2026-10-21 (pssc `655842d`..`81b222f`, ir-core `c6e294c`; unpushed). Suites green: unit 2633 (incl. the 18 plugin-integration tests, which had been skipping here), progseq 3005 (goldens unchanged). See §3 phase 6 notes |
-| 7 | Docs sweep, release, reply | not started |
+| 7 | Docs sweep, release, reply | **release commits made** 2026-10-21, nothing pushed or tagged: docs sweep done (it also found the requester's annotation name in phase 1 and 3 examples, now `gen_pkg::block_s`); deferred items in `future-projects.md`; reply drafted (`requests-reply.md`, repo root, untracked like `requests.md`). Suites green: pssc unit 2633, progseq 3005 (goldens unchanged); pssparser 9266; ir-core 107. Next: push and tag in the order below (needs the user's OK), then send the reply |
 
-The requester's test files (`/tmp/halann/...`) no longer exist on this
+The requester's test files (temporary files on their side) no longer exist on this
 machine. Phase 6 builds its own generic model rather than waiting for copies.
 
 **Vocabulary rule (user, 2026-10-21).** Everything pssc ships or tests uses
@@ -551,6 +551,28 @@ Add a second fixture plugin, `tests/plugins/pssc_hal_fixture/`, generic names on
   `pssc.diag.Refusal`.
 
 ### Phase 7: docs, release, reply
+
+**Release set (found 2026-10-21).** pssc 0.2.0 was never published (PyPI has
+0.1.0), and neither was zuspec-be-bc: its v0.1.0 tag's upload step failed
+(PyPI's new-project rate limit, as in the 0.2.0 wave). be-bc's main lowers
+`StmtIfChain` and be-sw's escapes decoded strings, so both need a release.
+In order (each tag after its repo's main CI is green):
+
+1. pyastbuilder: push master (`fb6577c`, the stub values). pssparser's CI
+   fetches it from git, so no PyPI release is needed for 3.5.0.
+2. pssparser **3.5.0** (`c5d1066`): push, tag `v3.5.0` (the tag is the
+   version).
+3. zuspec-ir-core **0.3.0** (`c439187`: `StmtIfChain`, `Base.annotations`).
+4. zuspec-be-sw **0.2.1** (`37a02da`), zuspec-be-bc **0.1.1** (`0f2fab4`,
+   `ir-core>=0.3.0`).
+5. pssc **0.2.0**: floors `pssparser>=3.5`, `zuspec-ir-core>=0.3.0`,
+   `zuspec-be-sw>=0.2.1`, `zuspec-be-bc>=0.1.1`; `docs/release-notes.md`;
+   construct-test-audit fast-forwarded into main.
+
+Verified: wheels of ir-core, be-bc, be-sw and pssc built from clean
+exports hold every tracked module. Not verified here: a clean install
+with pssparser 3.5.0 (it is a native build); CI's wheel jobs are the check.
+
 
 - Re-read the docs touched in each phase as a whole (§4).
 - Add any deferred items (ZIR-2, `pssc_pkg::extern_type_s`, field-level reads, C vtable interplay) to `docs/design/future-projects.md`.

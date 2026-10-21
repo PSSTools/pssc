@@ -174,11 +174,12 @@ no field-name string survives into it.**
 
 ```pss
 regs.csr.write_field("ch_en", 1);
+regs.csr.write_fields({"ch_en"}, {1});
 regs.csr.write_masked({.ch_en=~0}, {.ch_en=1});
 regs.csr.write_val_masked(32'h0000_0001, 32'h0000_0001);
 ```
 
-All three must produce identical IR — a single `write_val_masked` call with
+All four must produce identical IR — a single `write_val_masked` call with
 folded constant mask and value. `"ch_en"` is a *reference to a declared field*
 that happens to be spelled as a string because the LRM's signature is
 `write_field(string, bit[SZ])`; it is not data. Three consequences:
@@ -193,7 +194,7 @@ that happens to be spelled as a string because the LRM's signature is
   handed off the question is already answered. This is also what makes phase 3's
   SV `write_val_masked` a plain type-generic task rather than generated per
   register.
-- **"Identical" means identical *modulo* `loc`.** The three spellings sit on
+- **"Identical" means identical *modulo* `loc`.** The four spellings sit on
   different source lines, and throwing that away to make a dump compare equal
   would be the wrong trade. The equivalence test normalises `loc` and requires
   everything else to match exactly.
@@ -210,8 +211,11 @@ bits it writes. `fields` is `None` for a `write_val_masked` written out or a
 `write_masked` of a whole struct. Every backend still renders the arguments;
 a backend or plug-in may read the provenance (`targets/reg_field_names.py`) to
 spell the modify step one field at a time, but never to change the number or
-order of bus operations. The equivalence test now normalises `provenance` as
-well as `loc`, and pins the provenance of each spelling separately. A field
+order of bus operations. `--reg-rmw=expand` copies the provenance onto the
+`write_val` it produces, and `check_reduced` raises if a reduced
+`write_field(s)` has lost it. The equivalence test
+(`tests/unit/test_reg_ir_equivalence.py`) now normalises `provenance` as well
+as `loc`, and pins the provenance of each spelling separately. A field
 *name* therefore does reach the IR, but only on the provenance, never in an
 argument a backend renders; the "no name table" consequence above still
 holds.

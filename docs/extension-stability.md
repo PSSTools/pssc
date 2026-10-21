@@ -23,8 +23,8 @@ methods were designed to be wrapped from which merely happen to be callable.
 | Call legality | `pssc.targets.call_legality` — `Entry`, `Disposition`, `Ctx`, `register_extension`, `COMMON` | the Tier-1 contract test |
 | The shared services | `pssc.targets.reg_layout` (incl. `RegAccess`, `resolve_access`, `RegAccessor.fields`), `pssc.targets.sections`, `pssc.targets.comments` | their own test files |
 | Diagnostics | `pssc.diag.Refusal(text, node...)`: the model's error, raised from an override, reported at the node's PSS location (or the statement being rendered) | `tests/progseq/test_c_op_api.py`, `tests/unit/test_hal_fixture.py` |
-| Model queries (provisional) | `OpModel.bindings`, `.binding(comp)`, `.handle_params()`, `.state_uses(fn)`, `.unpacked_signature(fn)`; `pssc.targets.state_uses` (`StateUses`, `RegRef`, `resolve_reg_path`, `callees`); `pssc.targets.reg_field_names` (`written_fields`, `whole_fields`) | `tests/unit/test_group_binding.py`, `test_state_uses.py`, `test_reg_ir_equivalence.py` |
-| Source annotations | `pssc.annotations` (`of`, `all_of`), read from `annotations` on a component, action, struct, enum, field or function of the IR | `tests/unit/test_annotations.py` |
+| Model queries (provisional) | `OpModel.bindings`, `.binding(comp)`, `.handle_params()`, `.state_uses(fn)`, `.unpacked_signature(fn)`; `pssc.targets.state_uses` (`StateUses`, `state_uses`, `RegRef`, `resolve_reg_path`, `Call`, `callees`); `pssc.targets.reg_field_names` (`written_fields`, `whole_fields`) | `tests/unit/test_group_binding.py`, `test_state_uses.py`, `test_reg_ir_equivalence.py` |
+| Source annotations | `pssc.annotations` (`of`, `all_of`), read from `annotations` on a component, action, struct, enum, field, function or exec block of the IR | `tests/unit/test_annotations.py` |
 | The testing kit | `pssc.testing` | used by pssc's own suite |
 | Entry-point groups | `pssc.targets`, `pssc.styles` | `tests/unit/test_plugin_integration.py`, against a really-installed plugin |
 | CLI options | `pssc compile`, `pssc targets` | [`cli.md`](cli.md) |
@@ -118,7 +118,7 @@ registration error.
 
 ## 4. Deprecation window
 
-pssc is pre-1.0 (`pssc.__version__` is `0.1.0`), and this policy is written to
+pssc is pre-1.0 (`pssc.__version__` is `0.x`), and this policy is written to
 be the one that survives 1.0 rather than a looser one that has to be replaced.
 
 **For a `stable` member**, a breaking change — removal, a renamed method, a

@@ -72,7 +72,8 @@ there too, and the test's pattern covers them.
 An operation's C API is three backend answers, `signature(fn, ctx)`,
 `handle_param(fn, ctx)` and `linkage(fn, ctx)`, asked through `OpCtx.api`
 wherever an operation is declared, defined, called (`model_call`) or named
-(`c_names`), so they cannot disagree. A body that reaches component state
+(`c_names`), so they cannot disagree; `op_ctx(comp)` is the `OpCtx` to ask
+them outside a body (`emit_extra_files`). A body that reaches component state
 in an operation with no handle is a located `Refusal` (the emitter's `h`).
 The lifecycle is the pair `emit_lifecycle_decls`/`emit_lifecycle`; `[]`
 leaves it out, and `c_names` then gathers none of its names.
@@ -217,7 +218,7 @@ target (`targets/group_binding.py`); the one exception is a component with a
 single group whose constructor binds none, which binds it to the
 constructor's first address parameter.
 
-Overlapping members (aliased views of one aperture) are legal: C's layout
+Overlapping members (aliased views of one address range) are legal: C's layout
 struct (`reg_layout.build_reg_map`) makes each connected overlap one
 anonymous `UNION` member, keeping every alias's name and PSS path. The walk
 models C alignment and states every rounding byte as a pad; the emitter must
@@ -526,7 +527,8 @@ python scripts/regen_override_surface.py            # after an intended change
 a real extension, expected to move". A marked method's docstring must state
 its contract — a test enforces that too. `pairs_with` names a member that
 cannot be overridden alone (the include guard's two halves; the API types and
-the register value unions, which partition one set of declarations); taking one
+the register value unions, which partition one set of declarations; the
+lifecycle's declarations and definitions); taking one
 half is refused at target REGISTRATION, before any model is read.
 
 `derives_from = "op-model-c"` gives a target its ancestor's call legality, CLI

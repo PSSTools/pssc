@@ -141,6 +141,18 @@ and does not do it.
 - **ZIR-2 / a pssc-shipped `pssc_pkg::extern_type_s`** (R-H6 (b), (c)) until
   a second user needs to mark a type external in the model itself.
 - **Field-level reads in `state_uses`** (`regs_read` is register-level).
+- **C's vtable and the operation API hooks.** C still renders component
+  inheritance flattened, so `model_call` names one function and needs no
+  dispatch. When C gets its vtable (`op-model-c-vtable-super`), a virtual
+  call goes through the object. `handle_param` returning None then has no
+  object to dispatch through, and `model_call` would have to say how a call
+  is made, not only how it is spelled. Decide then whether a stateless API
+  refuses an overridden function or keeps calling the flattened copy, and
+  whether `signature`/`linkage` apply to each override or to the slot.
+- **The manifest's `"extern": true` is on enums only.** Phase 5 meant it for
+  value structs too (`manifest.py` asks `is_extern_type` for enums alone).
+- **pssparser does not fold a cast in an annotation value** (`Value.value`
+  is `None`, `expr` is kept). Fold it in pssparser when a model needs one.
 - **An enum's IR name is unqualified** (`result_e`, not `plat_pkg::result_e`),
   so `c_names` messages name it so; qualifying it moves `_qual` diagnostics.
 

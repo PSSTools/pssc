@@ -17,7 +17,7 @@ Pick the smallest level that does what you need.
 
 Every code block below whose first line is a `#` path is **quoted verbatim from
 a file in this repository**, and every one of those files is exercised by
-pssc's own test suite. `tests/docs/test_doc_examples.py` fails if a block here
+pssc's own test suite. `tests/unit/test_doc_examples.py` fails if a block here
 and its source drift apart, because an extension guide whose examples are not
 run rots within two releases — and a rotted guide costs a reader a day before
 they conclude the docs are wrong.
@@ -196,8 +196,8 @@ the policy is not one of several the user picks between, it is what this target
 *is*.
 
 Every emitting method **returns text and writes nothing**, which is what lets
-you call `super()` and wrap the result. Only `emit_extra_files` and the
-top-level file emitters touch disk.
+you call `super()` and wrap the result. `emit_extra_files` returns its files as
+a `{name: text}` mapping; only `generate`/`write_files` touch disk.
 
 The target is four lines:
 
@@ -541,6 +541,9 @@ What the `OpModel` gives you, and why you should not recompute any of it:
 | `offset_of`, `base_stride_of` | the **folded** address arithmetic — see below |
 | `channels(comp)`, `sub_components(comp)` | the rest of the component's shape |
 | `imports` | declared `import target/solve function`s, by PSS name |
+| `exports` | the root's exported functions (`export target function f;`) |
+| `bindings`, `binding(comp)`, `handle_params()` | which constructor parameter gives each register group its handle, computed once over the whole tree (provisional) |
+| `state_uses(fn)`, `unpacked_signature(fn)` | what an operation touches, transitively, and the groups a stateless API takes in place of the handle (provisional) |
 | `out_dir` | where to write |
 
 For register addresses specifically, use `pssc.targets.reg_layout` rather than
@@ -587,8 +590,11 @@ walk needs:
 class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
 ```
 
-The walker owns statement dispatch, nesting, comment propagation, the
-write-only-local scan and the channel-output-local scan. You own rendering:
+`BodyWalker` is **not** a published surface
+([`extension-stability.md`](extension-stability.md) §1): printing is to move
+to the be-* emitters, so a language written on it today follows pssc's tree
+rather than a promise. The walker owns statement dispatch, nesting, comment
+propagation, the write-only-local scan and the channel-output-local scan. You own rendering:
 define a hook named after each IR node class (`StmtAnnAssign` →
 `stmt_ann_assign`, `ExprRefBottomUp` → `expr_ref_bottom_up`) and the walk finds
 it. A node with no hook is a loud error, never text copied through — which is

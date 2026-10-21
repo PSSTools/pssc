@@ -137,7 +137,7 @@ Each entry of `components`:
 | `sub_components` | [{`name`, `type`, `count`}] | instances; `count` is the array size |
 | `channels` | [{`name`, `element`, `depth`}] | declared channels |
 | `registers` | [register] | every register reachable from this component |
-| `groups` | [{`name`, `param`, `implicit`}] | each register group and the constructor parameter that gives its handle: `param` is the parameter's name when the handle is that parameter alone, else `null`; `implicit` is true for the one group the generator binds to the constructor's address parameter |
+| `groups` | [{`name`, `param`, `implicit`}] | each register group and the constructor parameter that gives its handle: `param` is the parameter's name when the handle is that parameter alone, else `null` (an expression, or a binding made by an enclosing component); `implicit` is true for the one group the generator binds to the constructor's address parameter |
 
 The constructor is reported **separately from the operations**, because it is
 separate in the generated API: it takes the address handle and is called once.
@@ -162,14 +162,14 @@ of the type, defaults included. A value is a string, a number, a bool, `null`
 item:
 
 ```json
-{"type": "hal_pkg::hal_s",
- "values": {"name": "UART", "prefix": "",
-            "mode": {"enum": "hal_pkg::mode_e", "item": "M1", "value": 5}}}
+{"type": "gen_pkg::block_s",
+ "values": {"name": "DEV", "prefix": "",
+            "mode": {"enum": "gen_pkg::mode_e", "item": "M1", "value": 5}}}
 ```
 
 Components, functions (operations and the constructor) and enums carry
 `annotations`; it is `[]` where there are none. In Python, read the same
-values from the IR with `pssc.annotations.of(node, "hal_pkg::hal_s")`.
+values from the IR with `pssc.annotations.of(node, "gen_pkg::block_s")`.
 
 Types are spelled the way the **model** spells them — `bit[32]` stays `bit[32]`
 rather than becoming `uint32_t` in one manifest and `logic [31:0]` in another. A
@@ -263,6 +263,10 @@ enum. C and SV have one namespace for every enum's items, so they prefix it
 (`WB_DMA_STATUS_WB_DMA_DONE`, unless a C style or `--sv-enum-items verbatim`
 says otherwise). C++ writes `wb_dma_status_e::WB_DMA_DONE` and Python
 `wb_dma_status_e.WB_DMA_DONE`. A target that does not say has no `symbol`.
+
+An enum the platform declares (the target's `is_extern_type` says so; the
+generated code uses it and never defines it) carries `"extern": true`. The key
+is absent on every other enum.
 
 ---
 
