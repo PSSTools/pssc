@@ -1729,18 +1729,18 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             path += ".v"
         raw = f"&{path}"
         if method == "read":
-            rd = f"pssc_read{prim}({raw})"
+            rd = self.mem.reg_ptr_read(prim, raw)
             # A compound literal, because this is an EXPRESSION: the accessor
             # that used to do `v.raw = ...; return v;` had a function body to
             # do it in, and there is no function here any more.
             return f"({acc.c_type}){{ .raw = {rd} }}" if typed else rd
         if method == "read_val":
-            return f"pssc_read{prim}({raw})"
+            return self.mem.reg_ptr_read(prim, raw)
         if method in ("write", "write_val"):
             v = f"({args[0]}).raw" if (typed and method == "write") else args[0]
-            return f"pssc_write{prim}({raw}, {v})"
+            return self.mem.reg_ptr_write(prim, raw, v)
         mask, val = args[0], args[1]
-        return f"pssc_write_masked{prim}({raw}, {mask}, {val})"
+        return self.mem.reg_ptr_masked_write(prim, raw, mask, val)
 
     def _through_subs(self, chain):
         """Follow the sub-component hops at the front of *chain*:
@@ -2156,8 +2156,8 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         if self.reg_map:
             ptr = f"(volatile void *)(uintptr_t)({rendered[0]})"
             if direction == "read":
-                return f"pssc_read{width}({ptr})"
-            return f"pssc_write{width}({ptr}, {rendered[1]})"
+                return self.mem.reg_ptr_read(width, ptr)
+            return self.mem.reg_ptr_write(width, ptr, rendered[1])
         if direction == "read":
             return self.mem.read(width, self.h, rendered[0])
         return self.mem.write(width, self.h, rendered[0], rendered[1])

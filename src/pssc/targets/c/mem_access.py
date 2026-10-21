@@ -139,6 +139,34 @@ class MemAccess:
                 f"{self.accessor(base, 'write_val')}({args}, "
                 f"(cur & ~{mask}) | ({val} & {mask}));")
 
+    # -- pointer accesses (the reg_map link style) ----------------------------
+    #
+    # Under the layout struct a register is a member, and the address is that
+    # member's: the primitives take a pointer and no bus handle, and what the
+    # access does (a `volatile` store, a call to the platform) is decided in
+    # pssc_mem_reg.h. Here so that these spellings, like the handle ones, have
+    # one home.
+
+    #: `%d` is the width in bits.
+    ptr_read_prim = "pssc_read%d"
+    ptr_write_prim = "pssc_write%d"
+    ptr_masked_write_prim = "pssc_write_masked%d"
+
+    def reg_ptr_read(self, width: int, ptr: str) -> str:
+        """``pssc_read32(<ptr>)`` -- an expression."""
+        return f"{self.ptr_read_prim % self._width(width)}({ptr})"
+
+    def reg_ptr_write(self, width: int, ptr: str, value: str) -> str:
+        """``pssc_write32(<ptr>, <value>)`` -- a void expression."""
+        return f"{self.ptr_write_prim % self._width(width)}({ptr}, {value})"
+
+    def reg_ptr_masked_write(self, width: int, ptr: str, mask: str,
+                             val: str) -> str:
+        """``pssc_write_masked32(<ptr>, <mask>, <val>)``: PSS 3.1 §21.14.1's
+        read-modify-write, a named primitive whose definition does the read."""
+        return (f"{self.ptr_masked_write_prim % self._width(width)}"
+                f"({ptr}, {mask}, {val})")
+
     # -- register access ------------------------------------------------------
     #
     # The direction rules are enforced HERE, before the policy is consulted, and

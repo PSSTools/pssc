@@ -220,7 +220,7 @@ def test_bus_spelling_has_one_home():
              / "targets" / "c")
     # `pssc_r3`/`pssc_w3` rather than the full names, so that a hard-coded
     # `pssc_r32` and a hard-coded `"pssc_r%d"` template are one rule.
-    spelling = re.compile(r"pssc_[rw]\d|pssc_bus\s*\(")
+    spelling = re.compile(r"pssc_[rw]\d|pssc_(read|write)(_masked)?(\d|\{)|pssc_bus\s*\(")
     offenders = []
     for path in sorted(c_dir.glob("*.py")):
         if path.name == "mem_access.py":
@@ -241,9 +241,12 @@ def test_the_seam_grep_would_catch_an_inlined_access():
     edit that stops matching `pssc_w64(` fails here.
     """
     import re
-    spelling = re.compile(r"pssc_[rw]\d|pssc_bus\s*\(")
+    spelling = re.compile(r"pssc_[rw]\d|pssc_(read|write)(_masked)?(\d|\{)|pssc_bus\s*\(")
     for line in ('    return f"pssc_r32({bus}, {addr})"',
                  '    prim = "pssc_w64"',
+                 '    return f"pssc_read{prim}({raw})"',
+                 '    return f"pssc_write_masked{prim}({raw}, {m}, {v})"',
+                 '    return f"pssc_write32({ptr}, {v})"',
                  '    return f"pssc_bus({self.h})"'):
         assert spelling.search(line), line
     assert not spelling.search("    return mem.read(32, self.h, addr)")
