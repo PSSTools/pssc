@@ -32,7 +32,8 @@ from .progseq_model import (OffsetFoldError, _dt_name, array_element_type,
                             array_base_stride, field_is_array, field_is_reg_group,
                             field_is_register, scalar_offset)
 
-__all__ = ["RegAccessor", "collect_accessors", "is_reserved",
+__all__ = ["RegAccess", "RegAccessor", "access_path", "collect_accessors",
+           "is_reserved", "resolve_access",
            "is_reserved_name", "is_strided_reg_array", "prim_bits",
            "value_bits", "value_struct"]
 
@@ -706,3 +707,95 @@ def reg_maps_for(groups, *, strides=None) -> "List[RegMap]":
     for g in groups:
         visit(g)
     return order
+
+
+# --- one access in a body ------------------------------------------------------
+
+#: The register methods `resolve_access` recognises, as PSS spells them.
+#: (`write_masked` and the field forms are reduced to `write_val_masked` by
+#: `reg_rmw` before a backend sees a body.)
+ACCESS_METHODS = ("read", "read_val", "write", "write_val", "write_val_masked")
+
+
+@dc.dataclass(frozen=True)
+class RegAccess:
+    """One register access in a body, resolved: which register, through
+    which sub-components and indices, doing what.
+
+    Everything a backend needs to SPELL the access is here or in
+    ``accessor``; nothing here is a backend's spelling. The address is
+    ``accessor``'s (``const_off`` plus ``index_exprs[k] * strides[k]``, from
+    the base of ``group`` in ``comp``): an access is never re-walked.
+    """
+    #: The register, relative to ``comp`` (`collect_accessors`).
+    accessor: RegAccessor
+    #: The component that declares ``group``: the root of the access, or the
+    #: sub-component ``via`` reaches.
+    comp: Any
+    #: The sub-component instances crossed first, ``(name, index or None)``.
+    via: Tuple[Tuple[str, Any], ...]
+    #: The register-group field of ``comp`` the register is in.
+    group: str
+    #: The IR index of each array crossed inside the group, paired with
+    #: ``accessor.strides``.
+    index_exprs: Tuple[Any, ...]
+    #: One of `ACCESS_METHODS`.
+    method: str
+    #: The call's IR arguments (`write_val_masked`: mask, value).
+    args: Tuple[Any, ...]
+    #: For a reduced masked write, the fields its source named
+    #: (`reg_field_names.written_fields`: `reg_rmw.RegFieldWrite`, in source
+    #: order), else ``None``. Advisory: it may change how the modify step is
+    #: spelled, never the number or order of bus operations.
+    fields: Optional[Tuple[Any, ...]] = None
+
+    @property
+    def group_path(self) -> Tuple[str, ...]:
+        """The self-rooted path to the group, indices dropped."""
+        return tuple(n for n, _ in self.via) + (self.group,)
+
+
+def access_path(expr) -> Optional[List[Tuple[str, Any]]]:
+    """``self.a[i].b.c`` as ``[("a", i), ("b", None), ("c", None)]``; None
+    when ``expr`` is not a path rooted at ``self``."""
+    cn = _dt_name(expr)
+    if cn == "TypeExprRefSelf":
+        return []
+    if cn == "ExprAttribute":
+        b = access_path(expr.value)
+        return None if b is None else b + [(expr.attr, None)]
+    if cn == "ExprSubscript":
+        b = access_path(expr.value)
+        if not b:
+            return None
+        return b[:-1] + [(b[-1][0], expr.slice)]
+    return None
+
+
+def resolve_access(comp, call, tm=None, accessors=None) -> Optional[RegAccess]:
+    """The register access ``call`` makes in a body of ``comp``, or None
+    when it is not one (a call on a group, a channel, anything else).
+
+    Built on `state_uses.resolve_reg_path`, the walk that says what a path
+    names; ``accessors`` is as there."""
+    from .state_uses import resolve_reg_path
+    from .reg_field_names import written_fields
+    func = getattr(call, "func", None)
+    if _dt_name(func) != "ExprAttribute" or func.attr not in ACCESS_METHODS:
+        return None
+    path = access_path(func.value)
+    if not path:
+        return None
+    ref = resolve_reg_path(comp, tuple(n for n, _ in path), tm,
+                           accessors=accessors)
+    if ref is None or ref.accessor is None or \
+            len(ref.path) != len(path):
+        return None
+    k = len(ref.sub_path)
+    return RegAccess(
+        accessor=ref.accessor, comp=ref.owner, via=tuple(path[:k]),
+        group=ref.group,
+        index_exprs=tuple(i for _, i in path[k:] if i is not None),
+        method=func.attr, args=tuple(call.args),
+        fields=written_fields(call))
+

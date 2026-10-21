@@ -192,6 +192,38 @@
       "model_call": {
         "since": "0.3",
         "stability": "provisional"
+      },
+      "reg_access": {
+        "since": "0.3",
+        "stability": "provisional"
+      },
+      "reg_masked_write_inline": {
+        "since": "0.3",
+        "stability": "provisional"
+      },
+      "reg_read_into": {
+        "since": "0.3",
+        "stability": "provisional"
+      },
+      "reg_value_field_get": {
+        "since": "0.3",
+        "stability": "provisional"
+      },
+      "reg_value_field_set": {
+        "since": "0.3",
+        "stability": "provisional"
+      },
+      "reg_value_local": {
+        "since": "0.3",
+        "stability": "provisional"
+      },
+      "reg_value_merge": {
+        "since": "0.3",
+        "stability": "provisional"
+      },
+      "reg_write_from": {
+        "since": "0.3",
+        "stability": "provisional"
       }
     }
   }

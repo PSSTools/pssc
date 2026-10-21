@@ -53,6 +53,8 @@ from ..expr_types import (CONTEXT_BINARY, CONTEXT_UNARY, LEFT_TYPED,
 from ..int_semantics import IntSemantics, _Val, _br
 from .. import group_binding
 from ..overridable import overridable
+from ..reg_layout import collect_accessors, resolve_access
+from ...reg_field_resolve import field_map
 from ..group_binding import group_fields
 from ..comments import BLOCK, blank_line, comment_lines, doc_block
 
@@ -1465,6 +1467,29 @@ class CIntSemantics(IntSemantics):
         return IntSemantics.convert_to(self, e, target)
 
 
+@dc.dataclass(frozen=True)
+class LoweredRegAccess:
+    """A `reg_layout.RegAccess` in C: what `CBodyEmitter.reg_access` and the
+    masked-write primitives spell it from."""
+    #: The C accessor record (`lower_reg_model._Acc`): stem, value type,
+    #: transaction width, and ``layout``, the `RegAccessor`.
+    acc: Any
+    #: Each of the access's ``index_exprs``, rendered.
+    indices: Tuple[str, ...]
+    #: The arguments, rendered and converted to the register's width.
+    args: Tuple[str, ...]
+    #: The member path of the sub-components crossed (`sub[i].inner`), or
+    #: None for a register of this component's own group.
+    sub_path: Optional[str] = None
+    #: The emitter's own path, for its default rendering. Not published.
+    _chain: Any = dc.field(default=None, compare=False, repr=False)
+
+
+def _c_word(v: int, bits: int) -> str:
+    """An unsigned constant of a ``bits``-wide register word."""
+    return f"0x{v:X}{'u' if bits <= 32 else 'ull'}"
+
+
 class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
     """Translate one operation body to C lines.
 
@@ -1725,6 +1750,12 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         matching name happens to be in scope. Silence was the bug; the accessor
         set being short was only the occasion for it.
         """
+        parts = self._reg_parts(call)
+        return None if parts is None else self.reg_access(*parts)
+
+    def _reg_parts(self, call):
+        """`_reg_call`'s recognition: ``(RegAccess, LoweredRegAccess)``, or
+        None when ``call`` is not a register access."""
         func = call.func
         if _dt_name(func) != "ExprAttribute":
             return None
@@ -1733,23 +1764,12 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         # `<group>.<reg>`. A one-element chain is a call on the GROUP itself
         # (`regs.set_handle(...)`), which is not a register access and must not
         # be judged as one.
-        handle, prefix = self.h, self.prefix
-        # Under `reg_map`, `_reg_path` needs the hop a sub-component chain
-        # starts from and whether it is a POINTER (the root's own handle) or
-        # an embedded-by-value path (`_through_subs` prepends `&` to turn one
-        # into a handle for the baked-accessor call, which `_reg_map_access`
-        # does not want: an embedded sub-component is reached with `.`, not
-        # `->`, until the register group's own pointer member is crossed).
-        base_expr, base_is_ptr = None, True
+        prefix, sub_path = self.prefix, None
         if chain and chain[0][0] in self.subs:
             # `s.a.STS.write_val(1)`: a register of a sub-component, reached
             # through ITS accessor and ITS handle -- the accessor already adds
             # that component's group base, so nothing is folded here.
-            handle, prefix, comp, chain = self._through_subs(chain)
-            if handle.startswith("&"):
-                base_expr, base_is_ptr = handle[1:], False
-            else:
-                base_expr, base_is_ptr = handle, True
+            sub_path, prefix, comp, chain = self._sub_walk(chain)
             if not chain or len(chain) < 2 or \
                     chain[0][0] not in _reg_group_fields(comp):
                 return None
@@ -1760,7 +1780,7 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         segs = [c[0] for c in chain[:-1]]
         idx = [c[1] for c in chain if c[1] is not None]
         base = accessor_base(prefix, segs, reg, self.style)
-        idx_args = "".join(f", {self.expr(i)}" for i in idx)
+        indices = tuple(self.expr(i) for i in idx)
         # The register itself, from the one walk that says which registers
         # exist (`reg_layout.collect_accessors`, every component's, via
         # `accessor_map`). There is no fallback: guessing "untyped, 32 bits"
@@ -1785,10 +1805,17 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
                 raise ValueError(
                     f"register method '{func.attr}' takes {want} argument(s), "
                     f"got {len(args)}")
-            if self.reg_map:
-                return self._reg_map_access(chain, func.attr, args, acc,
-                                            base_expr, base_is_ptr)
-            return self._reg_access(base, func.attr, idx_args, args, handle)
+            ra = resolve_access(self.comp, call,
+                                getattr(self.ctx, "type_map", None),
+                                accessors=self._accessors_of)
+            if ra is None:
+                raise ValueError(
+                    f"internal error: '{'.'.join(segs + [reg])}' is a "
+                    f"register access to the C emitter and not to "
+                    f"reg_layout.resolve_access")
+            return ra, LoweredRegAccess(acc=acc, indices=indices,
+                                        args=tuple(args), sub_path=sub_path,
+                                        _chain=chain)
 
         raise ValueError(
             f"unsupported register method '{func.attr}' on '{'.'.join(segs + [reg])}'. "
@@ -1796,6 +1823,146 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             f"it does not know would otherwise become a generic call that "
             f"compiles and writes the wrong thing. Known: "
             f"{', '.join(sorted(_REG_ACCESSORS))}.")
+
+    def _accessors_of(self, comp):
+        """`collect_accessors`, once per component per body."""
+        memo = self.__dict__.setdefault("_acc_memo", {})
+        if id(comp) not in memo:
+            memo[id(comp)] = (comp, collect_accessors(comp))
+        return memo[id(comp)][1]
+
+    # -- register access: the published hooks -------------------------------
+    #
+    # `reg_access` is every register access as an expression. A masked
+    # write is a STATEMENT, and its shape is pssc's (ruling R-H8): the
+    # default is one call (`reg_masked_write_inline`); returning None from
+    # that composes it from three primitives -- read into a local, set each
+    # field (or merge the mask), write the local -- which an override
+    # spells. The read is written by pssc, so it cannot be dropped.
+
+    @overridable(since='0.3', stability='provisional')
+    def reg_access(self, ra, lw: "LoweredRegAccess") -> str:
+        """One register access, as a C expression.
+
+        ``ra`` is the `reg_layout.RegAccess`: the register (its
+        `RegAccessor`: path, offset, strides, width, access mode), the
+        sub-components crossed, the group, the method and, for a reduced
+        masked write, the fields its source named. ``lw`` is the same access
+        in C: the `_Acc` (``acc``: accessor stem and value type), each index
+        and argument already rendered, the arguments converted to the
+        register's width (`write_val_masked`: mask, then value), and
+        ``sub_path``, the member path of the sub-components crossed. The
+        default is pssc's own: a baked accessor, or under `--c-reg-map` the
+        layout struct's member and a `pssc_read<N>`-family primitive.
+        """
+        if self.reg_map:
+            base_expr, base_is_ptr = ((f"{self.h}->{lw.sub_path}", False)
+                                      if lw.sub_path else (None, True))
+            return self._reg_map_access(lw._chain, ra.method, list(lw.args),
+                                        lw.acc, base_expr, base_is_ptr)
+        handle = f"&{self.h}->{lw.sub_path}" if lw.sub_path else self.h
+        idx_args = "".join(f", {i}" for i in lw.indices)
+        return self._reg_access(lw.acc.base, ra.method, idx_args,
+                                list(lw.args), handle)
+
+    @overridable(since='0.3', stability='provisional')
+    def reg_masked_write_inline(self, ra, lw: "LoweredRegAccess"
+                                ) -> Optional[str]:
+        """A masked write (`write_val_masked`, which every field-wise write
+        reduces to) as ONE expression statement, or None to compose it from
+        `reg_read_into`, `reg_value_field_set` / `reg_value_merge` and
+        `reg_write_from` into a local of `reg_value_local_type`. The default
+        is `reg_access`'s single call."""
+        return self.reg_access(ra, lw)
+
+    @overridable(since='0.3', stability='provisional')
+    def reg_value_local(self, ra, lw: "LoweredRegAccess") -> Tuple[str, str]:
+        """``(C type, name)`` of the local a composed masked write reads the
+        register into. Declared once, at the top of the function; two
+        composed writes asking for one name share the local when the types
+        agree. The default is the register's transaction width."""
+        return f"uint{lw.acc.prim}_t", "_pss_reg"
+
+    @overridable(since='0.3', stability='provisional')
+    def reg_read_into(self, ra, lw: "LoweredRegAccess", local: str) -> str:
+        """The statement (without its `;`) that reads the register into
+        ``local``: the first step of a composed masked write. It must read
+        (PSS 3.1 §21.14.1); the default is ``local = <read_val>``."""
+        rd = self.reg_access(dc.replace(ra, method="read_val", args=()),
+                             dc.replace(lw, args=()))
+        return f"{local} = {rd}"
+
+    @overridable(since='0.3', stability='provisional')
+    def reg_value_field_set(self, local: str, fs, value: str, ra,
+                            lw: "LoweredRegAccess", mask: int) -> str:
+        """The statement (without its `;`) that sets field ``fs`` (a
+        `FieldSlice`) of ``local`` to ``value``: one per field the source
+        named (`ra.fields`), in source order. ``value`` is as the model
+        wrote it, NOT narrowed to the field; ``mask`` is the register bits
+        written for this field (all of ``fs.mask`` unless the source masked
+        it), and only those may change."""
+        ct = self.reg_value_local(ra, lw)[0]
+        bits = lw.acc.prim
+        return (f"{local} = ({local} & ~{_c_word(mask, bits)}) | "
+                f"((({ct})({value}) << {fs.lsb}) & {_c_word(mask, bits)})")
+
+    @overridable(since='0.3', stability='provisional')
+    def reg_value_merge(self, local: str, mask: str, val: str, ra,
+                        lw: "LoweredRegAccess") -> str:
+        """The modify step (without its `;`) when the source named no field
+        (`ra.fields` is None): ``(local & ~mask) | (val & mask)``. ``mask``
+        and ``val`` are rendered and converted to the register's width."""
+        return f"{local} = ({local} & ~({mask})) | (({val}) & ({mask}))"
+
+    @overridable(since='0.3', stability='provisional')
+    def reg_write_from(self, ra, lw: "LoweredRegAccess", local: str) -> str:
+        """The statement (without its `;`) that writes ``local`` to the
+        register: the last step of a composed masked write. The default is
+        `reg_access` of a `write_val`."""
+        return self.reg_access(dc.replace(ra, method="write_val", args=()),
+                               dc.replace(lw, args=(local,)))
+
+    @overridable(since='0.3', stability='provisional')
+    def reg_value_field_get(self, value: str, fs, ra,
+                            lw: "LoweredRegAccess") -> str:
+        """Field ``fs`` (a `FieldSlice`) of a register's value read whole
+        (`regs.r.read().f`), as an expression. ``value`` is the read,
+        rendered by `reg_access`. The default names the value union's
+        member, `<value>.f`."""
+        return f"{value}.{fs.name}"
+
+    def function_local(self, ctype: str, name: str) -> str:
+        """Declare a local at the top of the function being rendered, once,
+        and return its name; a name already taken with another type gets a
+        suffix."""
+        locs = self.__dict__.setdefault("_fn_locals", {})
+        base, n = name, 1
+        while name in locs and locs[name] != ctype:
+            name = f"{base}_{n}"
+            n += 1
+        locs[name] = ctype
+        return name
+
+    def function_local_lines(self, ind: int) -> List[str]:
+        """The declarations `function_local` gathered, for the top of the
+        function body."""
+        pad = self.pad(ind)
+        return [f"{pad}{ct} {nm};"
+                for nm, ct in self.__dict__.get("_fn_locals", {}).items()]
+
+    def _composed_masked_write(self, ra, lw, ind: int) -> List[str]:
+        ct, name = self.reg_value_local(ra, lw)
+        t = self.function_local(ct, name)
+        out = [self.reg_read_into(ra, lw, t)]
+        if ra.fields:
+            for fw in ra.fields:
+                out.append(self.reg_value_field_set(
+                    t, fw.slice, self.expr(fw.value), ra, lw, fw.mask))
+        else:
+            out.append(self.reg_value_merge(t, lw.args[0], lw.args[1], ra, lw))
+        out.append(self.reg_write_from(ra, lw, t))
+        pad = self.pad(ind)
+        return [f"{pad}{x};" for x in out]
 
     def _reg_path(self, chain, base_expr: Optional[str] = None,
                  base_is_ptr: bool = True) -> str:
@@ -1993,6 +2160,16 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             if sf is not None:
                 ct, local, field = sf
                 return f"{ct}_{field}_get({local})"
+        if _dt_name(base) == "ExprCall" and \
+                _dt_name(base.func) == "ExprAttribute" and \
+                base.func.attr == "read":
+            parts = self._reg_parts(base)
+            tm = getattr(self.ctx, "type_map", None) or {}
+            fs = (field_map(parts[0].accessor.dtype, tm.get).get(e.attr)
+                  if parts is not None else None)
+            if fs is not None:
+                return self.reg_value_field_get(self.reg_access(*parts), fs,
+                                                *parts)
         text = self.expr(base)
         if text.startswith("(*") and text.endswith(")") and \
                 text[2:-1].isidentifier():
@@ -2559,7 +2736,17 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         return [f"{pad}{tgt} = {value};"]
 
     def stmt_expr(self, s, ind: int) -> List[str]:
-        return [f"{self.pad(ind)}{self.expr(s.expr)};"]
+        e = s.expr
+        if _dt_name(e) == "ExprCall" and \
+                _dt_name(e.func) == "ExprAttribute" and \
+                e.func.attr == "write_val_masked":
+            parts = self._reg_parts(e)
+            if parts is not None:
+                one = self.reg_masked_write_inline(*parts)
+                if one is None:
+                    return self._composed_masked_write(*parts, ind)
+                return [f"{self.pad(ind)}{one};"]
+        return [f"{self.pad(ind)}{self.expr(e)};"]
 
     def stmt_return(self, s, ind: int) -> List[str]:
         pad = self.pad(ind)
@@ -3176,7 +3363,8 @@ def _lifecycle_impl(node, prefixes, link_style: str, qual: str,
         be.op_ctx = OpCtx(comp=comp, prefix=prefix, qual=helper,
                           emitter_cls=ctor_cls, be_kw={"style": style},
                           type_name=prefixes.type_name(comp), api=api)
-        body += be.stmts(ctor.body, 1)
+        stmts = be.stmts(ctor.body, 1)
+        body = be.function_local_lines(1) + body + stmts
         code = [ln for ln in body
                 if not ln.lstrip().startswith(("/*", "*", "//"))]
         if not any(re.search(rf"\b{HANDLE}\b", ln) for ln in code):
@@ -3292,6 +3480,7 @@ def lower_operation(fn, ctx: OpCtx) -> List[str]:
     code = [ln for ln in body
             if not ln.lstrip().startswith(("/*", "*", "//"))]
     used = re.compile(rf"\b{re.escape(handle or '')}\b")
+    lines += be.function_local_lines(1)
     if handle is not None and not any(used.search(ln) for ln in code):
         lines.append(f"    (void){handle};")
     lines += body

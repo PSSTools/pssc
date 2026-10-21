@@ -53,6 +53,9 @@ class RegRef:
     reg_segs: Path
     accessor: Any = dc.field(default=None, compare=False)
     reserved: Optional[Path] = None
+    #: The component that declares ``group`` (``sub_path``'s last instance's
+    #: type, resolved), which ``accessor`` is relative to.
+    owner: Any = dc.field(default=None, compare=False)
 
     @property
     def group_path(self) -> Path:
@@ -63,10 +66,14 @@ class RegRef:
         return self.group_path + self.reg_segs
 
 
-def resolve_reg_path(comp, path: Path, tm=None, by_name=None) -> Optional[RegRef]:
+def resolve_reg_path(comp, path: Path, tm=None, by_name=None,
+                     accessors=None) -> Optional[RegRef]:
     """The register (or register group) the self-rooted ``path`` names in
     ``comp``, or ``None`` when it names something else (a channel, a plain
-    field, a name the component does not have)."""
+    field, a name the component does not have).
+
+    ``accessors(owner)`` gives a component's `collect_accessors`; a caller
+    resolving many paths passes a memoised one."""
     tm = tm or {}
     by_name = by_name or {}
     dt = comp
@@ -84,11 +91,12 @@ def resolve_reg_path(comp, path: Path, tm=None, by_name=None) -> Optional[RegRef
         if not is_reg_group(ft):
             return None
         return _in_group(dt, tuple(sub_path), seg, ft, tuple(path[k + 1:]),
-                         tuple(path[:k + 1]))
+                         tuple(path[:k + 1]), accessors or collect_accessors)
     return None
 
 
-def _in_group(owner, sub_path, group, gdt, rest, prefix) -> RegRef:
+def _in_group(owner, sub_path, group, gdt, rest, prefix,
+              accessors=collect_accessors) -> RegRef:
     reserved = None
     dt, segs = gdt, []
     for seg in rest:
@@ -105,8 +113,8 @@ def _in_group(owner, sub_path, group, gdt, rest, prefix) -> RegRef:
     acc = None
     if segs:
         full = (group,) + tuple(segs)
-        acc = next((a for a in collect_accessors(owner) if a.path == full), None)
-    return RegRef(sub_path, group, tuple(segs), acc, reserved)
+        acc = next((a for a in accessors(owner) if a.path == full), None)
+    return RegRef(sub_path, group, tuple(segs), acc, reserved, owner)
 
 
 def _field(dt, name):

@@ -19,7 +19,7 @@ Design: docs/design/pss-c-cpp-progseq-gen-design.md (§3.3, §3.4).
 from __future__ import annotations
 
 import dataclasses as dc
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from ..progseq_model import (
     _dt_name, collect_reg_groups, collect_value_structs,
@@ -207,6 +207,9 @@ class _Acc:
     value_bits: int = 32
     #: `RegAccessor.elem_stride`: the register array's own stride, or None.
     elem_stride: Optional[int] = None
+    #: The register this accessor is for (`reg_layout.RegAccessor`): its
+    #: identity, offset and strides, for a style's `render_reg_*` hook.
+    layout: Optional[Any] = dc.field(default=None, compare=False, repr=False)
 
     @property
     def strided(self) -> bool:
@@ -236,6 +239,7 @@ def _collect_accessors(root_dtype, prefix: str, style=None) -> List[_Acc]:
             base_member=_style(style).group_base(a.segs[0]),
             value_bits=a.value_bits,
             elem_stride=a.elem_stride,
+            layout=a,
         )
         for a in collect_accessors(root_dtype)
     ]
