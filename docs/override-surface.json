@@ -187,6 +187,12 @@
         "since": "0.1",
         "stability": "provisional"
       }
+    },
+    "pssc.targets.c.lower_progseq.CBodyEmitter": {
+      "model_call": {
+        "since": "0.3",
+        "stability": "provisional"
+      }
     }
   }
 }

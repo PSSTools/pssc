@@ -13,6 +13,7 @@ import pytest
 
 from pssc import driver, targets
 from pssc.targets.c.backend import COpModelBackend
+from pssc.targets.c.lower_progseq import CBodyEmitter
 
 MODEL = """
 package r_pkg {
@@ -34,7 +35,11 @@ import addr_reg_pkg::*;
 component top_c {
     r_pkg::g_c regs;
     bit[32] count;
-    solve function void initialize(addr_handle_t a) { regs.set_handle(a); }
+    solve function void initialize(addr_handle_t a) {
+        regs.set_handle(a);
+        count = scale(3);
+    }
+    solve function bit[32] scale(bit[32] v) { return v + 1; }
     target function bit[32] twice(bit[32] x) { return helper(x) + helper(x); }
     target function bit[32] helper(bit[32] x) { return x * 2; }
     target function bit[32] five() { return 5; }
@@ -142,15 +147,36 @@ class _Renamed(COpModelBackend):
         return ret, "hal_" + fn.name, params
 
 
-def test_a_renamed_signature_is_declared_and_defined(tmp_path, monkeypatch):
-    """Renaming in `signature` alone is not enough for a call site, which
-    `model_call` spells; `five` is called by nothing, so it is checked."""
-    out, h, c = _gen(tmp_path, monkeypatch, _Renamed,
-                     MODEL.replace("return helper(x) + helper(x);",
-                                   "return x;"))
+def test_a_renamed_signature_is_declared_defined_and_called(
+        tmp_path, monkeypatch):
+    """The name is the signature's at the prototype, the definition, a
+    sibling's call (`model_call`) and the constructor's call to a solve
+    function."""
+    out, h, c = _gen(tmp_path, monkeypatch, _Renamed)
     assert "uint32_t hal_five(top_c *_self);" in h
     assert "uint32_t hal_five(top_c *_self) {" in c
+    assert "hal_helper(_self, x) + hal_helper(_self, x)" in c
+    assert "static inline uint32_t hal_scale(top_c *_self, uint32_t v);" in c
+    assert "hal_scale(_self, 3" in c
     _cc(out)
+
+
+class _Traced(CBodyEmitter):
+    def model_call(self, callee, args, ctx, handle):
+        return f"(TRACE_{callee.name}(), " \
+               f"{super().model_call(callee, args, ctx, handle)})"
+
+
+class _TracedBackend(COpModelBackend):
+    body_emitter_cls = _Traced
+
+
+def test_model_call_is_every_operation_call(tmp_path, monkeypatch):
+    """An operation's call to a sibling and a constructor's call to a solve
+    function both come through `model_call`, on the installed emitter."""
+    out, h, c = _gen(tmp_path, monkeypatch, _TracedBackend)
+    assert "(TRACE_helper(), top_helper(_self, x))" in c
+    assert "(TRACE_scale(), top_scale(_self, 3" in c
 
 
 class _Clash(COpModelBackend):

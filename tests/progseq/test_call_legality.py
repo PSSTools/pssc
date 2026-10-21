@@ -136,9 +136,9 @@ def test_the_registry_agrees_with_what_the_c_emitter_actually_renders():
     So: assert the two agree on the channel four, against the emitter's own
     dispatch rather than against a second copy of the list.
     """
-    from pssc.targets.c.lower_progseq import _BodyEmitter
+    from pssc.targets.c.lower_progseq import CBodyEmitter
 
-    src = inspect.getsource(_BodyEmitter._chan_call)
+    src = inspect.getsource(CBodyEmitter._chan_call)
     for nonblocking in ("try_get", "try_put"):
         assert f'"{nonblocking}"' in src, (
             f"registry says c-progseq renders {nonblocking}, but the emitter's "
@@ -544,9 +544,9 @@ def test_every_dispatch_hook_is_reachable():
 def test_an_operation_body_renders_fewer_dispositions_than_a_constructor():
     """The ctor-only forms are ctor-only. A body emitter that could render
     `set_handle` would silently accept a structural call in an operation."""
-    from pssc.targets.c.lower_progseq import _BodyEmitter, _CtorEmitter
+    from pssc.targets.c.lower_progseq import CBodyEmitter, _CtorEmitter
 
-    body = set(_BodyEmitter.call_hooks())
+    body = set(CBodyEmitter.call_hooks())
     assert "structural" not in body and "subcomp_ctor" not in body
     assert body < set(_CtorEmitter.call_hooks())
 

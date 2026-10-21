@@ -24,7 +24,7 @@ docs per phase.
 | 2 | ir-core: ZIR-1 (ZIR-2 deferred, R-H6 (a)) | **committed** (ir-core `e1523a6` on main, unpushed) |
 | 3 | pssc: walker skip-list (prerequisite), PC-1 annotations into the IR | **committed** (pssc `21a1bea` on construct-test-audit, unpushed); guide section deferred to phase 6 |
 | 4 | pssc analysis: PC-2 bindings, PC-4 provenance, PC-3 state uses | **committed** (pssc `21a1bea`). Suites green: unit 2587, progseq 2984 (goldens unchanged), compliance 925 |
-| 5 | pssc C backend: PC-7, PC-5, PC-6, PC-8 (+ c_names) | not started |
+| 5 | pssc C backend: PC-7, PC-5, PC-6, PC-8 (+ c_names) | **in progress**: items 1 (funnel, `f55f9d9`) and 2 (signature/handle/linkage, `2faeeae`) committed; see §3 phase 5 notes |
 | 6 | End-to-end: a HAL-shaped fixture plugin, differential bus trace | not started |
 | 7 | Docs sweep, release, reply | not started |
 
@@ -427,6 +427,21 @@ group. Each repo's commit carries its own tests and docs.
    - Add `CStylePolicy.enum_item_for(dtype, item)`: verbatim for an extern enum, else `self.enum_item(c_enum_name(dtype), item)`. `CEnums.item` calls it. The stable `enum_item(name, item)` is unchanged; changing its signature would need the deprecation window (`extension-stability.md` §4).
    - `c_names` gathers extern type and item names as **occupied, not declared**: a clash is still refused, and `test_every_gathered_name_is_one_the_backend_emits` exempts them.
    - Manifest: `"extern": true` on an enum or struct.
+
+**Phase 5 progress notes (2026-10-21).**
+- Item 1 done (`f55f9d9`): `MemAccess.reg_ptr_read/write/masked_write`;
+  `_mem_call`'s reg_map branch had the same hole and moved too. The widened
+  pattern is `pssc_(read|write)(_masked)?(\d|\{)`.
+- Item 2 done (`2faeeae`). Hooks take `(fn, ctx)` with `ctx` an `OpCtx`
+  (also `linkage`, not `(fn, model)`: the backend has `self.model`).
+  `OpCtx.api` is the backend (`DefaultOpApi` when None); `OpCtx.for_comp`
+  gives a callee's context. `since='0.3'` (0.2.0 is the release commit
+  already made). A static operation renders `static inline` (W45). The
+  emitter's `h` is a property that raises the located `Refusal` when the
+  handle is None; `_through_subs` was split (`_sub_walk`) so a handle-less
+  sub-component call does not read it. `refuse_too_wide` now runs before
+  `c_names.check`, which types every signature. Tests:
+  `tests/progseq/test_c_op_api.py`.
 
 ### Phase 6: end to end
 

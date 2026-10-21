@@ -29,7 +29,8 @@ from pssc.targets.overridable import manifest_for  # noqa: E402
 
 #: The classes whose surface is published, by dotted name. A class not listed
 #: here has no published surface, however many marks it carries.
-SURFACES = ["pssc.targets.c.backend.COpModelBackend"]
+SURFACES = ["pssc.targets.c.backend.COpModelBackend",
+            "pssc.targets.c.lower_progseq.CBodyEmitter"]
 
 MANIFEST = _ROOT / "docs" / "override-surface.json"
 

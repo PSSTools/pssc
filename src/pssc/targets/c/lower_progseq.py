@@ -52,6 +52,7 @@ from ..expr_types import (CONTEXT_BINARY, CONTEXT_UNARY, LEFT_TYPED,
                           RELATIONAL, INT, PssType, assign_source_type, is_integral)
 from ..int_semantics import IntSemantics, _Val, _br
 from .. import group_binding
+from ..overridable import overridable
 from ..group_binding import group_fields
 from ..comments import BLOCK, blank_line, comment_lines, doc_block
 
@@ -1464,7 +1465,7 @@ class CIntSemantics(IntSemantics):
         return IntSemantics.convert_to(self, e, target)
 
 
-class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
+class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
     """Translate one operation body to C lines.
 
     The walk, the comment attachment and the two scans are
@@ -1580,15 +1581,43 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
     def h(self, value: Optional[str]) -> None:
         self._h = value
 
-    def callee_handle(self, callee, comp, prefix: str) -> bool:
-        """Whether a call to ``callee`` (an operation of ``comp``) passes a
-        handle: whether its own `handle_param` names one."""
+    def callee_ctx(self, comp, prefix: str) -> "OpCtx":
+        """The `OpCtx` of an operation of ``comp``, as a call reaches it."""
         ctx = self.op_ctx
-        if ctx is None or callee is None:
-            return True
-        if comp is not ctx.comp:
-            ctx = ctx.for_comp(comp, prefix, self.prefixes.type_name(comp))
+        if ctx is None:
+            # A body rendered outside any backend (a test's emitter): the
+            # default answers.
+            tn = (self.prefixes.type_name(comp) if self.prefixes is not None
+                  else getattr(comp, "name", ""))
+            return OpCtx(comp=comp, prefix=prefix, qual="", emitter_cls=None,
+                         be_kw={"style": self.style}, type_name=tn)
+        if comp is ctx.comp:
+            return ctx
+        return ctx.for_comp(comp, prefix, self.prefixes.type_name(comp))
+
+    @staticmethod
+    def callee_handle(callee, ctx: "OpCtx") -> bool:
+        """Whether a call to ``callee`` passes a handle: whether its own
+        `handle_param` names one."""
         return ctx.op_api.handle_param(callee, ctx) is not None
+
+    @overridable(since='0.3', stability='provisional')
+    def model_call(self, callee, args: List[str], ctx: "OpCtx",
+                   handle: Optional[str]) -> str:
+        """A call to ``callee``, an operation of this component or of a
+        sub-component, as a C expression.
+
+        ``args`` are the PSS arguments, already rendered and converted to
+        their parameters' types (a by-handle struct as a pointer). ``ctx``
+        is the CALLEE's `OpCtx`: its component, prefix and the backend's
+        answers. ``handle`` is the expression for the callee's handle
+        (`_self`, `&_self->sub[i]`), or None when the callee takes none
+        (its `handle_param` is None). The default calls the name the
+        callee's `signature` gives, with the handle first; an override that
+        changes a `signature`'s parameters must pass what they now are.
+        """
+        name = ctx.op_api.signature(callee, ctx)[1]
+        return f"{name}(" + ", ".join(([handle] if handle else []) + args) + ")"
 
     # channels ---------------------------------------------------------------
 
@@ -2331,10 +2360,11 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         if name is not None and name in self.model_ops:
             args = (self._c_args(call.args, own[name]) if name in own
                     else [self.expr(a) for a in call.args])
-            h = ([self.h] if self.callee_handle(own.get(name), self.comp,
-                                                self.prefix) else [])
-            return f"{self.style.symbol(self.prefix, mangle(name))}(" + \
-                   ", ".join(h + args) + ")"
+            callee = own[name]
+            ctx = self.callee_ctx(self.comp, self.prefix)
+            return self.model_call(callee, args, ctx,
+                                   self.h if self.callee_handle(callee, ctx)
+                                   else None)
         # `s.poke()` / `ch[i].status()`: an operation of a sub-component, on
         # that sub-component's handle. Its function is already emitted with
         # the sub-component's API.
@@ -2345,11 +2375,11 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             callee = next((f for f in getattr(comp, "functions", []) or []
                            if f.name == func.attr), None)
             if not rest and callee is not None:
-                h = ([f"&{self.h}->{path}"]
-                     if self.callee_handle(callee, comp, prefix) else [])
-                args = self._c_args(call.args, callee)
-                return f"{self.style.symbol(prefix, mangle(func.attr))}(" + \
-                       ", ".join(h + args) + ")"
+                ctx = self.callee_ctx(comp, prefix)
+                h = (f"&{self.h}->{path}" if self.callee_handle(callee, ctx)
+                     else None)
+                return self.model_call(callee, self._c_args(call.args, callee),
+                                       ctx, h)
         # An `import target/solve function`: a bare call, and NO handle -- an
         # import is a platform function, not a method of this component, so
         # passing `s` would invent a parameter its declaration does not have.
@@ -2821,6 +2851,10 @@ class _BodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
 
 # --- the constructor -------------------------------------------------------
 
+#: The emitter's name before it was published (0.3); kept for a release.
+_BodyEmitter = CBodyEmitter
+
+
 def _reject_upward_ref(comp, expr) -> None:
     raise ValueError(
         f"component '{getattr(comp, 'name', '?')}' refers UPWARD to its parent "
@@ -2945,7 +2979,7 @@ class _CtorMixin:
         return self._sub_ctor_call(call)
 
 
-class _CtorEmitter(_CtorMixin, _BodyEmitter):
+class _CtorEmitter(_CtorMixin, CBodyEmitter):
     """The default ctor emitter: the ctor-only forms over the default body."""
 
 
@@ -2959,7 +2993,7 @@ def ctor_emitter_cls(emitter_cls):
     failure of design §2.6.3, and one nobody would notice until they read the
     generated file.
     """
-    if emitter_cls is _BodyEmitter:
+    if emitter_cls is CBodyEmitter:
         return _CtorEmitter
     return type("_CtorEmitter", (_CtorMixin, emitter_cls), {})
 
@@ -3061,7 +3095,7 @@ def _lifecycle_impl(node, prefixes, link_style: str, qual: str,
                     reg_style: str, is_root: bool, lifecycle: str = "malloc",
                     reg_map: bool = False,
                     style=None, emitter_cls=None, ctor_names=None,
-                    binding=None, **be_kw) -> List[str]:
+                    binding=None, api=None, **be_kw) -> List[str]:
     style = _style(style)
     comp = node.dtype
     prefix = prefixes[comp]
@@ -3134,11 +3168,14 @@ def _lifecycle_impl(node, prefixes, link_style: str, qual: str,
                 mt = map_type_name(gf.datatype, style)
                 body.append(f"    {HANDLE}->{mangle(g)} = "
                             f"({mt} *)(uintptr_t){base};")
-        ctor_cls = ctor_emitter_cls(emitter_cls or _BodyEmitter)
+        ctor_cls = ctor_emitter_cls(emitter_cls or CBodyEmitter)
         be = ctor_cls(ctor, comp, prefix, reg_style=reg_style,
                       handle=HANDLE, prefixes=prefixes,
                       link_style=link_style, style=style,
                       ctor_names=ctor_names, reg_map=reg_map, **be_kw)
+        be.op_ctx = OpCtx(comp=comp, prefix=prefix, qual=helper,
+                          emitter_cls=ctor_cls, be_kw={"style": style},
+                          type_name=prefixes.type_name(comp), api=api)
         body += be.stmts(ctor.body, 1)
         code = [ln for ln in body
                 if not ln.lstrip().startswith(("/*", "*", "//"))]
@@ -3311,7 +3348,7 @@ def lower_impl(model, prefixes, *, link_style: str = "vtable",
     it.
     """
     qual = "static inline " if static_inline else ""
-    emitter_cls = emitter_cls or _BodyEmitter
+    emitter_cls = emitter_cls or CBodyEmitter
     emit_operation = emit_operation or lower_operation
     be_kw = dict(yield_mode=yield_mode, match_default=match_default,
                  message_style=message_style, imports=imports, style=style,
@@ -3350,7 +3387,7 @@ def lower_impl(model, prefixes, *, link_style: str = "vtable",
                                  emitter_cls=emitter_cls,
                                  binding=(model.binding(comp)
                                           if hasattr(model, "binding")
-                                          else None), **be_kw)
+                                          else None), api=api, **be_kw)
         lines.append("")
         ctx = op_ctx(comp)
         for fn in _operations(comp, ctor_names):

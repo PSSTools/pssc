@@ -109,7 +109,7 @@ def test_an_unknown_register_method_is_an_error_not_a_generic_call(tmp_path):
     call on a struct field -- code that can compile and is wrong. It must fail
     loudly instead, naming the register and what is known.
     """
-    from pssc.targets.c.lower_progseq import _BodyEmitter, _REG_ACCESSORS
+    from pssc.targets.c.lower_progseq import CBodyEmitter, _REG_ACCESSORS
     import zuspec.ir.core as ir
 
     src = tmp_path / "m.pss"
@@ -118,7 +118,7 @@ def test_an_unknown_register_method_is_an_error_not_a_generic_call(tmp_path):
     comp = ctx.type_map["pss_top"]
     fn = [f for f in comp.functions if f.name == "arm"][0]
 
-    em = _BodyEmitter(fn, comp, "pss_top")
+    em = CBodyEmitter(fn, comp, "pss_top")
     call = ir.ExprCall(
         func=ir.ExprAttribute(
             value=ir.ExprAttribute(
@@ -141,7 +141,7 @@ def test_a_group_level_call_is_not_judged_as_a_register(tmp_path):
     always `<group>.<reg>`. Without it, hardening the register path would have
     started rejecting every group-level method.
     """
-    from pssc.targets.c.lower_progseq import _BodyEmitter
+    from pssc.targets.c.lower_progseq import CBodyEmitter
     import zuspec.ir.core as ir
 
     src = tmp_path / "m.pss"
@@ -150,7 +150,7 @@ def test_a_group_level_call_is_not_judged_as_a_register(tmp_path):
     comp = ctx.type_map["pss_top"]
     fn = [f for f in comp.functions if f.name == "arm"][0]
 
-    em = _BodyEmitter(fn, comp, "pss_top")
+    em = CBodyEmitter(fn, comp, "pss_top")
     call = ir.ExprCall(
         func=ir.ExprAttribute(
             value=ir.ExprAttribute(value=ir.TypeExprRefSelf(), attr="regs"),

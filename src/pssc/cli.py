@@ -365,6 +365,11 @@ def _cmd_overrides(target: str) -> int:
         print(f"{name}:")
         for line in report(cls):
             print(f"  {line}")
+        em = getattr(cls, "body_emitter_class", None)
+        em = em() if callable(em) else None
+        if em is not None and surface(em):
+            for line in report(em):
+                print(f"  {line}")
     if not printed:
         print("no target publishes an override surface", file=sys.stderr)
         return 1

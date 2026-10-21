@@ -80,19 +80,19 @@ def _capture(out_dir, sources, **flags):
     from pssc import driver
 
     seen = []
-    original = clp._BodyEmitter.__init__
+    original = clp.CBodyEmitter.__init__
 
     def recording(self, *args, **kw):
         original(self, *args, **kw)
         seen.append(self)
 
-    clp._BodyEmitter.__init__ = recording
+    clp.CBodyEmitter.__init__ = recording
     try:
         ns = argparse.Namespace(c_header_only=False, output_dir=str(out_dir),
                                 **flags)
         driver.compile(list(sources), target="op-model-c", opts=ns)
     finally:
-        clp._BodyEmitter.__init__ = original
+        clp.CBodyEmitter.__init__ = original
     assert seen, "no body emitter ran; the capture is measuring nothing"
     return seen, out_dir
 
@@ -179,15 +179,15 @@ _C_EXPR_KINDS = {
 
 
 def test_the_c_emitter_walks_with_the_shared_walker():
-    assert issubclass(clp._BodyEmitter, bw.BodyWalker)
+    assert issubclass(clp.CBodyEmitter, bw.BodyWalker)
     # Its own `stmts`/`stmt` are gone -- the comment attachment happens in one
     # place now, which is the point of the port.
-    assert "stmt" not in vars(clp._BodyEmitter)
-    assert "stmts" not in vars(clp._BodyEmitter)
+    assert "stmt" not in vars(clp.CBodyEmitter)
+    assert "stmts" not in vars(clp.CBodyEmitter)
 
 
 def test_the_c_emitter_still_lowers_every_construct_it_did():
-    kinds = set(clp._BodyEmitter.hooks())
+    kinds = set(clp.CBodyEmitter.hooks())
     assert _C_STMT_KINDS <= kinds
     assert _C_EXPR_KINDS <= kinds
 
@@ -244,7 +244,7 @@ def test_the_two_emitters_render_the_same_statement_kinds():
     a per-language statement set and the abstraction has leaked."""
     from pssc.targets.sv import lower_progseq as svlp
 
-    c_stmts = {k for k in clp._BodyEmitter.hooks() if k.startswith("Stmt")}
+    c_stmts = {k for k in clp.CBodyEmitter.hooks() if k.startswith("Stmt")}
     sv_stmts = {k for k in svlp._BodyEmitter.hooks() if k.startswith("Stmt")}
     assert c_stmts == _C_STMT_KINDS
     # `super;` is legal only in an exec block, and SV renders `exec init_down`
@@ -258,7 +258,7 @@ def test_the_two_emitters_indent_differently():
     A walker that had absorbed the layout would make them identical here."""
     from pssc.targets.sv import lower_progseq as svlp
 
-    assert clp._BodyEmitter.indent == "    "
+    assert clp.CBodyEmitter.indent == "    "
     assert svlp._BodyEmitter.indent == "  "
 
 

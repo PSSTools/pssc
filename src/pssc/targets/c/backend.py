@@ -94,7 +94,7 @@ class COpModelBackend:
     #: methods are, and a class attribute cannot carry a decorator.
     #: `style_cls` is stable -- a policy is the tier-A contract and is already
     #: pinned by `test_style_policy.py`. `body_emitter_cls` is provisional:
-    #: `_BodyEmitter`'s method set is what Phase 7's `BodyWalker` is expected
+    #: `CBodyEmitter`'s method set is what Phase 7's `BodyWalker` is expected
     #: to replace, and publishing it as stable now would promise a shape that
     #: is under active redesign.
     overridable_attrs = {
@@ -102,6 +102,14 @@ class COpModelBackend:
         "body_emitter_cls": overridable_attr(since="0.1",
                                              stability="provisional"),
     }
+
+    @classmethod
+    def body_emitter_class(cls):
+        """`body_emitter_cls`, or `CBodyEmitter` when it is None: the class
+        whose published hooks (`model_call`, the register primitives) are
+        this backend's too (`pssc targets --overrides`)."""
+        from .lower_progseq import CBodyEmitter
+        return cls.body_emitter_cls or CBodyEmitter
 
     # -- derived state ------------------------------------------------------
 
@@ -114,7 +122,7 @@ class COpModelBackend:
         inside the include guard, and which one is not a difference in what gets
         generated.
         """
-        from .lower_progseq import Prefixes, parse_prefix_map, _BodyEmitter
+        from .lower_progseq import Prefixes, parse_prefix_map
         from .lower_reg_model import accessor_map, value_structs_for
 
         self.model, self.settings = model, s
@@ -128,7 +136,7 @@ class COpModelBackend:
             raise CompileError(str(e)) from None
         self.comps = model.comp_dtypes_root_first
         self.imports = model.imports
-        self.emitter_cls = self.body_emitter_cls or _BodyEmitter
+        self.emitter_cls = self.body_emitter_class()
         self.accs = accessor_map(self.comps, self.prefixes, self.style)
         # The register value layouts, partitioned into the file each belongs
         # in. Computed here rather than in the two section emitters so that the

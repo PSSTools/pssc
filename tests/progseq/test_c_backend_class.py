@@ -166,9 +166,9 @@ def test_a_subclass_can_insert_a_section(op_model):
 def test_body_emitter_cls_is_honoured(op_model, tmp_path):
     """A subclass swapping the body emitter changes body rendering and nothing
     else."""
-    from pssc.targets.c.lower_progseq import _BodyEmitter
+    from pssc.targets.c.lower_progseq import CBodyEmitter
 
-    class _Loud(_BodyEmitter):
+    class _Loud(CBodyEmitter):
         def stmt(self, s, ind):
             return ["    " * ind + "/* loud */"] + super().stmt(s, ind)
 
@@ -190,9 +190,9 @@ def test_body_emitter_cls_is_honoured(op_model, tmp_path):
 def test_a_swapped_body_emitter_reaches_ctor_bodies(op_model):
     """`_init` is emitted by a different class, so a swap that stopped at
     operations would render the same model two ways in one file."""
-    from pssc.targets.c.lower_progseq import _BodyEmitter
+    from pssc.targets.c.lower_progseq import CBodyEmitter
 
-    class _Marked(_BodyEmitter):
+    class _Marked(CBodyEmitter):
         def expr(self, e):
             return "/*m*/" + super().expr(e)
 

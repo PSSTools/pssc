@@ -28,7 +28,22 @@ def manifest():
 
 # -- the manifest ------------------------------------------------------------
 
-def test_manifest_matches_code(manifest):
+def _resolve(dotted: str):
+    import importlib
+    module, _, name = dotted.rpartition(".")
+    return getattr(importlib.import_module(module), name)
+
+
+SURFACES = ["pssc.targets.c.backend.COpModelBackend",
+            "pssc.targets.c.lower_progseq.CBodyEmitter"]
+
+
+def test_every_surface_is_in_the_manifest(manifest):
+    assert sorted(manifest["surfaces"]) == sorted(SURFACES)
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+def test_manifest_matches_code(manifest, surface):
     """The one test that makes the manifest mean anything.
 
     It fails when a method is marked, unmarked, or has its stability changed
@@ -36,8 +51,8 @@ def test_manifest_matches_code(manifest):
     surface cannot grow by accident, because growing it does not compile
     without a second, human-written edit.
     """
-    expected = ov.manifest_for(COpModelBackend)
-    stored = manifest["surfaces"]["pssc.targets.c.backend.COpModelBackend"]
+    expected = ov.manifest_for(_resolve(surface))
+    stored = manifest["surfaces"][surface]
     added = sorted(set(expected) - set(stored))
     removed = sorted(set(stored) - set(expected))
     assert not added and not removed, (
@@ -77,9 +92,10 @@ def test_provisional_methods_are_listed_as_such(manifest):
 def test_every_marked_method_has_a_docstring():
     """A marked method's docstring IS the contract an extension codes against
     -- what it is handed, what it must return, what the caller does with it."""
-    bare = [name for name, info in ov.surface(COpModelBackend).items()
+    bare = [f"{surface}.{name}" for surface in SURFACES
+            for name, info in ov.surface(_resolve(surface)).items()
             if not info.attribute
-            and not (getattr(COpModelBackend, name).__doc__ or "").strip()]
+            and not (getattr(_resolve(surface), name).__doc__ or "").strip()]
     assert not bare, (
         f"marked as overridable with nothing said about the contract: {bare}")
 
