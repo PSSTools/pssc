@@ -23,18 +23,21 @@ dependencies = [
   # 3.3: only a namespace qualifies a name, symbols are checked (PSS006,
   # PSS018, PSS064) and every constraint statement is located -- the tests
   # expect those diagnostics from the parser, not from ast2ir.
-  "pssparser>=3.3",
+  # 3.5: annotation values (`pssparser.annotations`) and their checks (PSS150).
+  "pssparser>=3.5",
   # 0.2.0 across the zuspec set: pssc reads IR that 0.1.0 does not have
   # (typed and named constants, FlowKind/JoinKind, the action and component
   # trees), and the 0.2.0 backends read it too. Without floors a resolver
   # may pick 0.1.0 and fail on first compile.
-  "zuspec-ir-core>=0.2.0",
+  # 0.3.0: StmtIfChain and Base.annotations.
+  "zuspec-ir-core>=0.3.0",
   "zuspec-be-py>=0.2.0",
   "zuspec-be-sv>=0.2.0",
-  "zuspec-be-sw>=0.2.0",
+  # 0.2.1: string constants are decoded in the IR and escaped in C.
+  "zuspec-be-sw>=0.2.1",
   # The bc backend (user ruling, 2026-10-15): lowering, the interpreter, and
   # through it zuspec-solver, zuspec-rt-core and zuspec-rt-eng.
-  "zuspec-be-bc>=0.1.0",
+  "zuspec-be-bc>=0.1.1",
   "dv-solve>=0.2.3",
 ]
 
