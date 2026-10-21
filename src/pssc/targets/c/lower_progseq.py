@@ -1874,7 +1874,7 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         """A masked write (`write_val_masked`, which every field-wise write
         reduces to) as ONE expression statement, or None to compose it from
         `reg_read_into`, `reg_value_field_set` / `reg_value_merge` and
-        `reg_write_from` into a local of `reg_value_local_type`. The default
+        `reg_write_from` into a local of `reg_value_local`. The default
         is `reg_access`'s single call."""
         return self.reg_access(ra, lw)
 

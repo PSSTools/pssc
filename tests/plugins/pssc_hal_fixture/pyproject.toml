@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pssc-hal-fixture"
+version = "0.1.0"
+description = "A stateless C API over platform register macros: a pssc target plugin used by pssc's own tests"
+requires-python = ">=3.9"
+
+# op-model-c, as plain functions taking register-window bases. The worked
+# example for the stateless-API path (custom-generator-styles.md, Level 2).
+[project.entry-points."pssc.targets"]
+hal-fixture = "pssc_hal_fixture:HalFixtureTarget"
+
+[tool.setuptools]
+packages = ["pssc_hal_fixture"]

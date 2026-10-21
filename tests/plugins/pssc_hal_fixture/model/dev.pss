@@ -1,0 +1,118 @@
+// The two-window example: a device whose control and status registers sit
+// behind two bases, each bound by the constructor, and whose API returns a
+// status enum the platform declares. Read by `pssc_hal_fixture`, which turns
+// it into a stateless C API; see tests/unit/test_hal_fixture.py.
+
+package hal_fx_pkg {
+    /** The C prefix of a stateless API's functions. */
+    annotation api_s { string prefix = ""; }
+    /** The C type of a register-window base parameter. */
+    annotation bases_s { string c_type = "uintptr_t"; }
+    /** A type the platform declares; the API uses it and never defines it. */
+    annotation extern_s { }
+}
+
+package dev_pkg {
+    import std_pkg::*;
+    import addr_reg_pkg::*;
+
+    @hal_fx_pkg::extern_s
+    enum status_e { STATUS_OK = 0, STATUS_TIMEOUT = 1 }
+
+    struct mode_s : packed_s<> {
+        bit[1] en; bit[3] mode; bit[12] level; bit[16] spare;
+    }
+    pure component mode_r : reg_c<mode_s, READWRITE, 32> {}
+    pure component word_r : reg_c<bit[32], READWRITE, 32> {}
+    pure component go_r : reg_c<bit[32], WRITEONLY, 32> {}
+
+    pure component ctl_c : reg_group_c {
+        mode_r mode;
+        go_r go;
+        word_r len[4];
+        function bit[64] get_offset_of_instance(string name) {
+            match (name) {
+                ["mode"]: return 0x0;
+                ["go"]: return 0x4;
+                default: return -1;
+            }
+        }
+        function bit[64] get_offset_of_instance_array(string name, int index) {
+            match (name) {
+                ["len"]: return 0x20 + index * 8;
+                default: return -1;
+            }
+        }
+    }
+
+    struct stat_s : packed_s<> { bit[1] busy; bit[31] count; }
+    pure component stat_r : reg_c<stat_s, READONLY, 32> {}
+
+    pure component sts_c : reg_group_c {
+        stat_r stat;
+        function bit[64] get_offset_of_instance(string name) {
+            match (name) {
+                ["stat"]: return 0x8;
+                default: return -1;
+            }
+        }
+        function bit[64] get_offset_of_instance_array(string name, int index) {
+            return -1;
+        }
+    }
+}
+
+import addr_reg_pkg::*;
+
+@hal_fx_pkg::api_s {.prefix = "dev"}
+component dev_c {
+    dev_pkg::ctl_c ctl;
+    dev_pkg::sts_c sts;
+
+    @hal_fx_pkg::bases_s {.c_type = "uintptr_t"}
+    solve function void initialize(addr_handle_t ctl_base,
+                                   addr_handle_t sts_base) {
+        ctl.set_handle(ctl_base);
+        sts.set_handle(sts_base);
+    }
+
+    /** Enable the device in `mode`. */
+    target function dev_pkg::status_e set_mode(bit[3] mode) {
+        ctl.mode.write_fields({"en", "mode"}, {1, mode});
+        return dev_pkg::status_e::STATUS_OK;
+    }
+
+    /** Set channel `ch`'s transfer length. */
+    target function void set_len(int ch, bit[32] len) {
+        ctl.len[ch].write_val(len);
+    }
+
+    /** Wait for the device to go idle, reading its status at most `tries`
+     *  times. */
+    target function dev_pkg::status_e wait_idle(bit[32] tries) {
+        bit[32] n = 0;
+        while (sts.stat.read().busy == 1) {
+            n = n + 1;
+            if (n == tries) {
+                return dev_pkg::status_e::STATUS_TIMEOUT;
+            }
+        }
+        return dev_pkg::status_e::STATUS_OK;
+    }
+
+    target function void kick() {
+        ctl.go.write_val(1);
+    }
+
+    /** Enable, start, and wait. */
+    target function dev_pkg::status_e start(bit[3] mode, bit[32] tries) {
+        set_mode(mode);
+        kick();
+        return wait_idle(tries);
+    }
+
+    export target function set_mode;
+    export target function set_len;
+    export target function wait_idle;
+    export target function start;
+}

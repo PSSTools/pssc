@@ -169,6 +169,16 @@ class RegAccessor:
         """The full instance path, register included. `("regs", "channels", "CSR")`."""
         return tuple(self.segs) + (self.name,)
 
+    @property
+    def fields(self) -> Tuple[Any, ...]:
+        """Where each field of the value struct sits in the register word
+        (`reg_field_resolve.FieldSlice`: name, lsb, width, mask), in
+        declaration order; ``()`` for a scalar-valued register."""
+        if self.value_struct is None:
+            return ()
+        from ..reg_field_resolve import struct_layout
+        return tuple(struct_layout(self.value_struct))
+
 
 def collect_accessors(comp_dtype) -> List[RegAccessor]:
     """Every register reachable from *comp_dtype*, in declaration order.

@@ -172,6 +172,10 @@
         "since": "0.3",
         "stability": "provisional"
       },
+      "op_ctx": {
+        "since": "0.3",
+        "stability": "provisional"
+      },
       "prepare": {
         "since": "0.1",
         "stability": "provisional"

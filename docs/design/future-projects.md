@@ -133,10 +133,15 @@ and does not do it.
   op-model-c: C++, SV and Python have no style policy. Give them one (or a
   backend hook) when a plugin for one of them needs it. An external type
   keeps its PSS name; `extern_type_name` was not added.
+- **A group's instance path for a plugin.** A stateless API over a
+  sub-component's operations needs the path from the root to the group an
+  access names; `OpModel._instance_path` is private, so the HAL fixture
+  handles the root's groups only. Publish it (or put the full path on
+  `RegAccess`) when a plugin needs it.
 - **ZIR-2 / a pssc-shipped `pssc_pkg::extern_type_s`** (R-H6 (b), (c)) until
   a second user needs to mark a type external in the model itself.
 - **Field-level reads in `state_uses`** (`regs_read` is register-level).
-- **An enum's IR name is unqualified** (`std_rv_e`, not `plat_pkg::std_rv_e`),
+- **An enum's IR name is unqualified** (`result_e`, not `plat_pkg::result_e`),
   so `c_names` messages name it so; qualifying it moves `_qual` diagnostics.
 
 ## Test rot found during the 0.2.0 wave

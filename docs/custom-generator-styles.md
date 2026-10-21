@@ -275,6 +275,211 @@ directions, which is the point:
   the extension is silently generating its baseline. A stale expectation is
   exactly as misleading as a missing one, and only this half catches it.
 
+### A different API shape: a stateless driver layer
+
+The overrides above decorate the object API `op-model-c` generates. Some
+platforms want a different SHAPE: no component object, just functions that
+each take the register-window bases they use, with every register access in
+the platform's own macros. `tests/plugins/pssc_hal_fixture/` is that target,
+and every line of it is a published hook. Its model,
+`tests/plugins/pssc_hal_fixture/model/dev.pss`, is a device with two windows,
+and one of its functions comes out as:
+
+```c
+/* Enable the device in `mode`. */
+status_e dev_set_mode(uintptr_t ctl_base, uint8_t mode) {
+    uint32_t data;
+    data = DEV_READ32(ctl_base, CTL_MODE, 0);
+    DEV_FIELD_SET(CTL_MODE, en, (1), data);
+    DEV_FIELD_SET(CTL_MODE, mode, (mode), data);
+    DEV_WRITE32(ctl_base, CTL_MODE, 0, data);
+    return STATUS_OK;
+}
+```
+
+**The model says what it wants, in annotations** (LRM 7.13). The target
+defines what they mean:
+
+```pss
+# tests/plugins/pssc_hal_fixture/model/dev.pss
+package hal_fx_pkg {
+    /** The C prefix of a stateless API's functions. */
+    annotation api_s { string prefix = ""; }
+    /** The C type of a register-window base parameter. */
+    annotation bases_s { string c_type = "uintptr_t"; }
+    /** A type the platform declares; the API uses it and never defines it. */
+    annotation extern_s { }
+}
+```
+
+and the model uses them on the root and its constructor:
+
+```pss
+# tests/plugins/pssc_hal_fixture/model/dev.pss
+@hal_fx_pkg::api_s {.prefix = "dev"}
+component dev_c {
+    dev_pkg::ctl_c ctl;
+    dev_pkg::sts_c sts;
+
+    @hal_fx_pkg::bases_s {.c_type = "uintptr_t"}
+    solve function void initialize(addr_handle_t ctl_base,
+                                   addr_handle_t sts_base) {
+        ctl.set_handle(ctl_base);
+        sts.set_handle(sts_base);
+    }
+```
+
+A target reads one with `pssc.annotations.of(node, "hal_fx_pkg::api_s")`,
+which returns the annotation's values (defaults included) or `None`. It
+takes only the qualified name the front end resolved, never a spelling, so a
+model that imports the package under another name still matches. The
+manifest (`--emit-manifest`) reports the same values.
+
+**An operation's C API is three answers**, which the backend gives once and
+pssc uses everywhere the operation is declared, defined, called or checked
+for a name clash:
+
+```python
+# tests/plugins/pssc_hal_fixture/pssc_hal_fixture/backend.py
+    def bases(self, fn):
+        """`[(group path, parameter)]`: the windows ``fn`` takes."""
+        return self.model.unpacked_signature(fn)
+
+    def handle_param(self, fn, ctx):
+        return None
+
+    def signature(self, fn, ctx):
+        ret, _, params = super().signature(fn, ctx)
+        m = self.model
+        prefix = (annotations.of(m.root, API) or {}).get("prefix") or ctx.prefix
+        base_t = (annotations.of(m.ctor(m.root), BASES) or {}).get(
+            "c_type", "uintptr_t")
+        return (ret, f"{prefix}_{fn.name}",
+                [(base_t, p) for _, p in self.bases(fn)] + params)
+
+    def linkage(self, fn, ctx):
+        return "extern" if any(fn is e for e in self.model.exports) \
+            else "static"
+```
+
+`handle_param` returning `None` drops `_self` from the signature and from
+every call. A body that still reaches the component's state (a field, a
+channel, a sub-component) is then refused at its PSS line, rather than
+generating C that names an undeclared `_self`. `OpModel.unpacked_signature(fn)`
+is what such an API takes instead: the register groups `fn` uses, directly
+or through what it calls, each with the root-constructor parameter that binds
+it. `linkage` returning `"static"` keeps an operation out of the header.
+
+**A call passes what the callee's signature now asks for.** `model_call` on
+the body emitter renders every call to an operation:
+
+```python
+# tests/plugins/pssc_hal_fixture/pssc_hal_fixture/backend.py
+    def model_call(self, callee, args, ctx, handle):
+        name = ctx.op_api.signature(callee, ctx)[1]
+        bases = [p for _, p in ctx.op_api.bases(callee)]
+        return f"{name}({', '.join(bases + args)})"
+```
+
+**Register accesses** reach the emitter resolved, as a
+`reg_layout.RegAccess` (`ra`: the register's `RegAccessor`, the group, the
+method, and for a masked write the fields the source named) and its C side
+(`lw`: indices and arguments already rendered):
+
+```python
+# tests/plugins/pssc_hal_fixture/pssc_hal_fixture/backend.py
+    def reg_access(self, ra, lw):
+        if ra.method in ("read", "read_val"):
+            return f"DEV_READ32({self._where(ra, lw)})"
+        if ra.method == "write_val":
+            return f"DEV_WRITE32({self._where(ra, lw)}, {lw.args[0]})"
+        raise Refusal(f"'{ra.method}' has no spelling in this API")
+
+    def reg_masked_write_inline(self, ra, lw):
+        return None         # read, set each field, write: pssc's shape
+
+    def reg_value_local(self, ra, lw):
+        return "uint32_t", "data"
+
+    def reg_value_field_set(self, local, fs, value, ra, lw, mask):
+        if mask != fs.mask:
+            raise Refusal(f"a part of field '{fs.name}' is written, which "
+                          f"DEV_FIELD_SET cannot say")
+        return f"DEV_FIELD_SET({reg_name(ra.accessor)}, {fs.name}, " \
+               f"({value}), {local})"
+
+    def reg_value_field_get(self, value, fs, ra, lw):
+        return f"DEV_FIELD_GET({reg_name(ra.accessor)}, {fs.name}, {value})"
+```
+
+The masked write's shape is pssc's: returning `None` from
+`reg_masked_write_inline` composes it as read into a function-top local
+(`reg_value_local`), set each named field (`reg_value_field_set`), write the
+local back. The read and the write are `reg_read_into`/`reg_write_from`, whose
+defaults go through your `reg_access`. You spell the steps; you cannot drop
+the read or reorder the bus operations.
+
+**Leaving the object out** is the lifecycle pair, returned empty, and three
+sections removed by name (`sections.remove` raises on a name that does not
+exist, so an upstream rename cannot silently undo it):
+
+```python
+# tests/plugins/pssc_hal_fixture/pssc_hal_fixture/backend.py
+    # No object: no lifecycle, no handle struct, no register-map layout.
+    def emit_lifecycle_decls(self, node, ctx):
+        return []
+
+    def emit_lifecycle(self, node, ctx):
+        return []
+
+    def header_sections(self, model, s):
+        return remove(remove(super().header_sections(model, s), "reg_map"),
+                      "handles")
+
+    def impl_sections(self, model, s):
+        return remove(super().impl_sections(model, s), "accessors")
+
+    def regs_text(self, model, s):
+        return ""
+```
+
+**External types and the includes** are the style's. A type the platform
+declares is used and never defined, and its enum items keep their PSS names:
+
+```python
+# tests/plugins/pssc_hal_fixture/pssc_hal_fixture/backend.py
+    def is_extern_type(self, dtype):
+        return annotations.of(dtype, EXTERN) is not None
+
+    def seam_includes(self, model, s):
+        # The platform's macros, then the map they read; pssc's seam is
+        # not used.
+        return ['#include "dev_access.h"', f'#include "{s.prefix}_map.h"']
+
+    def seam_headers(self, link_style):
+        return ()           # ...so none is copied
+```
+
+The proof is differential, as above, and also DRIVEN: `tests/unit/test_hal_fixture.py`
+runs every exported function through `op-model-c`'s output and through the
+fixture's against one tracing memory, and requires the same bus trace. A
+wrong offset, a lost field or an extra access fails there, and a snapshot
+can see none of them. The check is run on broken output too, so it is known
+to fail when it should:
+
+```python
+# tests/unit/test_hal_fixture.py
+@pytest.mark.parametrize("mutate", [
+    _edit("dev_map.h", "#define CTL_LEN_STRIDE 0x8u", "#define CTL_LEN_STRIDE 0x4u"),
+    _edit("dev.c", "    DEV_FIELD_SET(CTL_MODE, en, (1), data);\n", ""),
+], ids=["wrong-stride", "lost-field"])
+def test_the_trace_sees_what_a_snapshot_cannot(hal, tmp_path, mutate):
+    """The check above, run on broken output: it must fail, or it is not
+    checking."""
+    want, got = _traces(tmp_path, mutate)
+    assert got != want
+```
+
 ---
 
 ## Level 3 — a new emitter over pssc's model

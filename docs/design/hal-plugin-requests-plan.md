@@ -4,7 +4,7 @@ Source: `requests.md` (repo root, untracked, received 2026-10-21). As with the
 earlier integration reports, this file does not name the requester or their
 IP. The requester is called **the HAL plugin** here: a level-2 pssc target,
 `derives_from = "op-model-c"`, that turns an op-model component into a
-stateless C HAL. The reference model is called **the aperture example**. It
+stateless C HAL. The reference model is called **the two-window example**. It
 is a root component with two register groups bound in a `solve function
 initialize(addr_handle_t a, addr_handle_t b)`, and exported target functions
 that do `write_fields` and return an external enum.
@@ -25,11 +25,18 @@ docs per phase.
 | 3 | pssc: walker skip-list (prerequisite), PC-1 annotations into the IR | **committed** (pssc `21a1bea` on construct-test-audit, unpushed); guide section deferred to phase 6 |
 | 4 | pssc analysis: PC-2 bindings, PC-4 provenance, PC-3 state uses | **committed** (pssc `21a1bea`). Suites green: unit 2587, progseq 2984 (goldens unchanged), compliance 925 |
 | 5 | pssc C backend: PC-7, PC-5, PC-6, PC-8 (+ c_names) | **committed** 2026-10-21 (pssc `f55f9d9`..`5fdf4fc` on construct-test-audit, unpushed). Suites green: unit 2592, progseq 3005 (goldens unchanged). Guide section (Level 2) deferred to phase 6, which builds the fixture it quotes; see §3 phase 5 notes |
-| 6 | End-to-end: a HAL-shaped fixture plugin, differential bus trace | not started |
+| 6 | End-to-end: a HAL-shaped fixture plugin, differential bus trace | **done** 2026-10-21 (uncommitted at time of writing; see §3 phase 6 notes). Suites: unit 2633 (incl. the 18 plugin-integration tests, which had been skipping here), progseq: see notes |
 | 7 | Docs sweep, release, reply | not started |
 
 The requester's test files (`/tmp/halann/...`) no longer exist on this
 machine. Phase 6 builds its own generic model rather than waiting for copies.
+
+**Vocabulary rule (user, 2026-10-21).** Everything pssc ships or tests uses
+generic names: no term from the requester's model, macros or platform
+(their register, field, enum or macro names, or their word for a register
+window). Phase 6 renamed what earlier phases had borrowed (the extern-enum
+test, the composed-write test, a manifest example, this plan's wording, an
+ir-core serializer test). `requests.md` itself stays untracked.
 
 ---
 
@@ -72,8 +79,8 @@ Verdict key: **OK** means the claim holds as stated. **Partly** or
 | c_names (not raised) | Gap | `c_names.py` spells operation names itself (`:101-106`) and always lists lifecycle names (`:90-100`). A plugin that renames functions (one operation name in two components) escapes the clash check; one that drops `_init` gets a false clash. |
 
 **Two points in the request that need no work.**
-- The `std_rv_e` return needs no return-mapping hook: the PSS function already returns `std_rv_e` and writes `return STD_CMN_RETVAL_OK;`.
-- One `HAL_SET_FIELD` per field does not change the bus trace. They modify a local between one read and one write, the same trace pssc's masked write gives, *provided pssc keeps ownership of the read-modify-write shape* (§3 phase 5, design D-5).
+- The status-enum return needs no return-mapping hook: the PSS function already returns the external enum and writes `return <item>;`.
+- One field-set macro per field does not change the bus trace. They modify a local between one read and one write, the same trace pssc's masked write gives, *provided pssc keeps ownership of the read-modify-write shape* (§3 phase 5, design D-5).
 
 ---
 
@@ -146,7 +153,7 @@ recommendations are the working default unless reopened.
   *Not raised separately; the recommendation is the working default unless reopened.*
 
 Smaller questions to settle in review, not before work:
-- PC-2: does a parameter bound to two groups (aliased aperture) count as pure? *Recommend yes; aliasing is legal.*
+- PC-2: does a parameter bound to two groups (aliased window) count as pure? *Recommend yes; aliasing is legal.*
 - PC-3: are field-level reads in scope? *Recommend register-level `regs_read` now and field level later.*
 - PC-3: is `repeat (n)` with a runtime `n` unbounded? *Recommend yes; only a `while` with no constant bound is flagged.*
 - Should a standalone annotation (`@a;`) attach to the enclosing scope node? *Recommend yes.*
@@ -484,21 +491,64 @@ group. Each repo's commit carries its own tests and docs.
 ### Phase 6: end to end
 
 Add a second fixture plugin, `tests/plugins/pssc_hal_fixture/`, generic names only. It is the worked example for the whole stateless-HAL path and the test the requester's acceptance criteria map onto:
-- **Model:** the aperture example, written fresh with neutral names. It has two groups, a `solve function initialize(addr_handle_t, addr_handle_t)` carrying an annotation, three exported functions (`write_fields` with a constant and a parameter; a read/poll; one calling a sibling), and an extern enum return.
+- **Model:** the two-window example, written fresh with neutral names. It has two groups, a `solve function initialize(addr_handle_t, addr_handle_t)` carrying an annotation, three exported functions (`write_fields` with a constant and a parameter; a read/poll; one calling a sibling), and an extern enum return.
 - **Plugin:** `derives_from = "op-model-c"`. It:
   - reads annotations through `pssc.annotations`;
   - drops `_self` (`handle_param`) and builds the signature from `unpacked_signature`;
-  - spells registers as `HAL_RD32(ap, REG, data)` / `HAL_SET_FIELD(REG, F, (v), data)` / `HAL_WR32(ap, REG, data)` through the PC-5 primitives;
+  - spells registers as `DEV_READ32(base, REG, v)` / `DEV_FIELD_SET(REG, F, (x), v)` / `DEV_WRITE32(base, REG, v)` through the PC-5 primitives;
   - marks the enum extern;
   - turns lifecycle off;
   - makes unexported functions `static`;
   - writes a JSON file through `emit_extra_files`.
 - **Checks:**
   1. byte-exact expected output for one function, mirroring the request's example (the plugin's own golden, which is allowed because the plugin is in-tree);
-  2. compile with `cc -Wall -Werror` against a header that defines the `HAL_*` macros over a memory array;
+  2. compile with `cc -Wall -Werror` against a header that defines the `DEV_*` macros over a memory array;
   3. **differential trace:** run each exported function against the same memory model through op-model-c and through the HAL output, and require identical bus traces. This catches a wrong offset, a lost field or an extra access, which a snapshot cannot.
   4. `assert_differs_from_baseline("op-model-hal-fixture", "op-model-c", expect_changed=[...])`.
   5. The negative path: a function reading a component field is refused with a location.
+
+**Phase 6 notes (as built).**
+- **Where.** `tests/plugins/pssc_hal_fixture/`: the plugin
+  (`pssc_hal_fixture/backend.py`, target `op-model-hal-fixture`, entry point
+  `hal-fixture`), its model (`model/dev.pss`: two groups `ctl`/`sts`, an
+  annotated constructor, four exported functions and one unexported, an
+  external `status_e`) and the platform side the test owns
+  (`platform/dev_access.h` with the `DEV_*` macros, `tb_mem.c`, a tracing
+  memory, and `pssc_seam.c`, pssc's function seam over the same memory for
+  the baseline). Test: `tests/unit/test_hal_fixture.py` (marker `plugin`,
+  installed into a temp prefix).
+- **Checks 1-5 as planned**, plus a sixth: the trace comparison is run on
+  two mutations of the fixture's output (a wrong array stride in the map, a
+  dropped field set) and must fail on both. The trace also asserts its own
+  oracle values (preserved bits of a masked write, the array element's
+  address, the poll count), so two identically wrong builds cannot pass.
+- **Checks map onto the request's acceptance shape**: no `_self`, the
+  windows a function uses as parameters (from `unpacked_signature`), one
+  field-set macro per field between one read and one write, an external
+  enum with unprefixed items, unexported functions `static`, no lifecycle.
+- **What phase 6 added to pssc** (both found by writing the fixture):
+  `COpModelBackend.op_ctx(comp)` (provisional): an `OpCtx` outside a body,
+  so `emit_extra_files` can ask `signature`/`linkage`; and
+  `RegAccessor.fields`, the field layout a register map needs, so a plugin
+  need not import the unpublished `reg_field_resolve`. `pssc.diag.Refusal`
+  is now listed as public in `extension-stability.md`.
+- **Test infrastructure.** `test_plugin_integration.py` gained
+  `install_plugin(src, prefix)` and `discovering(prefix, monkeypatch)`, and a
+  third installer: setuptools' PEP 517 hook called directly, on a copy of the
+  plugin. The shared venv has neither pip nor `build` (and a `build/`
+  directory in the working directory shadowed the `build` module), so all 18
+  plugin-integration tests had been SKIPPING here; they now run and pass.
+- **What the fixture leaves out, on purpose.** It handles registers of the
+  root's own groups, one array index at most, and `read`/`read_val`/
+  `write_val`/masked writes; anything else is a located refusal naming what
+  it cannot say. A sub-component's operations would need the
+  instance path of the group (`OpModel._instance_path` is private).
+- **Docs.** `custom-generator-styles.md` Level 2 gained "A different API
+  shape: a stateless driver layer", quoting the fixture and its model
+  verbatim (this also delivers phase 3's deferred "Reading annotations"
+  text); AGENTS.md names the fixture and the installers;
+  `extension-stability.md` lists `op_ctx`, `RegAccessor.fields` and
+  `pssc.diag.Refusal`.
 
 ### Phase 7: docs, release, reply
 

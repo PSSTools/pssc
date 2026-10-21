@@ -489,6 +489,18 @@ class COpModelBackend:
         return DEFAULT_API.handle_param(fn, ctx)
 
     @overridable(since='0.3', stability='provisional')
+    def op_ctx(self, comp):
+        """The `OpCtx` of an operation of ``comp`` (a component type),
+        outside any body: what to pass `signature`, `handle_param` or
+        `linkage` when asking them from elsewhere -- `emit_extra_files`
+        describing the API, say. Valid after `prepare`."""
+        from .lower_progseq import OpCtx
+        return OpCtx(comp=comp, prefix=self.prefixes[comp], qual="",
+                     emitter_cls=self.body_emitter_class(),
+                     be_kw={"style": self.style},
+                     type_name=self.prefixes.type_name(comp), api=self)
+
+    @overridable(since='0.3', stability='provisional')
     def signature(self, fn, ctx):
         """``fn``'s C signature: ``(return type, name, [(type, parameter)])``.
 

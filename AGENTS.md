@@ -535,6 +535,12 @@ integration test would let two of the four silently not work.
 `tests/plugins/pssc_fixture_plugin/backend.py` is the worked example: 84 lines
 for an inserted section, a wrapped `emit_operation`, an extra file and a house
 style. If a change of that size cannot be written short, the surface is wrong.
+`tests/plugins/pssc_hal_fixture/` is the second: a different API SHAPE (plain
+functions taking register-window bases, platform register macros, no
+lifecycle, an external enum), all through published hooks, held by a
+DIFFERENTIAL BUS TRACE against op-model-c (`tests/unit/test_hal_fixture.py`)
+that is also run on mutated output, so it is known to fail. Keep its names
+generic.
 
 Extensions do not get a golden snapshot — upstream moves. Their checkable claim
 is differential:
@@ -567,8 +573,10 @@ example.
 Third-party targets are discovered from the `pssc.targets` entry-point group.
 `tests/plugins/pssc_fixture_plugin/` is a minimal real one, used by
 `tests/unit/test_plugin_integration.py` (marker: `plugin`), which builds and
-installs it into a temp prefix — never into your environment. It is skipped if
-no installer (`pip`, or `build` + `setuptools`) is available.
+installs it into a temp prefix — never into your environment
+(`install_plugin`, `discovering`; `test_hal_fixture.py` uses them too). It
+tries `pip`, then `build`, then setuptools' PEP 517 hook directly (the shared
+venv has setuptools and wheel only), and is skipped only if none works.
 
 `PSSC_NO_PLUGINS=1` skips discovery entirely. That is the first thing to try
 when pssc misbehaves on a machine with plugins installed: it separates "pssc's
