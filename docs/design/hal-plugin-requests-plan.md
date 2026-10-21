@@ -25,7 +25,7 @@ docs per phase.
 | 3 | pssc: walker skip-list (prerequisite), PC-1 annotations into the IR | **committed** (pssc `21a1bea` on construct-test-audit, unpushed); guide section deferred to phase 6 |
 | 4 | pssc analysis: PC-2 bindings, PC-4 provenance, PC-3 state uses | **committed** (pssc `21a1bea`). Suites green: unit 2587, progseq 2984 (goldens unchanged), compliance 925 |
 | 5 | pssc C backend: PC-7, PC-5, PC-6, PC-8 (+ c_names) | **committed** 2026-10-21 (pssc `f55f9d9`..`5fdf4fc` on construct-test-audit, unpushed). Suites green: unit 2592, progseq 3005 (goldens unchanged). Guide section (Level 2) deferred to phase 6, which builds the fixture it quotes; see §3 phase 5 notes |
-| 6 | End-to-end: a HAL-shaped fixture plugin, differential bus trace | **done** 2026-10-21 (uncommitted at time of writing; see §3 phase 6 notes). Suites: unit 2633 (incl. the 18 plugin-integration tests, which had been skipping here), progseq: see notes |
+| 6 | End-to-end: a HAL-shaped fixture plugin, differential bus trace | **committed** 2026-10-21 (pssc `655842d`..`81b222f`, ir-core `c6e294c`; unpushed). Suites green: unit 2633 (incl. the 18 plugin-integration tests, which had been skipping here), progseq 3005 (goldens unchanged). See §3 phase 6 notes |
 | 7 | Docs sweep, release, reply | not started |
 
 The requester's test files (`/tmp/halann/...`) no longer exist on this
