@@ -14,6 +14,7 @@ file and nothing else.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 import sys
@@ -28,15 +29,27 @@ _PLUGIN_SRC = (Path(__file__).resolve().parents[1] / "plugins"
 _PSSC_SRC = Path(__file__).resolve().parents[2] / "src"
 
 
-def _install_with_pip(target: Path):
+def _install_with_pip(target: Path, src: Path = _PLUGIN_SRC):
     return subprocess.run(
         [sys.executable, "-m", "pip", "install", "--no-deps",
          "--no-build-isolation", "--disable-pip-version-check",
-         "--target", str(target), str(_PLUGIN_SRC)],
+         "--target", str(target), str(src)],
         capture_output=True, text=True)
 
 
-def _install_with_build(target: Path):
+def _unpack_wheel(proc, dist: Path, target: Path):
+    import zipfile
+    wheels = sorted(dist.glob("*.whl"))
+    if proc.returncode != 0 or not wheels:
+        return subprocess.CompletedProcess(
+            proc.args, proc.returncode or 1, proc.stdout,
+            proc.stderr or "no wheel was produced")
+    with zipfile.ZipFile(wheels[-1]) as zf:
+        zf.extractall(target)
+    return proc
+
+
+def _install_with_build(target: Path, src: Path = _PLUGIN_SRC):
     """Build a wheel and unpack it -- the same bytes pip would have written.
 
     Not a shortcut around installation: for a pure-Python wheel, "install" IS
@@ -45,41 +58,58 @@ def _install_with_build(target: Path):
     `setuptools` without `pip`, and the alternative -- a test file that silently
     skips forever -- is worse than either.
     """
-    import zipfile
     dist = target / "_wheel"
+    # Run from the prefix: a `build/` directory in the working directory
+    # would be imported as the `build` module.
     proc = subprocess.run(
         [sys.executable, "-m", "build", "--wheel", "--no-isolation",
-         "--outdir", str(dist), str(_PLUGIN_SRC)],
-        capture_output=True, text=True)
-    if proc.returncode != 0:
-        return proc
-    wheels = sorted(dist.glob("*.whl"))
-    if not wheels:
-        return subprocess.CompletedProcess(proc.args, 1, proc.stdout,
-                                           "build produced no wheel")
-    with zipfile.ZipFile(wheels[-1]) as zf:
-        zf.extractall(target)
-    return proc
+         "--outdir", str(dist), str(src)],
+        capture_output=True, text=True, cwd=str(target))
+    return _unpack_wheel(proc, dist, target)
+
+
+def _install_with_setuptools(target: Path, src: Path = _PLUGIN_SRC):
+    """The PEP 517 hook `build` would call, called directly: for a venv
+    with setuptools and wheel but neither pip nor build. On a copy of the
+    plugin, since setuptools writes `build/` and `*.egg-info` beside it."""
+    import shutil
+    work = target / "_src"
+    shutil.copytree(src, work, ignore=shutil.ignore_patterns(
+        "build", "*.egg-info", "__pycache__"))
+    dist = target / "_wheel"
+    dist.mkdir()
+    proc = subprocess.run(
+        [sys.executable, "-c",
+         "import sys, setuptools.build_meta as b; b.build_wheel(sys.argv[1])",
+         str(dist)], capture_output=True, text=True, cwd=str(work))
+    return _unpack_wheel(proc, dist, target)
+
+
+def install_plugin(src: Path, target: Path) -> Path:
+    """Build and install the plugin at ``src`` into ``target``, or skip the
+    test when nothing here can (no pip, and no build + setuptools)."""
+    if not src.is_dir():
+        pytest.skip(f"fixture plugin not present at {src}")
+    last = None
+    for install in (_install_with_pip, _install_with_build,
+                    _install_with_setuptools):
+        last = install(target, src)
+        if last.returncode == 0:
+            return target
+    pytest.skip(f"cannot build {src.name} here (needs pip, build or "
+                f"setuptools + wheel): {(last.stderr or '').strip()[-400:]}")
 
 
 @pytest.fixture(scope="session")
 def installed_plugin(tmp_path_factory):
     """Build and install the fixture plugin into a throwaway prefix."""
-    if not _PLUGIN_SRC.is_dir():
-        pytest.skip(f"fixture plugin not present at {_PLUGIN_SRC}")
-    target = tmp_path_factory.mktemp("plugin-prefix")
-    last = None
-    for install in (_install_with_pip, _install_with_build):
-        last = install(target)
-        if last.returncode == 0:
-            return target
-    pytest.skip("cannot build the fixture plugin here (needs pip, or build + "
-                f"setuptools): {(last.stderr or '').strip()[-400:]}")
+    return install_plugin(_PLUGIN_SRC, tmp_path_factory.mktemp("plugin-prefix"))
 
 
-@pytest.fixture
-def discovered(installed_plugin, monkeypatch):
-    """Put the installed plugin on this process's path and rerun discovery."""
+@contextlib.contextmanager
+def discovering(prefix: Path, monkeypatch):
+    """Put a plugin installed at ``prefix`` on this process's path, rerun
+    discovery, and put every registry back afterwards."""
     from pssc import targets
     from pssc.targets import call_legality as _cl
 
@@ -93,22 +123,29 @@ def discovered(installed_plugin, monkeypatch):
     saved_ext = {k: dict(v) for k, v in _cl._EXTENSIONS.items()}
 
     monkeypatch.delenv(targets.NO_PLUGINS_ENV, raising=False)
-    monkeypatch.syspath_prepend(str(installed_plugin))
+    monkeypatch.syspath_prepend(str(prefix))
     # importlib.metadata caches its finders against sys.path; a path added
     # after the first scan is invisible without this.
     import importlib
     importlib.invalidate_caches()
     targets.discover(force=True)
+    try:
+        yield targets
+    finally:
+        targets._REGISTRY.clear()
+        targets._REGISTRY.update(saved)
+        targets._PLUGIN_ERRORS.clear()
+        targets._PLUGIN_ERRORS.extend(saved_errors)
+        targets._discovered = saved_latch
+        _cl._EXTENSIONS.clear()
+        _cl._EXTENSIONS.update(saved_ext)
 
-    yield targets
 
-    targets._REGISTRY.clear()
-    targets._REGISTRY.update(saved)
-    targets._PLUGIN_ERRORS.clear()
-    targets._PLUGIN_ERRORS.extend(saved_errors)
-    targets._discovered = saved_latch
-    _cl._EXTENSIONS.clear()
-    _cl._EXTENSIONS.update(saved_ext)
+@pytest.fixture
+def discovered(installed_plugin, monkeypatch):
+    """Put the installed plugin on this process's path and rerun discovery."""
+    with discovering(installed_plugin, monkeypatch) as targets:
+        yield targets
 
 
 # -- the happy path ----------------------------------------------------------
