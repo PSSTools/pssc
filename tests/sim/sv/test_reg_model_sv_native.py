@@ -5,7 +5,7 @@ Fixtures cover the repro from the pss-registers-up labs (scalar ``reg_c`` with
 groups nested in groups, and >=2 instances of one group type (ch0..ch3).
 
 Each case compiles with ``pssc compile -t sv-native`` and lints the output with
-Verilator. xfail until register lowering lands (outline items 2-5).
+Verilator.
 """
 import os
 import subprocess
@@ -154,8 +154,6 @@ def _compile(tmp_path, src):
 
 
 @pytest.mark.skipif(not HAVE_VERILATOR, reason="verilator not on PATH")
-@pytest.mark.xfail(reason="sv-native register lowering not implemented",
-                   strict=True)
 @pytest.mark.parametrize("case", sorted(CASES))
 def test_reg_model_lints(tmp_path, case):
     out = _compile(tmp_path, CASES[case])
