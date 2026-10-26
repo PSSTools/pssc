@@ -163,3 +163,65 @@ def test_reg_model_lints(tmp_path, case):
          "-Wno-style"] + srcs,
         cwd=str(out), capture_output=True, text=True, timeout=300)
     assert res.returncode == 0, res.stdout + res.stderr
+
+
+# Simulation: a stub import_api_if models memory; each case's body does
+# write->read and the trace of bus accesses (addr, data, size) is checked.
+_TB = """class mem_stub extends zsp_gen_pkg::import_api_base;
+  bit [63:0] mem[bit [63:0]];
+  virtual task reg_write(input bit [63:0] addr, input bit [63:0] data, input int size);
+    $display("REG_WRITE 0x%0h 0x%0h %0d", addr, data, size);
+    mem[addr] = data;
+  endtask
+  virtual task reg_read(input bit [63:0] addr, output bit [63:0] data, input int size);
+    data = mem.exists(addr) ? mem[addr] : 0;
+    $display("REG_READ 0x%0h 0x%0h %0d", addr, data, size);
+  endtask
+endclass
+module tb;
+  initial begin
+    mem_stub stub = new();
+    zsp_gen_pkg::factory_if f = zsp_gen_pkg::pss_top::type_id();
+    zsp_gen_pkg::export_api_if api = f.create(stub);
+    api.wr_rd();
+    $display("TB_DONE");
+    $finish;
+  end
+endmodule
+"""
+
+SIM_TRACE = {
+    "scalar": ["REG_WRITE 0x1000 0x5 4", "REG_READ 0x1000 0x5 4"],
+    # en=1 (bit 0), mode=3 (bits 7:1), count=100 (bits 31:8), LSB-first
+    "struct": ["REG_WRITE 0x2000 0x6407 4", "REG_READ 0x2000 0x6407 4"],
+    "nested": ["REG_WRITE 0x3104 0x77 4", "REG_WRITE 0x3000 0x11 4",
+               "REG_READ 0x3104 0x77 4"],
+    "channels": ["REG_WRITE 0x4004 0x1 4", "REG_WRITE 0x4064 0x4 4",
+                 "REG_READ 0x4064 0x4 4", "REG_READ 0x4004 0x1 4"],
+}
+
+
+@pytest.mark.skipif(not HAVE_VERILATOR, reason="verilator not on PATH")
+@pytest.mark.parametrize("case", sorted(CASES))
+def test_reg_model_sim_verilator(tmp_path, case):
+    out = _compile(tmp_path, CASES[case])
+    srcs = (out / "zsp_filelist.f").read_text().split()
+    (out / "tb.sv").write_text(_TB)
+    res = subprocess.run(
+        [VERILATOR, "--binary", "--timing", "-Wno-fatal", "-Wno-lint",
+         "-Wno-style", "--top-module", "tb", "-Mdir", "obj"] + srcs + ["tb.sv"],
+        cwd=str(out), capture_output=True, text=True, timeout=600)
+    assert res.returncode == 0, res.stdout + res.stderr
+    res = subprocess.run([str(out / "obj" / "Vtb")], cwd=str(out),
+                         capture_output=True, text=True, timeout=60)
+    log = res.stdout + res.stderr
+    assert res.returncode == 0, log
+    assert "TB_DONE" in log and "mismatch" not in log, log
+    trace = [l.strip() for l in log.splitlines() if l.startswith("REG_")]
+    assert trace == SIM_TRACE[case], log
+
+
+@pytest.mark.skip(reason="Icarus cannot compile the generated zsp_rt_pkg.sv "
+                  "(pre-existing `semaphore` syntax error); Verilator only")
+def test_reg_model_sim_icarus():
+    pass
