@@ -58,8 +58,12 @@ def lower_component(ctx: LoweringContext, dtype: ir.DataTypeComponent) -> SVClas
         if ctx.uses_reg_model and resolved is not None and is_reg_group(resolved):
             # Register group (pssc_reg_pkg class): built at address 0 here,
             # rebuilt at its handle by `set_handle(h)` in exec init_down.
+            if not reg_groups:
+                # bus adapter; export_api_impl binds it to import_api_if
+                fields.append(SVClassField(name="reg_bus", dtype="pss_reg_bus_adapter"))
+                ctor_body.append('reg_bus = new();')
             reg_groups.append(f.name)
-            ctor_body.append(f'{f.name} = new(null, 0);')
+            ctor_body.append(f'{f.name} = new(reg_bus, 0);')
         # Auto-construct sub-components and resource pools
         elif isinstance(f.datatype, ir.DataTypeComponent):
             ctor_body.append(f'{f.name} = new("{f.name}", this);')
@@ -103,7 +107,7 @@ def lower_component(ctx: LoweringContext, dtype: ir.DataTypeComponent) -> SVClas
                     continue
                 lines = binding_call(
                     call, members={n: n for n in reg_groups},
-                    reg_groups=reg_groups, bus="null",
+                    reg_groups=reg_groups, bus="reg_bus",
                     expr=lambda e: lower_expr(ctx, e), pad="")
                 if lines and not lines[0].startswith("super."):
                     ctor_body.extend(lines)
