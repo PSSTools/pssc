@@ -46,12 +46,26 @@ def lower_component(ctx: LoweringContext, dtype: ir.DataTypeComponent) -> SVClas
         import_if_name = f"{sv_name}_import_if"
         fields.append(SVClassField(name="import_if", dtype=import_if_name))
 
+    from ..progseq_model import is_reg_group
+    reg_groups: List[str] = []
     for f in dtype.fields:
         sv_dtype = ctx.pss_type_to_sv_type_str(f.datatype)
         fields.append(SVClassField(name=f.name, dtype=sv_dtype))
 
+        resolved = f.datatype
+        if isinstance(f.datatype, ir.DataTypeRef) and ctx.ir_ctx:
+            resolved = ctx.ir_ctx.type_map.get(f.datatype.ref_name)
+        if ctx.uses_reg_model and resolved is not None and is_reg_group(resolved):
+            # Register group (pssc_reg_pkg class): built at address 0 here,
+            # rebuilt at its handle by `set_handle(h)` in exec init_down.
+            if not reg_groups:
+                # bus adapter; export_api_impl binds it to import_api_if
+                fields.append(SVClassField(name="reg_bus", dtype="pss_reg_bus_adapter"))
+                ctor_body.append('reg_bus = new();')
+            reg_groups.append(f.name)
+            ctor_body.append(f'{f.name} = new(reg_bus, 0);')
         # Auto-construct sub-components and resource pools
-        if isinstance(f.datatype, ir.DataTypeComponent):
+        elif isinstance(f.datatype, ir.DataTypeComponent):
             ctor_body.append(f'{f.name} = new("{f.name}", this);')
         elif isinstance(f.datatype, ir.DataTypeRef):
             ref_name = f.datatype.ref_name
@@ -78,6 +92,25 @@ def lower_component(ctx: LoweringContext, dtype: ir.DataTypeComponent) -> SVClas
         pool_type = f"zsp_resource_pool #({elem_sv})"
         fields.append(SVClassField(name=pool.name, dtype=pool_type))
         ctor_body.append(f'{pool.name} = new({capacity});')
+
+    # `regs.set_handle(h)` in exec init_down: rebuild the group at `h`.
+    if reg_groups:
+        from ..progseq_model import exec_kind
+        from .lower_exprs import lower_expr
+        from .lower_init import binding_call
+        for fn in dtype.functions:
+            if exec_kind(fn) != "init_down":
+                continue
+            for st in fn.body or []:
+                call = getattr(st, "expr", None)
+                if not isinstance(st, ir.StmtExpr) or not hasattr(call, "func"):
+                    continue
+                lines = binding_call(
+                    call, members={n: n for n in reg_groups},
+                    reg_groups=reg_groups, bus="reg_bus",
+                    expr=lambda e: lower_expr(ctx, e), pad="")
+                if lines and not lines[0].startswith("super."):
+                    ctor_body.extend(lines)
 
     # Constructor
     ctor = SVFunctionDecl(

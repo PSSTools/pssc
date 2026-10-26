@@ -95,7 +95,13 @@ package pssc_reg_pkg;
     endtask
 
     // Raw accessors -- value width tracks T; transaction sized to ACC_W.
+    // An access the register's mode forbids is an error (21.14.1); the
+    // bus is not touched.
     task write_val(data_t v);
+      if (ACC == READONLY) begin
+        $error("pss_reg: write to READONLY register @0x%0h", m_addr);
+        return;
+      end
       if      (ACC_W == 8)  m_bus.write8 (m_addr,  8'(v));
       else if (ACC_W == 16) m_bus.write16(m_addr, 16'(v));
       else if (ACC_W == 32) m_bus.write32(m_addr, 32'(v));
@@ -106,7 +112,12 @@ package pssc_reg_pkg;
       bit [15:0] d16;
       bit [31:0] d32;
       bit [63:0] d64;
-      if      (ACC_W == 8)  begin m_bus.read8 (m_addr, d8);  v = data_t'(d8);  end
+      if (ACC == WRITEONLY) begin
+        $error("pss_reg: read of WRITEONLY register @0x%0h", m_addr);
+        v = '0;
+        return;
+      end
+      if      (ACC_W == 8)  begin m_bus.read8(m_addr, d8);  v = data_t'(d8);  end
       else if (ACC_W == 16) begin m_bus.read16(m_addr, d16); v = data_t'(d16); end
       else if (ACC_W == 32) begin m_bus.read32(m_addr, d32); v = data_t'(d32); end
       else                  begin m_bus.read64(m_addr, d64); v = data_t'(d64); end
