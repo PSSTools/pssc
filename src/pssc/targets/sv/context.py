@@ -45,6 +45,7 @@ class LoweringContext:
     # call, so emit_files only pulls in zsp_dpi_pkg when it is needed (importing
     # it without linking the C impl produces undefined-symbol errors).
     uses_dpi_solver: bool = dc.field(default=False)
+    uses_reg_model: bool = dc.field(default=False)
 
     def import_function_names(self) -> Set[str]:
         """Names of package-scope import functions (target/solve).

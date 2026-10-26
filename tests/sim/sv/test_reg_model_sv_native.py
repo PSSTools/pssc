@@ -159,8 +159,9 @@ def _compile(tmp_path, src):
 @pytest.mark.parametrize("case", sorted(CASES))
 def test_reg_model_lints(tmp_path, case):
     out = _compile(tmp_path, CASES[case])
+    srcs = (out / "zsp_filelist.f").read_text().split()
     res = subprocess.run(
         [VERILATOR, "--lint-only", "--timing", "-Wno-fatal", "-Wno-lint",
-         "-Wno-style", "zsp_rt_pkg.sv", "zsp_gen_pkg.sv"],
+         "-Wno-style"] + srcs,
         cwd=str(out), capture_output=True, text=True, timeout=300)
     assert res.returncode == 0, res.stdout + res.stderr

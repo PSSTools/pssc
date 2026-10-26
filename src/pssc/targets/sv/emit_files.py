@@ -73,6 +73,7 @@ def emit_files(
     top_module_node: Optional[SVModuleDecl] = None,
     dpi_pkg_path: Optional[Path] = None,
     emit_dpi: bool = False,
+    reg_pkg_path: Optional[Path] = None,
     package_name: str = "zsp_gen_pkg",
 ) -> List[Path]:
     """Write SV IR nodes to organized output files.
@@ -128,6 +129,13 @@ def emit_files(
         written.append(rt_dst)
         filelist_entries.append(_FILE_RT)
 
+    # Copy the register runtime (pssc_reg_pkg.sv) when the model has registers
+    if reg_pkg_path and reg_pkg_path.exists():
+        reg_dst = out / reg_pkg_path.name
+        shutil.copyfile(str(reg_pkg_path), str(reg_dst))
+        written.append(reg_dst)
+        filelist_entries.append(reg_pkg_path.name)
+
     # Emit generated package (all classes wrapped in a package). The package
     # name (and hence its filename) is configurable so the OO projection can
     # emit a user-named package.
@@ -139,6 +147,8 @@ def emit_files(
         if emit_dpi:
             pkg_lines.append("  import zsp_dpi_pkg::*;")
         pkg_lines.append("  import zsp_rt_pkg::*;")
+        if reg_pkg_path:
+            pkg_lines.append("  import pssc_reg_pkg::*;")
         pkg_lines.append("")
         sv_body = emitter.emit_all(gen_nodes)
         for line in sv_body.splitlines():

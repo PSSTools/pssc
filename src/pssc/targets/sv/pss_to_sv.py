@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Any, List, Tuple
 
 import zuspec.ir.core as ir
-from zuspec.be.sv.ir.sv import SVForwardDecl
+from zuspec.be.sv.ir.sv import SVForwardDecl, SVRawItem
 
 from ...ast2ir import AstToIrContext
 from .context import LoweringContext
@@ -54,6 +54,24 @@ def _is_stdlib(qname: str) -> bool:
     if qname.startswith(("bit[", "int[")):
         return True
     return qname in _STDLIB_BARE
+
+
+def _split_reg_model(ctx, components, structs) -> str:
+    """Remove the register model from ``components``/``structs`` (in place)
+    and return its SV text (value structs + group classes), or ``''``."""
+    from ..progseq_model import is_reg_group, collect_value_structs, _dt_name
+    from .lower_reg_model import lower_register_model
+    groups = [c for _, c in components if is_reg_group(c)]
+    if not groups:
+        return ""
+    vstructs = {id(s) for s in collect_value_structs(groups)}
+    gids = {id(g) for g in groups}
+    components[:] = [(q, c) for q, c in components
+                     if id(c) not in gids and _dt_name(c) != "DataTypeRegister"]
+    structs[:] = [(q, s) for q, s in structs if id(s) not in vstructs]
+    body, _, _ = lower_register_model(groups)
+    ctx.uses_reg_model = True
+    return body
 
 
 def pss_to_sv(ir_ctx: AstToIrContext) -> List[Any]:
@@ -136,6 +154,11 @@ def pss_to_sv_with_ctx(ir_ctx: AstToIrContext) -> Tuple[List[Any], LoweringConte
         elif isinstance(dtype, ir.DataTypeStruct):
             structs.append((name, dtype))
 
+    # Register model: reg-group components, register (sub)types and their
+    # value structs are lowered as one unit onto pssc_reg_pkg (reg_c #(...)),
+    # as for sv-progseq, rather than as plain components/structs.
+    reg_body = _split_reg_model(ctx, components, structs)
+
     # 1. Enums
     for qname, e in enums:
         result.append(lower_enum(ctx, e))
@@ -150,6 +173,9 @@ def pss_to_sv_with_ctx(ir_ctx: AstToIrContext) -> Tuple[List[Any], LoweringConte
         s.name = qname
         result.append(lower_struct(ctx, s))
         s.name = orig_name
+
+    if reg_body:
+        result.append(SVRawItem(lines=reg_body.splitlines()))
 
     # 3. Import interfaces
     for qname, comp in components:
