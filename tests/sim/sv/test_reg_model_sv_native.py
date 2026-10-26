@@ -221,6 +221,34 @@ def test_reg_model_sim_verilator(tmp_path, case):
     assert trace == SIM_TRACE[case], log
 
 
+_ACC_VIOLATIONS = {
+    # mode of r0, expected message; the bus must not see the access
+    "READONLY": ("write to READONLY register @0x1000", "REG_WRITE"),
+    "WRITEONLY": ("read of WRITEONLY register @0x1000", "REG_READ"),
+}
+
+
+@pytest.mark.skipif(not HAVE_VERILATOR, reason="verilator not on PATH")
+@pytest.mark.parametrize("mode", sorted(_ACC_VIOLATIONS))
+def test_reg_access_mode_violation_sim(tmp_path, mode):
+    src = _SCALAR.replace("reg_c<bit[32], READWRITE, 32> r0;",
+                          f"reg_c<bit[32], {mode}, 32> r0;")
+    out = _compile(tmp_path, src)
+    srcs = (out / "zsp_filelist.f").read_text().split()
+    (out / "tb.sv").write_text(_TB)
+    res = subprocess.run(
+        [VERILATOR, "--binary", "--timing", "-Wno-fatal", "-Wno-lint",
+         "-Wno-style", "--top-module", "tb", "-Mdir", "obj"] + srcs + ["tb.sv"],
+        cwd=str(out), capture_output=True, text=True, timeout=600)
+    assert res.returncode == 0, res.stdout + res.stderr
+    res = subprocess.run([str(out / "obj" / "Vtb")], cwd=str(out),
+                         capture_output=True, text=True, timeout=60)
+    log = res.stdout + res.stderr
+    msg, blocked = _ACC_VIOLATIONS[mode]
+    assert res.returncode != 0 and msg in log, log
+    assert not any(l.startswith(f"{blocked} 0x1000") for l in log.splitlines()), log
+
+
 @pytest.mark.skip(reason="Icarus cannot compile the generated zsp_rt_pkg.sv "
                   "(pre-existing `semaphore` syntax error); Verilator only")
 def test_reg_model_sim_icarus():
