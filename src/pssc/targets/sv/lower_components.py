@@ -20,6 +20,11 @@ from .context import LoweringContext
 from .lower_types import _resolve_super
 
 
+# Runtime functions (pssc_reg_pkg) that return a value; a call used as a
+# statement in `exec init_down` is cast to void.
+_VALUED_INIT_CALLS = ("add_region", "add_nonallocatable_region")
+
+
 def lower_component(ctx: LoweringContext, dtype: ir.DataTypeComponent) -> SVClass:
     """Lower a PSS component to an SVClass extending zsp_component.
 
@@ -65,6 +70,9 @@ def lower_component(ctx: LoweringContext, dtype: ir.DataTypeComponent) -> SVClas
             reg_groups.append(f.name)
             ctor_body.append(f'{f.name} = new(reg_bus, 0);')
         # Auto-construct sub-components and resource pools
+        elif sv_dtype == "transparent_addr_space_c":
+            # pssc_reg_pkg runtime class, not a zsp_component
+            ctor_body.append(f'{f.name} = new();')
         elif isinstance(f.datatype, ir.DataTypeComponent):
             ctor_body.append(f'{f.name} = new("{f.name}", this);')
         elif isinstance(f.datatype, ir.DataTypeRef):
@@ -93,24 +101,47 @@ def lower_component(ctx: LoweringContext, dtype: ir.DataTypeComponent) -> SVClas
         fields.append(SVClassField(name=pool.name, dtype=pool_type))
         ctor_body.append(f'{pool.name} = new({capacity});')
 
-    # `regs.set_handle(h)` in exec init_down: rebuild the group at `h`.
-    if reg_groups:
-        from ..progseq_model import exec_kind
-        from .lower_exprs import lower_expr
-        from .lower_init import binding_call
-        for fn in dtype.functions:
-            if exec_kind(fn) != "init_down":
-                continue
-            for st in fn.body or []:
-                call = getattr(st, "expr", None)
-                if not isinstance(st, ir.StmtExpr) or not hasattr(call, "func"):
-                    continue
+    # `exec init_down`: run in the constructor, after the fields above are
+    # constructed. `regs.set_handle(h)` rebuilds a reg group at `h`; other
+    # statements lower as procedural code in a begin/end block (locals first).
+    from ..progseq_model import exec_kind
+    from .lower_exprs import lower_expr
+    from .lower_init import binding_call
+    from .lower_stmts import lower_stmt
+    for fn in dtype.functions:
+        if exec_kind(fn) != "init_down":
+            continue
+        decls: List[str] = []
+        stmts: List[str] = []
+        for st in fn.body or []:
+            call = getattr(st, "expr", None)
+            if reg_groups and isinstance(st, ir.StmtExpr) and hasattr(call, "func"):
                 lines = binding_call(
                     call, members={n: n for n in reg_groups},
                     reg_groups=reg_groups, bus="reg_bus",
                     expr=lambda e: lower_expr(ctx, e), pad="")
-                if lines and not lines[0].startswith("super."):
-                    ctor_body.extend(lines)
+                if lines:
+                    if not lines[0].startswith("super."):
+                        stmts.extend(lines)
+                    continue
+            if isinstance(st, ir.StmtAnnAssign):
+                name = lower_expr(ctx, st.target)
+                decls.append(
+                    f"{ctx.pss_type_to_sv_type_str(st.annotation)} {name};")
+                if st.value is not None:
+                    stmts.append(f"{name} = {lower_expr(ctx, st.value)};")
+                continue
+            if (isinstance(st, ir.StmtExpr) and isinstance(call, ir.ExprCall)
+                    and isinstance(call.func, ir.ExprAttribute)
+                    and call.func.attr in _VALUED_INIT_CALLS):
+                # function with a result, called as a statement
+                stmts.append(f"void'({lower_expr(ctx, call)});")
+                continue
+            stmts.extend(lower_stmt(ctx, st))
+        if decls:
+            ctor_body.extend(["begin"] + [f"  {l}" for l in decls + stmts] + ["end"])
+        else:
+            ctor_body.extend(stmts)
 
     # Constructor
     ctor = SVFunctionDecl(
