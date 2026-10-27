@@ -1,0 +1,23 @@
+import std_pkg::*;
+import addr_reg_pkg::*;
+component pss_top {
+    transparent_addr_space_c<> aspace;
+    exec init_down {
+        transparent_addr_region_s<> r;
+        r.addr = 0x0; r.size = 0x1000;
+        (void)aspace.add_region(r);
+    }
+    action entry_a {
+        rand transparent_addr_claim_s<> src;
+        rand transparent_addr_claim_s<> dst;
+        constraint { src.size == 64; src.alignment == 4; dst.size == 64; dst.alignment == 4; }
+        addr_handle_t h;
+        bit[32] v;
+        exec body {
+            h = make_handle_from_claim(src);
+            write32(h, 0xdeadbeef);
+            v = read32(h);
+            message(LOW, "src %d dst %d v %d", src.addr, dst.addr, v);
+        }
+    }
+}
