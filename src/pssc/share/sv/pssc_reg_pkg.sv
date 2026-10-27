@@ -295,4 +295,78 @@ package pssc_reg_pkg;
     return -1;
   endfunction
 
+
+  // ---------------------------------------------------------------------------
+  // Address spaces and claims (addr_reg_pkg, transparent only). A claim's
+  // size/alignment are solved with the action; `addr` is then set by the
+  // owning space's allocator (alloc) and released (free) when the action ends.
+  // ---------------------------------------------------------------------------
+  typedef struct packed {
+    bit [63:0] addr;
+    bit [63:0] size;
+  } transparent_addr_region_s;
+
+  typedef struct packed {
+    bit [63:0] addr;       // set by the allocator, not solved
+    bit [63:0] size;
+    bit [63:0] alignment;
+  } transparent_addr_claim_s;
+
+  class transparent_addr_space_c;
+    protected transparent_addr_region_s m_regions[$];
+    protected bit [63:0] m_live_addr[$];   // live claims: [addr, addr+size)
+    protected bit [63:0] m_live_size[$];
+
+    function addr_handle_t add_region(transparent_addr_region_s r);
+      m_regions.push_back(r);
+      return r.addr;
+    endfunction
+
+    // First-fit, aligned. Returns 0 (and leaves `addr` unset) if nothing fits.
+    function bit alloc(bit [63:0] size, bit [63:0] alignment,
+                       output bit [63:0] addr);
+      bit [63:0] al = (alignment == 0) ? 64'd1 : alignment;
+      foreach (m_regions[i]) begin
+        bit [63:0] a = m_regions[i].addr;
+        bit [63:0] lim = m_regions[i].addr + m_regions[i].size;
+        a = ((a + al - 1) / al) * al;
+        while (a + size <= lim) begin
+          int hit = -1;
+          foreach (m_live_addr[j])
+            if (a < m_live_addr[j] + m_live_size[j] && m_live_addr[j] < a + size) begin
+              hit = j;
+              break;
+            end
+          if (hit < 0) begin
+            m_live_addr.push_back(a);
+            m_live_size.push_back(size);
+            addr = a;
+            return 1;
+          end
+          a = m_live_addr[hit] + m_live_size[hit];
+          a = ((a + al - 1) / al) * al;
+        end
+      end
+      return 0;
+    endfunction
+
+    // Allocate claim `c` in place; $fatal if the space is exhausted.
+    function void claim(ref transparent_addr_claim_s c);
+      bit [63:0] a;
+      if (!alloc(c.size, c.alignment, a))
+        $fatal(1, "transparent_addr_space_c: cannot allocate %0d bytes (align %0d)",
+               c.size, c.alignment);
+      c.addr = a;
+    endfunction
+
+    function void free(bit [63:0] addr);
+      foreach (m_live_addr[j])
+        if (m_live_addr[j] == addr) begin
+          m_live_addr.delete(j);
+          m_live_size.delete(j);
+          return;
+        end
+    endfunction
+  endclass
+
 endpackage

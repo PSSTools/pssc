@@ -344,7 +344,8 @@ def _generate_sv_from_ctx(ir_ctx: AstToIrContext, output_dir: str, **options) ->
             emit_dpi=emit_dpi,
             package_name=package_name,
             reg_pkg_path=(Path(__file__).parent / "share" / "sv" / "pssc_reg_pkg.sv"
-                          if getattr(ctx, 'uses_reg_model', False) else None),
+                          if (getattr(ctx, 'uses_reg_model', False)
+                              or getattr(ctx, 'uses_addr_model', False)) else None),
         )
 
     from zuspec.be.sv.ir.sv_emit import SVEmitter

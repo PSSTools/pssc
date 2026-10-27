@@ -83,6 +83,21 @@ def _uses_regs(ctx) -> bool:
     return bool(getattr(ctx, "uses_reg_model", False))
 
 
+def _mem_hooks():
+    """Memory hooks for addr_handle_t read/write (address spaces and claims);
+    same shape as the register-bus hooks."""
+    return [(n.replace("reg_", "mem_"), a) for n, a in _reg_bus_hooks()]
+
+
+def _uses_mem(ctx) -> bool:
+    return bool(getattr(ctx, "uses_addr_model", False))
+
+
+def _extra_hooks(ctx):
+    return ((_reg_bus_hooks() if _uses_regs(ctx) else [])
+            + (_mem_hooks() if _uses_mem(ctx) else []))
+
+
 def _lower_reg_bus_adapter() -> SVClass:
     """``pss_reg_bus_adapter``: the ``pss_mem_if`` the reg_c runtime talks to,
     forwarding every access to ``import_api_if.reg_write/reg_read``.  A
@@ -142,8 +157,7 @@ def _lower_import_api_if(ctx, import_funcs) -> SVInterfaceClass:
             tasks.append(SVTaskDecl(name=f.name, args=args))
         else:
             funcs.append(SVFunctionDecl(name=f.name, args=args, return_type=ret))
-    if _uses_regs(ctx):
-        tasks.extend(SVTaskDecl(name=n, args=a) for n, a in _reg_bus_hooks())
+    tasks.extend(SVTaskDecl(name=n, args=a) for n, a in _extra_hooks(ctx))
     return SVInterfaceClass(name=IMPORT_API_IF, tasks=tasks, functions=funcs)
 
 
@@ -169,11 +183,10 @@ def _lower_import_api_base(ctx, import_funcs) -> SVClass:
             cls.functions.append(SVFunctionDecl(
                 name=f.name, args=args, return_type=ret,
                 is_virtual=True, body_lines=body))
-    if _uses_regs(ctx):
-        for n, a in _reg_bus_hooks():
-            cls.tasks.append(SVTaskDecl(
-                name=n, args=a, is_virtual=True,
-                body_lines=[f'$fatal(1, "{n} not implemented");']))
+    for n, a in _extra_hooks(ctx):
+        cls.tasks.append(SVTaskDecl(
+            name=n, args=a, is_virtual=True,
+            body_lines=[f'$fatal(1, "{n} not implemented");']))
     return cls
 
 
@@ -379,7 +392,7 @@ def build_oo_api_nodes(
             f"OO projection: root component class(es) {sorted(missing)} not "
             f"found among generated SV nodes."
         )
-    has_imports = bool(import_funcs) or _uses_regs(ctx)
+    has_imports = bool(import_funcs) or _uses_regs(ctx) or _uses_mem(ctx)
     has_reg_bus = False
     for n in sv_nodes:
         if isinstance(n, SVClass) and n.name in root_comp_names:

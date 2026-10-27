@@ -16,6 +16,13 @@ from .keywords import SV_KEYWORDS as _SV_KEYWORDS
 
 import zuspec.ir.core as ir
 
+#: addr_reg_pkg types implemented by the SV runtime (pssc_reg_pkg.sv).
+_ADDR_RT_TYPES = {
+    f"addr_reg_pkg::{n}": n for n in (
+        "transparent_addr_space_c", "transparent_addr_claim_s",
+        "transparent_addr_region_s")
+}
+
 
 @dc.dataclass
 class LoweringContext:
@@ -46,6 +53,9 @@ class LoweringContext:
     # it without linking the C impl produces undefined-symbol errors).
     uses_dpi_solver: bool = dc.field(default=False)
     uses_reg_model: bool = dc.field(default=False)
+    # Set by mangle_name when an addr_reg_pkg address-space/claim type is used:
+    # the type comes from pssc_reg_pkg and import_api_if gets mem_write/mem_read.
+    uses_addr_model: bool = dc.field(default=False)
 
     def import_function_names(self) -> Set[str]:
         """Names of package-scope import functions (target/solve).
@@ -133,6 +143,10 @@ class LoweringContext:
         """
         if pss_name in self.sv_name_map:
             return self.sv_name_map[pss_name]
+        if pss_name in _ADDR_RT_TYPES:
+            # Provided by pssc_reg_pkg under its bare name.
+            self.uses_addr_model = True
+            return _ADDR_RT_TYPES[pss_name]
         sv_name = re.sub(r'::', '__', pss_name)
         # Replace any remaining non-identifier chars
         sv_name = re.sub(r'[^A-Za-z0-9_]', '_', sv_name)
