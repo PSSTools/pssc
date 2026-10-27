@@ -174,6 +174,10 @@ class LoweringContext:
             return "string"
 
         if isinstance(dtype, ir.DataTypeChandle):
+            # addr_reg_pkg's addr_handle_t is a chandle in PSS; with the
+            # addr model it is a plain 64-bit address passed to mem_read/write.
+            if self.uses_addr_model:
+                return "bit [63:0]"
             return "chandle"
 
         if isinstance(dtype, ir.DataTypeBool) if hasattr(ir, 'DataTypeBool') else False:

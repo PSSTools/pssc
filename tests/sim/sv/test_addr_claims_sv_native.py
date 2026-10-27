@@ -36,7 +36,6 @@ def _compile(tmp_path):
     return out
 
 
-@pytest.mark.xfail(strict=True, reason="addr claims not lowered in sv-native yet")
 @pytest.mark.skipif(not HAVE_VERILATOR, reason="verilator not on PATH")
 def test_addr_claims_lints(tmp_path):
     out = _compile(tmp_path)
@@ -76,11 +75,10 @@ module tb;
 endmodule
 """
 
-_MSG = re.compile(r"src (\d+) dst (\d+) v (\d+)")
+_MSG = re.compile(r"src\s+(\d+) dst\s+(\d+) v\s+(\d+)")
 _ACC = re.compile(r"^(MEM_WRITE|MEM_READ) 0x([0-9a-f]+) 0x([0-9a-f]+) (\d+)")
 
 
-@pytest.mark.xfail(strict=True, reason="addr claims not lowered in sv-native yet")
 @pytest.mark.skipif(not HAVE_VERILATOR, reason="verilator not on PATH")
 def test_addr_claims_sim_verilator(tmp_path):
     out = _compile(tmp_path)

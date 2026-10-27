@@ -65,6 +65,30 @@ def _reg_read_call(ctx, value):
     return f"{lower_expr(ctx, func.value)}.{func.attr}"
 
 
+_MEM_ACCESS = {f"{op}{w}": (op == "read", w // 8)
+               for op in ("read", "write") for w in (8, 16, 32, 64)}
+
+
+def _mem_access(ctx, value):
+    """Return (is_read, size_bytes, args) when *value* is an addr_reg_pkg
+    readN/writeN call through an addr_handle_t, else None."""
+    if not getattr(ctx, "uses_addr_model", False):
+        return None
+    if not isinstance(value, ir.ExprCall):
+        return None
+    func = value.func
+    if isinstance(func, ir.ExprRefUnresolved):
+        name = func.name
+    elif isinstance(func, ir.ExprAttribute) and isinstance(func.value, ir.TypeExprRefSelf):
+        name = func.attr
+    else:
+        return None
+    if name not in _MEM_ACCESS:
+        return None
+    is_read, size = _MEM_ACCESS[name]
+    return is_read, size, value.args
+
+
 def lower_stmts(ctx: LoweringContext, stmts: List[ir.Stmt]) -> List[str]:
     """Lower a list of IR statements to SV statement strings.
 
@@ -94,6 +118,23 @@ def lower_stmt(ctx: LoweringContext, stmt: ir.Stmt) -> List[str]:
                 if sv_stmt is not None:
                     return [f"{sv_stmt};"]
                 return []
+        mem = _mem_access(ctx, stmt.expr)
+        if mem is not None:
+            # writeN(h, v) -> import_api_if.mem_write(h, v, N/8); a discarded
+            # readN(h) still performs the bus read.
+            is_read, size, args = mem
+            h = lower_expr(ctx, args[0])
+            if is_read:
+                return ["begin", "  bit [63:0] __rd;",
+                        f"  comp.import_if.mem_read({h}, __rd, {size});", "end"]
+            v = lower_expr(ctx, args[1])
+            if size < 8:
+                # Mask: an unsized literal such as 3735928559 is signed in SV
+                # and would sign-extend into the upper bytes.
+                v = f"64'({v}) & 64'h{(1 << (size * 8)) - 1:x}"
+            else:
+                v = f"64'({v})"
+            return [f"comp.import_if.mem_write({h}, {v}, {size});"]
         expr_str = lower_expr(ctx, stmt.expr)
         if expr_str:
             return [f"{expr_str};"]
@@ -106,6 +147,16 @@ def lower_stmt(ctx: LoweringContext, stmt: ir.Stmt) -> List[str]:
             # front-door access consumes time): `x = r.read_val();` ->
             # `r.read_val(x);`. Name-matched, as in lower_progseq.
             return [f"{reg_read}({lower_expr(ctx, t)});" for t in stmt.targets]
+        mem = _mem_access(ctx, stmt.value)
+        if mem is not None and mem[0]:
+            # `v = readN(h);` -> mem_read into a temp (task output), then assign.
+            _, size, args = mem
+            h = lower_expr(ctx, args[0])
+            lines = ["begin", "  bit [63:0] __rd;",
+                     f"  comp.import_if.mem_read({h}, __rd, {size});"]
+            lines += [f"  {lower_expr(ctx, t)} = __rd[{size * 8 - 1}:0];"
+                      for t in stmt.targets]
+            return lines + ["end"]
         val = lower_expr(ctx, stmt.value)
         targets = [lower_expr(ctx, t) for t in stmt.targets]
         lines = []

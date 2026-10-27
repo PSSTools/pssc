@@ -167,6 +167,17 @@ def lower_expr(ctx: LoweringContext, expr: ir.Expr) -> str:
         elif (isinstance(expr.func, ir.ExprAttribute)
                 and isinstance(expr.func.value, ir.TypeExprRefSelf)):
             fname = expr.func.attr
+        if fname and getattr(ctx, "uses_addr_model", False):
+            # addr_reg_pkg handle ops: an addr_handle_t is a plain 64-bit
+            # address in sv-native (see pss_type_to_sv_type_str).
+            a = [lower_expr(ctx, x) for x in expr.args]
+            if fname == "make_handle_from_claim" and len(a) >= 1:
+                return (f"(64'({a[0]}.addr) + 64'({a[1]}))" if len(a) > 1
+                        else f"64'({a[0]}.addr)")
+            if fname == "make_handle_from_handle" and len(a) == 2:
+                return f"(64'({a[0]}) + 64'({a[1]}))"
+            if fname == "addr_value" and len(a) == 1:
+                return f"64'({a[0]})"
         if fname and fname in ctx.import_function_names():
             args = ", ".join(lower_expr(ctx, a) for a in expr.args)
             return f"comp.import_if.{fname}({args})"
