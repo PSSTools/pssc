@@ -648,8 +648,62 @@ Known gaps:
 - Register groups in a nested sub-component get an adapter that is not bound to
   `imp_if` (access fails with `$fatal`); put groups on the root component.
 - The legacy (non-OO API) projection does not emit `pss_reg_bus_adapter`.
-- Other statements in component `exec init_down` (besides `set_handle`) are dropped.
 - Icarus 12 cannot compile the generated `zsp_rt_pkg.sv` (`semaphore`); use Verilator.
+
+---
+
+## Address Spaces and Claims
+
+`sv-native` lowers `transparent_addr_space_c`, `transparent_addr_claim_s` and
+`addr_handle_t` operations from `addr_reg_pkg`. The runtime classes live in
+`pssc_reg_pkg.sv`, which is copied into the output when a model uses them.
+
+- **Address spaces.** A `transparent_addr_space_c<>` component field becomes a
+  runtime `transparent_addr_space_c` (`add_region(r)`, `alloc(size, align, out addr)`,
+  `claim(c)`, `free(addr)`). Regions are added in a component `exec init_down`:
+
+  ```pss
+  exec init_down {
+      transparent_addr_region_s<> r;
+      r.addr = 0x0; r.size = 0x1000;
+      (void)aspace.add_region(r);
+  }
+  ```
+
+  `exec init_down` (locals, field assigns, calls) is lowered into the component
+  constructor, after its fields are built.
+- **Claims.** Each `rand transparent_addr_claim_s<>` field of an action is
+  allocated in `post_solve()` (first-fit, aligned to the solved `alignment`, sized
+  by the solved `size`) from the component's first `transparent_addr_space_c`
+  field, and freed at the end of the action's `body()`.
+- **Claims in buffer objects.** For `buffer b { rand transparent_addr_claim_s<> c; }`
+  the producer claims `o.c` in `post_solve()` and the consumer frees `i.c.addr` after
+  its body, so the consumer sees the producer's address. The flow binding must be
+  explicit: `bind p.o c.i;`.
+- **Handles.** `addr_handle_t` is `bit [63:0]`. `make_handle_from_claim(c[, off])`,
+  `make_handle_from_handle(h, off)` and `addr_value(h)` are lowered to address
+  arithmetic.
+- **Memory access.** `write8/16/32/64(h, v)` and `v = read8/16/32/64(h)` go through
+  two hooks that `import_api_if` gains when address spaces are used:
+
+  ```systemverilog
+  pure virtual task mem_write(input bit [63:0] addr, input bit [63:0] data, input int size);
+  pure virtual task mem_read(input bit [63:0] addr, output bit [63:0] data, input int size);
+  ```
+
+  `size` is in bytes (1/2/4/8); `data` is 64 bits wide (low `size*8` bits used).
+  `import_api_base` stubs both with `$fatal`, so override both.
+
+Known gaps:
+
+- A `readN()` must be the whole right-hand side of an assignment; a read inside a
+  larger expression is not lowered.
+- Buffer flow objects between sequential `do`s are not bound implicitly; without
+  `bind p.o c.i;` the consumer's input is null.
+- With several consumers of one buffer, the first to finish frees the claim.
+- `exec init_down` runs in the constructor, so a child component's runs before its
+  parent's (PSS order is parent first).
+- Memory accesses always go to the root component's `import_if`.
 
 ---
 
