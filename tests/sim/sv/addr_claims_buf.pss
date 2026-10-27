@@ -1,0 +1,40 @@
+import std_pkg::*;
+import addr_reg_pkg::*;
+component pss_top {
+    transparent_addr_space_c<> aspace;
+    exec init_down {
+        transparent_addr_region_s<> r;
+        r.addr = 0x0; r.size = 0x1000;
+        (void)aspace.add_region(r);
+    }
+    buffer b_s {
+        rand transparent_addr_claim_s<> c;
+        constraint { c.size == 64; c.alignment == 4; }
+    }
+    action prod_a {
+        output b_s o;
+        addr_handle_t h;
+        exec body {
+            h = make_handle_from_claim(o.c);
+            write32(h, 0xcafe1234);
+            message(LOW, "prod %d", o.c.addr);
+        }
+    }
+    action cons_a {
+        input b_s i;
+        addr_handle_t h;
+        bit[32] v;
+        exec body {
+            h = make_handle_from_claim(i.c);
+            v = read32(h);
+            message(LOW, "cons %d v %d", i.c.addr, v);
+        }
+    }
+    action entry_b {
+        activity {
+            p: do prod_a;
+            c: do cons_a;
+            bind p.o c.i;
+        }
+    }
+}

@@ -3,7 +3,9 @@
 Fixture ``addr_claims_a.pss`` (from the pss-registers-up labs): a component
 ``transparent_addr_space_c`` populated in ``exec init_down``, an action with two
 ``transparent_addr_claim_s`` claims, and ``write32``/``read32`` through a handle
-made from one claim.  Memory accesses go through the ``import_api_if`` hooks
+made from one claim.  ``addr_claims_buf.pss``: a claim inside a buffer object,
+allocated by the producer and seen at the same address by the consumer
+(bound with an explicit ``bind``).  Memory accesses go through the ``import_api_if`` hooks
 ``mem_write``/``mem_read``.
 """
 import os
@@ -24,13 +26,16 @@ REGION = (0x0, 0x1000)
 CLAIM_SIZE = 64
 
 
-def _compile(tmp_path):
+_PSS_BUF = Path(__file__).resolve().parent / "addr_claims_buf.pss"
+
+
+def _compile(tmp_path, pss=_PSS, action="entry_a"):
     out = tmp_path / "out"
     env = dict(os.environ)
     env["PYTHONPATH"] = _SRC + os.pathsep + env.get("PYTHONPATH", "")
     res = subprocess.run(
         [sys.executable, "-m", "pssc", "compile", "-t", "sv-native", "-q",
-         "--export-action", "entry_a", "-o", str(out), str(_PSS)],
+         "--export-action", action, "-o", str(out), str(pss)],
         capture_output=True, text=True, env=env, timeout=300)
     assert res.returncode == 0, res.stdout + res.stderr
     return out
@@ -109,3 +114,33 @@ def test_addr_claims_sim_verilator(tmp_path):
         assert acc == [("MEM_WRITE", f"{src:x}", "deadbeef", "4"),
                        ("MEM_READ", f"{src:x}", "deadbeef", "4")], log
         assert v == 0xdeadbeef, log
+
+
+_MSG_PROD = re.compile(r"prod\s+(\d+)")
+_MSG_CONS = re.compile(r"cons\s+(\d+) v\s+(\d+)")
+
+
+@pytest.mark.skipif(not HAVE_VERILATOR, reason="verilator not on PATH")
+def test_addr_claims_buffer_sim_verilator(tmp_path):
+    out = _compile(tmp_path, _PSS_BUF, "entry_b")
+    srcs = (out / "zsp_filelist.f").read_text().split()
+    (out / "tb.sv").write_text(_TB.replace("api.entry_a()", "api.entry_b()"))
+    res = subprocess.run(
+        [VERILATOR, "--binary", "--timing", "-Wno-fatal", "-Wno-lint",
+         "-Wno-style", "--top-module", "tb", "-Mdir", "obj"] + srcs + ["tb.sv"],
+        cwd=str(out), capture_output=True, text=True, timeout=600)
+    assert res.returncode == 0, res.stdout + res.stderr
+    for seed in range(1, N_SEEDS + 1):
+        res = subprocess.run(
+            [str(out / "obj" / "Vtb"), f"+verilator+seed+{seed}"],
+            cwd=str(out), capture_output=True, text=True, timeout=60)
+        log = res.stdout + res.stderr
+        assert res.returncode == 0 and "TB_DONE" in log, log
+        mp, mc = _MSG_PROD.search(log), _MSG_CONS.search(log)
+        assert mp and mc, log
+        prod = int(mp.group(1))
+        cons, v = (int(x) for x in mc.groups())
+        assert prod == cons, f"seed {seed}: consumer addr differs\n{log}"
+        assert prod % 4 == 0 and REGION[0] <= prod and \
+            prod + CLAIM_SIZE <= REGION[1], log
+        assert v == 0xcafe1234, log

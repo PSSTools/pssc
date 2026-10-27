@@ -346,11 +346,28 @@ def _lower_addr_claims(ctx, dtype, comp_type_name, sv_name, functions, tasks):
     space in post_solve() (after the solver fixed size/alignment) and free
     them at the end of body().  Uses the component's first
     transparent_addr_space_c field."""
-    claims = [
-        ctx.safe_field_name(f.name) for f in dtype.fields
-        if ctx.pss_type_to_sv_type_str(f.datatype) == "transparent_addr_claim_s"
-    ]
-    if not claims:
+    from zuspec.ir.core.fields import FieldKind
+    def _is_claim(f):
+        return ctx.pss_type_to_sv_type_str(f.datatype) == "transparent_addr_claim_s"
+
+    def _flow_claims(kind):
+        # Claim fields inside flow objects (buffer { rand claim_s c; }).
+        ret = []
+        for f in dtype.fields:
+            if f.kind != kind or not isinstance(f.datatype, ir.DataTypeStruct):
+                continue
+            for sf in getattr(f.datatype, "fields", None) or []:
+                if _is_claim(sf):
+                    ret.append(f"{ctx.safe_field_name(f.name)}."
+                               f"{ctx.safe_field_name(sf.name)}")
+        return ret
+
+    claims = [ctx.safe_field_name(f.name) for f in dtype.fields if _is_claim(f)]
+    # The producer claims an output flow object's address; the consumer
+    # frees it once its body completes (free of an unknown addr is a no-op).
+    out_claims = _flow_claims(FieldKind.Output)
+    in_claims = _flow_claims(FieldKind.Input)
+    if not (claims or out_claims or in_claims):
         return
     comp_t = None
     if comp_type_name and ctx.ir_ctx:
@@ -364,8 +381,8 @@ def _lower_addr_claims(ctx, dtype, comp_type_name, sv_name, functions, tasks):
         ctx.warn(f"action {sv_name}: address claims but component has no "
                  f"transparent_addr_space_c field; claims not allocated")
         return
-    alloc = [f"comp.{aspace}.claim({c});" for c in claims]
-    free = [f"comp.{aspace}.free({c}.addr);" for c in claims]
+    alloc = [f"comp.{aspace}.claim({c});" for c in claims + out_claims]
+    free = [f"comp.{aspace}.free({c}.addr);" for c in claims + in_claims]
     ps = next((f for f in functions if f.name == "post_solve"), None)
     if ps is None:
         functions.append(SVFunctionDecl(
