@@ -329,6 +329,8 @@ def lower_action(
         except Exception:
             pass  # graceful degradation; leave body() as inherited no-op
 
+    _lower_addr_claims(ctx, dtype, comp_type_name, sv_name, functions, tasks)
+
     return SVClass(
         name=sv_name,
         extends_name=extends,
@@ -337,3 +339,43 @@ def lower_action(
         functions=functions,
         tasks=tasks,
     )
+
+
+def _lower_addr_claims(ctx, dtype, comp_type_name, sv_name, functions, tasks):
+    """Allocate transparent_addr_claim_s fields from the component's address
+    space in post_solve() (after the solver fixed size/alignment) and free
+    them at the end of body().  Uses the component's first
+    transparent_addr_space_c field."""
+    claims = [
+        ctx.safe_field_name(f.name) for f in dtype.fields
+        if ctx.pss_type_to_sv_type_str(f.datatype) == "transparent_addr_claim_s"
+    ]
+    if not claims:
+        return
+    comp_t = None
+    if comp_type_name and ctx.ir_ctx:
+        comp_t = ctx.ir_ctx.type_map.get(comp_type_name)
+    aspace = None
+    for f in getattr(comp_t, "fields", None) or []:
+        if ctx.pss_type_to_sv_type_str(f.datatype) == "transparent_addr_space_c":
+            aspace = f.name
+            break
+    if aspace is None:
+        ctx.warn(f"action {sv_name}: address claims but component has no "
+                 f"transparent_addr_space_c field; claims not allocated")
+        return
+    alloc = [f"comp.{aspace}.claim({c});" for c in claims]
+    free = [f"comp.{aspace}.free({c}.addr);" for c in claims]
+    ps = next((f for f in functions if f.name == "post_solve"), None)
+    if ps is None:
+        functions.append(SVFunctionDecl(
+            name="post_solve", return_type="void", is_virtual=True,
+            body_lines=(["super.post_solve();"] if dtype.super else []) + alloc))
+    else:
+        ps.body_lines[:0] = alloc
+    body = next((t for t in tasks if t.name == "body"), None)
+    if body is None:
+        tasks.append(SVTaskDecl(name="body", is_virtual=True,
+                                body_lines=(["super.body();"] if dtype.super else []) + free))
+    else:
+        body.body_lines.extend(free)
