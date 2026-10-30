@@ -9,6 +9,7 @@ import pytest
 import zuspec.ir.core as ir
 from pssc import annotations
 from pssc.ast2ir import AstToIrTranslator
+from pssc.diag import Refusal
 from pssc.frontend import Parser
 from pssc.targets import comp_inherit
 
@@ -200,9 +201,34 @@ def test_reader_refuses_a_repeated_type_and_all_of_reads_each():
     }
     """)
     f = next(f for f in ctx.type_map["pss_top"].functions if f.name == "f")
-    with pytest.raises(ValueError, match="all_of"):
+    with pytest.raises(Refusal, match="applied 2 times") as e:
         annotations.of(f, "gen_pkg::note_s")
+    # Located at the second application, so it reports as the model's error.
+    assert e.value.located().startswith("m.pss:")
+    assert isinstance(e.value, ValueError)
     assert [v["text"] for v in annotations.all_of(f, "gen_pkg::note_s")] == ["a", "b"]
+
+
+def test_find_all_covers_every_declaration_reachable_or_not(ctx):
+    found = annotations.find_all(ctx, "::gen_pkg::note_s")
+    texts = sorted(v["text"] for _, v in found)
+    assert texts == sorted([
+        "pkg enum", "enum extension", "standalone", "extension", "field",
+        "exec 1", "exec 2", "action", "struct", "nested enum", "import fn"])
+    # The exec block's two applications are on one node, listed twice.
+    nodes = [n for n, v in found if v["text"] in ("exec 1", "exec 2")]
+    assert len(nodes) == 2 and nodes[0] is nodes[1]
+    blk = annotations.find_all(ctx, "gen_pkg::block_s")
+    assert {v["name"] for _, v in blk} == {"UART", "en"}
+    assert annotations.find_all(ctx, "gen_pkg::extern_s") == []
+
+
+def test_find_all_takes_an_op_model(ctx):
+    class _Model:
+        pass
+    m = _Model()
+    m.ctx = ctx
+    assert len(annotations.find_all(m, "gen_pkg::block_s")) == 2
 
 
 def test_an_exported_actions_entry_carries_the_actions_annotations():
