@@ -137,6 +137,12 @@ class COpModelBackend:
         self.comps = model.comp_dtypes_root_first
         self.imports = model.imports
         self.emitter_cls = self.body_emitter_class()
+        if getattr(model, "reg_read_form", "expression") == "statement":
+            # The bodies were sequenced (`OpModelTarget.reg_read_form`); the
+            # emitter then renders each read as a statement, `reg_read_into`.
+            self.emitter_cls = type(self.emitter_cls.__name__,
+                                    (self.emitter_cls,),
+                                    {"reg_read_form": "statement"})
         self.accs = accessor_map(self.comps, self.prefixes, self.style)
         # The register value layouts, partitioned into the file each belongs
         # in. Computed here rather than in the two section emitters so that the

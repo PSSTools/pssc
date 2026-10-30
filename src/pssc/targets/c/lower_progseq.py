@@ -1512,6 +1512,12 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
     legality_target = "op-model-c"
     call_context = Ctx.TARGET
 
+    #: "statement" when the bodies were sequenced
+    #: (`OpModelTarget.reg_read_form`): a read that is a declaration's or a
+    #: local assignment's whole value is rendered by `reg_read_into`, never
+    #: as an initializer or a right-hand side. Set by the backend.
+    reg_read_form = "expression"
+
     def __init__(self, fn, comp, prefix: str, reg_style: str = "bitfields",
                  yield_mode: str = "none", match_default: str = "message",
                  message_style: str = "import", handle: str = HANDLE,
@@ -1889,11 +1895,35 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
     @overridable(since='0.3', stability='provisional')
     def reg_read_into(self, ra, lw: "LoweredRegAccess", local: str) -> str:
         """The statement (without its `;`) that reads the register into
-        ``local``: the first step of a composed masked write. It must read
-        (PSS 3.1 §21.14.1); the default is ``local = <read_val>``."""
-        rd = self.reg_access(dc.replace(ra, method="read_val", args=()),
-                             dc.replace(lw, args=()))
-        return f"{local} = {rd}"
+        ``local``: the first step of a composed masked write, and, under
+        ``reg_read_form = "statement"``, every read the model makes. It
+        must read (PSS 3.1 §21.14.1). ``ra.method`` is the read's (`read`,
+        `read_val`); for a composed write it is the write's, and the read
+        is a `read_val`. The default is ``local = <read>``."""
+        if ra.method not in ("read", "read_val"):
+            ra, lw = (dc.replace(ra, method="read_val", args=()),
+                      dc.replace(lw, args=()))
+        return f"{local} = {self.reg_access(ra, lw)}"
+
+    def _read_into(self, local: str, value, target, pad: str
+                   ) -> Optional[List[str]]:
+        """``local = value`` as `reg_read_into` when ``value`` is a whole
+        register read and the reads are statements; else None. A read the
+        target type converts is read into the register's own local first."""
+        if self.reg_read_form != "statement" or _dt_name(value) != "ExprCall":
+            return None
+        parts = self._reg_parts(value)
+        if parts is None or parts[0].method not in ("read", "read_val"):
+            return None
+        rd, conv = self.reg_access(*parts), self.convert_to(value, target)
+        if conv == rd:
+            return [f"{pad}{self.reg_read_into(*parts, local)};"]
+        if conv.count(rd) != 1:
+            raise ValueError(f"internal error: the conversion of '{rd}' "
+                             f"to '{local}' is '{conv}'")
+        t = self.function_local(*self.reg_value_local(*parts))
+        return [f"{pad}{self.reg_read_into(*parts, t)};",
+                f"{pad}{local} = {conv.replace(rd, t)};"]
 
     @overridable(since='0.3', stability='provisional')
     def reg_value_field_set(self, local: str, fs, value: str, ra,
@@ -2619,6 +2649,10 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             init = _default_init(s.annotation, self.enums) or "{0}"
             return [f"{pad}{decl} = {init};"] + tail
         if getattr(s, "value", None) is not None:
+            rd = self._read_into(name, s.value,
+                                 self.types.of_datatype(s.annotation), pad)
+            if rd is not None:
+                return [f"{pad}{ct} {name};"] + rd + tail
             value = self.convert_to(s.value,
                                     self.types.of_datatype(s.annotation))
             return [f"{pad}{ct} {name} = {value};"] + tail
@@ -2656,6 +2690,11 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             if sf is not None:
                 ct, local, field = sf
                 return [f"{pad}{ct}_{field}_set(&{local}, {value});"]
+        if sel is None:
+            rd = self._read_into(self.expr(tgt), s.value,
+                                 self.types.type_of(tgt), pad)
+            if rd is not None:
+                return rd
         return [f"{pad}{self.expr(tgt)} = {value};"]
 
     def _array_assign(self, dst: str, value, dtype, pad: str,

@@ -231,6 +231,12 @@ class OpModel:
     #: order. Each is a function of the completed root.
     exports: Tuple[Any, ...] = ()
 
+    #: How register reads reach the backend (`OpModelTarget.reg_read_form`):
+    #: "expression", as the model wrote them, or "statement", each one the
+    #: whole value of a declaration, a local assignment or an expression
+    #: statement (`effect_seq`).
+    reg_read_form: str = "expression"
+
     @property
     def base_classes(self) -> List[Any]:
         """`classes` that are not in the tree: bases nothing instantiates."""
@@ -669,6 +675,15 @@ class OpModelTarget(Target):
     #: a model whose executor overrides one (`executors.check`).
     supports_executor_delegation: bool = False
 
+    #: Where this backend's register reads may stand. "expression" (the
+    #: default): anywhere the model put them. "statement": `build_model`
+    #: sequences every rendered body first (`effect_seq.sequence` with
+    #: `effect_seq.reg_reads`), so a read is only ever the whole value of
+    #: `T x = read`, `x = read` or `read;` -- what a backend whose read is a
+    #: statement (a HAL macro writing an out-parameter) needs. The pass runs
+    #: before `check`, so every check sees the bodies the emitter renders.
+    reg_read_form: str = "expression"
+
     # -- derivation ---------------------------------------------------------
 
     #: The target this one derives from, BY NAME -- "everything op-model-c
@@ -941,9 +956,39 @@ class OpModelTarget(Target):
             # Without --root, the tree is the one the first entry runs in.
             root = (self.resolve_root(ctx, root_name) if root_name
                     else entries[0].comp)
-            return self.elaborate(ctx, root, opts,
-                                  ctor_names=self.ctor_names_for(opts),
-                                  entries=entries)
+            model = self.elaborate(ctx, root, opts,
+                                   ctor_names=self.ctor_names_for(opts),
+                                   entries=entries)
+            return self.sequence_reads(model)
+
+    def sequence_reads(self, model: OpModel) -> OpModel:
+        """*model* with its bodies in :attr:`reg_read_form`. For
+        "statement", each rendered body of a component is replaced by
+        `effect_seq.sequence`'s (the IR is this run's own); a read that
+        cannot be sequenced is a located `Refusal`."""
+        form = self.reg_read_form
+        if form == "expression":
+            return model
+        if form != "statement":
+            raise ValueError(f"{self.name}: reg_read_form must be "
+                             f"'expression' or 'statement', not {form!r}")
+        from .effect_seq import reg_reads, sequence
+        from .validate_calls import rendered_bodies
+        tm = getattr(model.ctx, "type_map", None)
+        seen = set()
+        for comp, fn, _c, _sb in rendered_bodies(
+                model.root, model.ctx, ctor_names=model.ctor_names,
+                entries=[(e.comp, f) for e in model.entries
+                         for f in e.functions],
+                pkg_functions=self.supports_package_functions,
+                init_blocks=self.supports_init_blocks,
+                extra_components=model.base_classes,
+                native=self.native_inheritance):
+            if comp is None or id(fn) in seen or not getattr(fn, "body", None):
+                continue
+            seen.add(id(fn))
+            fn.body = sequence(fn.body, reg_reads(comp, tm))
+        return dc.replace(model, reg_read_form="statement")
 
     def sections(self, model: OpModel,
                  opts: argparse.Namespace) -> Dict[str, str]:

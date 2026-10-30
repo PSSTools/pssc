@@ -134,6 +134,19 @@ def test_or_tests_not_and_nests_per_operand():
     assert out[2].value.name == t
 
 
+def test_the_front_ends_binary_and_or_short_circuit():
+    # The parser's `&&` / `||` is `ExprBin(op=BinOp.And/Or)`, not `ExprBool`.
+    for op, neg in ((ir.BinOp.And, False), (ir.BinOp.Or, True)):
+        e = ir.ExprBin(lhs=_local("c"), op=op, rhs=_rd())
+        out = effect_seq.sequence([ir.StmtReturn(value=e)])
+        t = _decl(out[0])
+        assert out[0].value.name == "c"
+        i = out[1]
+        assert isinstance(i.test, ir.ExprUnary) is neg
+        assert i.body[0].value.func.attr == "read"
+        assert out[2].value.name == t and not _reads(out[:1] + out[2:])
+
+
 def test_and_left_read_is_unconditional():
     e = ir.ExprBool(op=ir.BoolOp.And, values=[_rd(), _local("c")])
     out = effect_seq.sequence([ir.StmtReturn(value=e)])

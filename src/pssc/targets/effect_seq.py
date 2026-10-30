@@ -55,6 +55,8 @@ Pred = Callable[[Any], Optional[Any]]
 #: The type of a ``&&`` / ``||`` result read into a local.
 BOOL = ir.DataTypeInt(name="bool", bits=1, signed=False)
 
+_LOGICAL = {ir.BinOp.And: ir.BoolOp.And, ir.BinOp.Or: ir.BoolOp.Or}
+
 _READS = frozenset(m for m, d in REG_DIRECTION.items() if d == "r")
 
 
@@ -346,6 +348,11 @@ class _Sequencer(Transformer):
                 return pre, e2, residual or e
             decl, ref = self._local("rd", t, e2, e)
             return pre + [decl], ref, None
+        if isinstance(e, ir.ExprBin) and e.op in _LOGICAL and \
+                self._contains(e.rhs):
+            # The front end's `&&` / `||` is a binary node, not `ExprBool`.
+            return self._short_circuit(ir.ExprBool(
+                op=_LOGICAL[e.op], values=[e.lhs, e.rhs]))
         if isinstance(e, ir.ExprBool) and \
                 any(self._contains(v) for v in e.values[1:]):
             return self._short_circuit(e)
