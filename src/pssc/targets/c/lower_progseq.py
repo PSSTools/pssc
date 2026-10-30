@@ -2121,6 +2121,58 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         locs[name] = ctype
         return name
 
+    def fresh_local(self, stem: str, ctype: str, scope: str = "block") -> str:
+        """A new local's name: ``stem``, or ``stem`` and a number, which is
+        none of the names the function's body can see -- a local or loop
+        variable of the model's (as `mangle` spells it), a parameter (as
+        the backend's `signature` names it), the handle, an operation's or
+        an import's C name -- nor one `fresh_local` or `function_local`
+        already gave, and which `c_names.check_identifier` passes.
+
+        ``scope="block"``: the caller declares it, in the block it uses it
+        in. ``scope="function"``: it is declared at the top of the function
+        (`function_local_lines`), never shared with another request."""
+        from .c_names import check_identifier
+        if scope not in ("block", "function"):
+            raise ValueError(f"fresh_local scope '{scope}' is not 'block' "
+                             f"or 'function'")
+        taken = self._visible_names()
+        name, n = stem, 1
+        while name in taken:
+            name = f"{stem}_{n}"
+            n += 1
+        check_identifier(name)
+        self._fresh_taken.add(name)
+        if scope == "function":
+            self.__dict__.setdefault("_fn_locals", {})[name] = ctype
+        return name
+
+    def _visible_names(self) -> Set[str]:
+        """The names `fresh_local` must not take, gathered once per body
+        (each name it gives is added)."""
+        if "_fresh_taken" in self.__dict__:
+            return self._fresh_taken | set(self.__dict__.get("_fn_locals", ()))
+        from ..ir_walk import walk
+        taken = {HANDLE, BUS}
+        for n in walk(getattr(self.fn, "body", None) or []):
+            nm = getattr(n, "name", None)
+            if isinstance(nm, str) and type(n).__name__.startswith("ExprRef"):
+                taken.add(mangle(nm))
+            for f in ("target", "index_var", "iter_var"):
+                v = getattr(n, f, None)
+                nm = getattr(v, "name", None) or getattr(v, "id", None)
+                if isinstance(nm, str):
+                    taken.add(mangle(nm))
+        taken |= {mangle(a) for a in self.arg_names}
+        taken |= {mangle(i) for i in self.imports}
+        ctx = self.op_ctx
+        if ctx is not None:
+            api = ctx.op_api
+            taken |= {p for _, p in api.signature(self.fn, ctx)[2]}
+            taken |= {api.signature(f, ctx)[1] for f in self.comp.functions}
+        self._fresh_taken = taken
+        return taken | set(self.__dict__.get("_fn_locals", ()))
+
     def function_local_lines(self, ind: int) -> List[str]:
         """The declarations `function_local` gathered, for the top of the
         function body."""
