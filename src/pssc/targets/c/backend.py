@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional, Tuple
 
 from ..overridable import overridable, overridable_attr
 from ..sections import Section
@@ -159,6 +159,9 @@ class COpModelBackend:
         # `c_names` included, which types every operation's `signature`.
         from ..int_width import refuse_too_wide
         refuse_too_wide(model, 64, "C")
+        # The backend's own per-function decisions, before anything asks
+        # `signature` or `linkage` (`c_names` does, next).
+        self.plan(model, s)
         # Before any section is rendered, so that two rules producing one C
         # name is the model's error with both sources named, not a
         # conflicting-declaration error in the header (`c_names`).
@@ -174,6 +177,35 @@ class COpModelBackend:
         # answer, not two calls to `regs_text` that could in principle disagree
         # under an override.
         self._regs_text = self.regs_text(model, s)
+
+    @overridable(since='0.3', stability='provisional')
+    def plan(self, model, s: CSettings) -> None:
+        """Decide, once, what the per-function hooks will answer. Nothing
+        here by default.
+
+        Called by `prepare` after its derived state is set (`prefixes`,
+        `accs`, `op_ctx` work) and before anything asks `signature`,
+        `handle_param` or `linkage` -- `c_names` and every `emit_*` come
+        after. An override may record per-function contracts on ``self``,
+        computed from the default ones (``super().signature(fn,
+        self.op_ctx(comp))`` for each of `operations`), for its
+        `signature` to look up; or refuse the model (raise
+        `driver.CompileError`), before any file is written.
+        """
+
+    def operations(self, model) -> List[Tuple[Any, Any]]:
+        """``(component type, function)`` for every function this backend
+        asks `signature` of: each emitted component's operations, then its
+        solve functions (not the constructor), in declaration order."""
+        from .lower_progseq import (_operations, _solve_operations,
+                                    regular_nodes)
+        out = []
+        for node in regular_nodes(model):
+            comp = node.dtype
+            out += [(comp, fn) for fn in
+                    _operations(comp, model.ctor_names)
+                    + _solve_operations(comp, model.ctor_names)]
+        return out
 
     # -- sections -----------------------------------------------------------
     #

@@ -308,3 +308,49 @@ def test_differential_refuses_two_targets_of_different_granularity():
     nothing."""
     with pytest.raises(ValueError, match="not comparable"):
         testing.diff_from_baseline("op-model-c", "op-model-cpp")
+
+
+def _planned(**hooks):
+    from pssc.targets.c.backend import COpModelBackend
+    from pssc.targets.c_progseq_tgt import CProgSeqTarget
+    backend = type("_Backend", (COpModelBackend,), hooks)
+    return type("_T", (CProgSeqTarget,), dict(
+        name="x-planned", derives_from="op-model-c",
+        backend_cls=backend))()
+
+
+def test_plan_runs_before_any_signature_and_can_rename_from_the_default(
+        registered):
+    """`plan` computes each operation's contract from the default one; the
+    `signature` override only looks it up (PC-15)."""
+    from pssc.targets.c.backend import COpModelBackend
+    order = []
+
+    def plan(self, model, s):
+        order.append("plan")
+        self.contracts = {}
+        for comp, fn in self.operations(model):
+            ret, name, params = COpModelBackend.signature(
+                self, fn, self.op_ctx(comp))
+            self.contracts[id(fn)] = (ret, "acme_" + name, params)
+
+    def signature(self, fn, ctx):
+        order.append("signature")
+        return self.contracts[id(fn)]
+
+    registered(_planned(plan=plan, signature=signature))
+    secs = testing.generated_sections("x-planned")
+    assert order[0] == "plan" and order.count("plan") == 1
+    assert "signature" in order
+    assert "acme_" in "".join(secs.values())
+
+
+def test_plan_may_refuse_before_anything_is_written(registered):
+    from pssc.driver import CompileError
+
+    def plan(self, model, s):
+        raise CompileError("acme: no operations allowed")
+
+    registered(_planned(plan=plan))
+    with pytest.raises(CompileError, match="acme: no operations"):
+        testing.generated_sections("x-planned")

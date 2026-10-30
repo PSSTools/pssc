@@ -402,6 +402,16 @@ is what such an API takes instead: the register groups `fn` uses, directly
 or through what it calls, each with the root-constructor parameter that binds
 it. `linkage` returning `"static"` keeps an operation out of the header.
 
+A signature that needs more than one function at a time (a contract
+derived from every operation's default signature, say) is computed in
+`plan(model, s)`: `prepare` calls it once its derived state is set and
+before anything asks `signature`, `handle_param` or `linkage`.
+`self.operations(model)` lists each `(component, function)`;
+`super().signature(fn, self.op_ctx(comp))` is the default to start from.
+Record the result on `self` for `signature` to look up, or raise
+`driver.CompileError` to refuse the model before any file is written. Do
+not build a second backend to ask it.
+
 **A call passes what the callee's signature now asks for.** `model_call` on
 the body emitter renders every call to an operation:
 
@@ -502,8 +512,9 @@ The hooks get the register the local was first read from or written to
 A local bound to two layouts, never read or written, or used whole anywhere
 else (an argument, a return value) is refused at its line.
 
-**Leaving the object out** is the lifecycle pair, returned empty, and three
-sections removed by name (`sections.remove` raises on a name that does not
+**Leaving the object out** -- operations only, `static` ones declared in
+the `.c` alone -- needs no `emit_impl` override. It is `linkage`, above, the
+lifecycle pair, returned empty, and three sections removed by name (`sections.remove` raises on a name that does not
 exist, so an upstream rename cannot silently undo it):
 
 ```python

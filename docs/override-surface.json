@@ -176,6 +176,10 @@
         "since": "0.3",
         "stability": "provisional"
       },
+      "plan": {
+        "since": "0.3",
+        "stability": "provisional"
+      },
       "prepare": {
         "since": "0.1",
         "stability": "provisional"
