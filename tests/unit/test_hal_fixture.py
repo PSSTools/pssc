@@ -422,3 +422,31 @@ def test_block_scoped_temps_are_declared_in_the_writes_block(
     out = _compile(TARGET, tmp_path / "out", src=tmp_path / "m.pss")
     c = "".join(p.read_text() for p in sorted(out.glob("*.c")))
     assert SET_LVL_BLOCK in c
+
+
+SET_LOW = """\
+void dev_set_low(uintptr_t ctl_base, uint16_t v) {
+    uint32_t data;
+    DEV_READ32_INTO(ctl_base, CTL_MODE, 0, data);
+    data = (data & ~(241)) | (((((uint32_t)v & 4095) << 4) | 1) & (241));
+    DEV_WRITE32(ctl_base, CTL_MODE, 0, data);
+}
+"""
+
+
+def test_a_part_of_a_field_is_merged_from_the_mask(hal, tmp_path):
+    """A write of part of a field (`level`'s low 4 bits): `DEV_FIELD_SET`
+    cannot say "only these bits", so the fixture's `partial_field_writes =
+    False` has pssc spell the modify step from the mask and value
+    (`reg_rmw.field_writes`); the fixture itself compares no masks (PC-12)."""
+    src = MODEL.read_text().replace(
+        "    export target function set_mode;",
+        "    target function void set_low(bit[12] v) {\n"
+        "        ctl.mode.write_masked({.en=1, .level=0xf}, {.en=1, .level=v});\n"
+        "    }\n"
+        "    export target function set_low;\n"
+        "    export target function set_mode;")
+    (tmp_path / "m.pss").write_text(src)
+    out = _compile(TARGET, tmp_path / "out", src=tmp_path / "m.pss")
+    c = "".join(p.read_text() for p in sorted(out.glob("*.c")))
+    assert SET_LOW in c

@@ -404,13 +404,12 @@ method, and for a masked write the fields the source named) and its C side
     def reg_masked_write_inline(self, ra, lw):
         return None         # read, set each field, write: pssc's shape
 
+    partial_field_writes = False    # a part of a field: pssc merges the mask
+
     def reg_value_local(self, ra, lw):
         return "uint32_t", "data"
 
     def reg_value_field_set(self, local, fs, value, ra, lw, mask):
-        if mask != fs.mask:
-            raise Refusal(f"a part of field '{fs.name}' is written, which "
-                          f"DEV_FIELD_SET cannot say")
         return f"DEV_FIELD_SET({reg_name(ra.accessor)}, {fs.name}, " \
                f"({value}), {local})"
 

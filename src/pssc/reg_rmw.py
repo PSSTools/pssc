@@ -79,7 +79,25 @@ class RegWriteProvenance(ir.Provenance):
     fields: Optional[Tuple[RegFieldWrite, ...]] = None
 
 
-_DT_REGISTER = "DataTypeRegister"
+def field_writes(fields: Optional[Tuple[RegFieldWrite, ...]],
+                 partial_field_writes: bool = False
+                 ) -> Optional[Tuple[RegFieldWrite, ...]]:
+    """The policy for spelling a reduced write one field at a time: ``fields``
+    (a `RegWriteProvenance.fields`), or ``None`` when the write must be spelled
+    from its mask and value instead. With ``partial_field_writes`` False, a
+    field whose mask is not all of its bits makes the whole write ``None``: a
+    part of a field is not that field, and a field-wise spelling that cannot
+    say "only these bits" would write the rest. One decision here, so no
+    backend compares ``w.mask`` with ``w.slice.mask`` on its own."""
+    if not fields:
+        return None
+    if not partial_field_writes and any(w.mask != w.slice.mask
+                                        for w in fields):
+        return None
+    return fields
+
+
+_DT_REGISTER ="DataTypeRegister"
 _DT_REGISTER_GROUP = "DataTypeRegisterGroup"
 _DT_ARRAY = "DataTypeArray"
 _DT_REF = "DataTypeRef"

@@ -55,6 +55,7 @@ from .. import group_binding
 from ..overridable import overridable
 from ..reg_layout import collect_accessors, resolve_access
 from ...reg_field_resolve import field_map
+from ...reg_rmw import field_writes
 from ..group_binding import group_fields
 from ..comments import BLOCK, blank_line, comment_lines, doc_block
 
@@ -1542,6 +1543,12 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
     #: as an initializer or a right-hand side. Set by the backend.
     reg_read_form = "expression"
 
+    #: Whether a composed masked write may set a PART of a field through
+    #: `reg_value_field_set` (its ``mask`` then is not all of ``fs.mask``).
+    #: False: such a write is spelled by `reg_value_merge` from its mask and
+    #: value instead (`reg_rmw.field_writes`). The default hook masks.
+    partial_field_writes = True
+
     def __init__(self, fn, comp, prefix: str, reg_style: str = "bitfields",
                  yield_mode: str = "none", match_default: str = "message",
                  message_style: str = "import", handle: str = HANDLE,
@@ -2073,11 +2080,12 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
 
         ct, name = self.reg_value_local(ra, lw)
         t = local(ct, name)
+        fields = field_writes(ra.fields, self.partial_field_writes)
         # A field value with a call runs before the register is read, in
         # source order, as the model's one write would have run it: each is
         # first a temp at the field's width (the width it is written at).
         out, vals = [], []
-        for i, fw in enumerate(ra.fields or ()):
+        for i, fw in enumerate(fields or ()):
             if not _has_call(fw.value):
                 vals.append(self.expr(fw.value))
                 continue
@@ -2086,8 +2094,8 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             out.append(f"{v} = {self.convert_to(fw.value, ft)}")
             vals.append(v)
         out.append(self.reg_read_into(ra, lw, t))
-        if ra.fields:
-            for fw, val in zip(ra.fields, vals):
+        if fields:
+            for fw, val in zip(fields, vals):
                 out.append(self.reg_value_field_set(
                     t, fw.slice, val, ra, lw, fw.mask))
         else:
