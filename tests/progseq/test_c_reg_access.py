@@ -19,7 +19,7 @@ import pytest
 from pssc import driver, targets
 from pssc.targets import reg_layout
 from pssc.targets.c.backend import COpModelBackend
-from pssc.targets.c.lower_progseq import CBodyEmitter
+from pssc.targets.c.lower_progseq import CBodyEmitter, LoweredRegAccess
 
 from .conftest import available_c_compilers
 
@@ -200,6 +200,42 @@ def test_a_composed_masked_write_is_one_step_per_field(tmp_path, monkeypatch):
     # A field of a whole read goes through its hook.
     assert "DEV_FIELD_GET(R_CTL, mode, " in _body(
         c, "uint32_t top_get_mode(top_c *_self)")
+
+
+class _HalNoArgs(_Hal):
+    """Records every value converted to a width: a register's arguments are."""
+    seen = []
+
+    def convert_to(self, e, target):
+        type(self).seen.append(e)
+        return super().convert_to(e, target)
+
+
+class _HalNoArgsBackend(COpModelBackend):
+    body_emitter_cls = _HalNoArgs
+
+
+def test_a_field_list_write_renders_no_packed_args(tmp_path, monkeypatch):
+    # `ra.fields` spells the write, so `lw.args` -- the packed mask and value
+    # the model built, which carry no source location -- is never read and
+    # its rendering never runs.
+    monkeypatch.setattr(_HalNoArgs, "seen", [])
+    out, c = _gen(tmp_path, monkeypatch, _HalNoArgsBackend)
+    assert _HalNoArgs.seen, "the other functions' args are rendered"
+    assert all(e.loc is not None for e in _HalNoArgs.seen)
+    assert "DEV_FIELD_SET(R_CTL, mode, (m), data);" in _body(
+        c, "void top_set(top_c *_self, uint32_t m)")
+
+
+def test_lowered_args_are_rendered_once_and_replaceable():
+    n = []
+    lw = LoweredRegAccess(acc=None, indices=(),
+                          args=lambda: n.append(1) or ["a", "b"])
+    assert n == []
+    assert lw.args == ("a", "b") and lw.args == ("a", "b") and n == [1]
+    assert dataclasses.replace(lw, args=("x",)).args == ("x",)
+    with pytest.raises(TypeError):
+        LoweredRegAccess(acc=None, indices=())
 
 
 class _HalBlock(_Hal):

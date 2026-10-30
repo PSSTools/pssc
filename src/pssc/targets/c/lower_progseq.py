@@ -1470,6 +1470,29 @@ class CIntSemantics(IntSemantics):
         return IntSemantics.convert_to(self, e, target)
 
 
+class _LazyArgs:
+    """`LoweredRegAccess.args`: a tuple, or a no-argument callable that
+    renders it, run on the first read and kept. A composed masked write that
+    sets `RegAccess.fields` never reads the packed value and mask, so they
+    are never rendered (and cannot refuse)."""
+
+    def __set_name__(self, owner, name):
+        self.slot = "_" + name + "_v"
+
+    def __get__(self, obj, owner=None):
+        if obj is None:
+            # No class-level default: the dataclass field stays required.
+            raise AttributeError(self.slot)
+        v = obj.__dict__[self.slot]
+        if callable(v):
+            v = tuple(v())
+            object.__setattr__(obj, self.slot, v)
+        return v
+
+    def __set__(self, obj, v):
+        object.__setattr__(obj, self.slot, v)
+
+
 @dc.dataclass(frozen=True)
 class LoweredRegAccess:
     """A `reg_layout.RegAccess` in C: what `CBodyEmitter.reg_access` and the
@@ -1480,7 +1503,8 @@ class LoweredRegAccess:
     #: Each of the access's ``index_exprs``, rendered.
     indices: Tuple[str, ...]
     #: The arguments, rendered and converted to the register's width.
-    args: Tuple[str, ...]
+    #: Rendered on first read; `dc.replace(lw, args=(...))` sets them.
+    args: Tuple[str, ...] = _LazyArgs()
     #: The member path of the sub-components crossed (`sub[i].inner`), or
     #: None for a register of this component's own group.
     sub_path: Optional[str] = None
@@ -1808,12 +1832,11 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             # any argument to a `bit[N]` parameter; a value struct is passed
             # whole.
             val_t = PssType("int", acc.value_bits, False)
-            args = [self.convert_to(a, val_t) for a in call.args]
             want = _REG_ACCESSORS[func.attr]
-            if len(args) != want:
+            if len(call.args) != want:
                 raise ValueError(
                     f"register method '{func.attr}' takes {want} argument(s), "
-                    f"got {len(args)}")
+                    f"got {len(call.args)}")
             ra = resolve_access(self.comp, call,
                                 getattr(self.ctx, "type_map", None),
                                 accessors=self._accessors_of)
@@ -1823,7 +1846,9 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
                     f"register access to the C emitter and not to "
                     f"reg_layout.resolve_access")
             return ra, LoweredRegAccess(acc=acc, indices=indices,
-                                        args=tuple(args), sub_path=sub_path,
+                                        args=lambda: [self.convert_to(a, val_t)
+                                                      for a in call.args],
+                                        sub_path=sub_path,
                                         _chain=chain)
 
         raise ValueError(
