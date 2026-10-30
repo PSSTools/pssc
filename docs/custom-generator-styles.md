@@ -835,6 +835,25 @@ rule.
 
 ---
 
+## Declaring what statements and locals you refuse
+
+A derived target that takes a subset of what its ancestor renders says so
+on the class, `{name: reason}`, rather than filtering bodies itself. Each
+node of a rendered body of such a kind (an IR class name: `"StmtMatch"`,
+`"StmtRepeatWhile"`, ...), and each local declared with a type of such a
+kind (`"DataTypeStruct"`, ...), is refused at its PSS line with the reason,
+before any file is written:
+
+```python
+    unsupported_kinds = {"StmtRepeatWhile": "the HAL does not poll"}
+    unsupported_local_types = {"DataTypeStruct": "locals are words"}
+```
+
+It is the `body_kinds` pre-screen (`check_body_kinds`), so the refusal
+reads like every other "is not lowered to C" diagnostic.
+
+---
+
 ## Declaring what calls you can lower
 
 If your target can lower something beyond the common set — or explicitly cannot

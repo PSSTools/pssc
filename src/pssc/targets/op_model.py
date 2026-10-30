@@ -692,6 +692,19 @@ class OpModelTarget(Target):
     #: before `check`, so every check sees the bodies the emitter renders.
     reg_read_form: str = "expression"
 
+    #: IR kinds this target refuses, ``{kind: reason}`` (a `Stmt*`/`Expr*`
+    #: class name, as `body_kinds` names them): `check_body_kinds` refuses
+    #: each such node of a rendered body at its location, with the reason,
+    #: though the body emitter renders it. A derived subset target says
+    #: what it leaves out here instead of filtering bodies itself.
+    unsupported_kinds: Mapping[str, str] = {}
+
+    #: Local types this target refuses, ``{DataType class name: reason}``
+    #: (``"DataTypeStruct"``, ``"DataTypeArray"``, ...): each declaration
+    #: of a local of such a type is refused at its location, with the
+    #: reason (`check_body_kinds`).
+    unsupported_local_types: Mapping[str, str] = {}
+
     # -- derivation ---------------------------------------------------------
 
     #: The target this one derives from, BY NAME -- "everything op-model-c
@@ -1128,7 +1141,8 @@ class OpModelTarget(Target):
         body emitter has no rendering for (`body_kinds`): before, the
         emitter raised an internal error from the middle of emission."""
         cls = self.body_emitter_class()
-        if cls is None:
+        if cls is None and not self.unsupported_kinds \
+                and not self.unsupported_local_types:
             return
         from ..driver import CompileError
         from . import body_kinds
@@ -1142,8 +1156,9 @@ class OpModelTarget(Target):
             extra_components=model.base_classes,
             native=self.native_inheritance)
         language = self.language or self.name
-        bad = body_kinds.refusals(bodies, body_kinds.emitter_kinds(cls),
-                                  language)
+        bad = body_kinds.refusals(
+            bodies, None if cls is None else body_kinds.emitter_kinds(cls),
+            language, self.unsupported_kinds, self.unsupported_local_types)
         if bad:
             raise CompileError(
                 f"{len(bad)} construct(s) cannot be lowered to {language}",

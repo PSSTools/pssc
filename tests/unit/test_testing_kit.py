@@ -354,3 +354,41 @@ def test_plan_may_refuse_before_anything_is_written(registered):
     registered(_planned(plan=plan))
     with pytest.raises(CompileError, match="acme: no operations"):
         testing.generated_sections("x-planned")
+
+
+def _narrowed(**attrs):
+    from pssc.targets.c_progseq_tgt import CProgSeqTarget
+    return type("_T", (CProgSeqTarget,), dict(
+        name="x-narrow", derives_from="op-model-c", **attrs))()
+
+
+def _refused(registered, target):
+    from pssc.driver import CompileError
+    registered(target)
+    with pytest.raises(CompileError) as ei:
+        testing.compile_op_model("x-narrow").cleanup()
+    e = ei.value
+    return "\n".join([str(e)] + list(e.errors))
+
+
+def test_unsupported_kinds_refuse_a_rendered_kind_with_location_and_reason(
+        registered):
+    """A derived subset target narrows the statements it takes (PC-18)."""
+    text = _refused(registered, _narrowed(
+        unsupported_kinds={"StmtRepeatWhile": "the HAL does not poll"}))
+    assert "the HAL does not poll" in text
+    assert "dma_engine.pss:64" in text
+
+
+def test_unsupported_local_types_refuse_a_local_declaration(registered):
+    text = _refused(registered, _narrowed(
+        unsupported_local_types={"DataTypeStruct": "no struct locals"}))
+    assert "local 'csr' of type dma_regs_pkg::dma_ch_csr_s is not lowered " \
+        "to C: no struct locals" in text
+    assert "dma_engine.pss:" in text
+
+
+def test_no_narrowing_changes_nothing(registered):
+    registered(_narrowed())
+    assert testing.generated_sections("x-narrow") == \
+        testing.generated_sections("op-model-c")

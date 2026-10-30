@@ -26,7 +26,7 @@ to the IR fails by name until someone says how each target takes it.
 from __future__ import annotations
 
 import dataclasses as dc
-from typing import FrozenSet, Iterable, List, Optional
+from typing import FrozenSet, Iterable, List, Mapping, Optional
 
 from ..diag import at
 from .progseq_model import _dt_name
@@ -131,10 +131,16 @@ def _place_of(parent, field: str, place: str) -> str:
     return "expr"
 
 
-def refusals(bodies: Iterable, kinds: FrozenSet[str],
-             language: str) -> List[str]:
+def refusals(bodies: Iterable, kinds: Optional[FrozenSet[str]],
+             language: str, unsupported: Mapping[str, str] = {},
+             unsupported_locals: Mapping[str, str] = {}) -> List[str]:
     """One located diagnostic per node of ``bodies`` (``[(component,
-    function, ...)]``) that a target rendering ``kinds`` cannot render."""
+    function, ...)]``) that a target rendering ``kinds`` (None: every kind)
+    cannot render. ``unsupported`` (``{kind: reason}``) narrows that: such
+    a node is refused with its reason wherever it stands, a part included.
+    ``unsupported_locals`` (``{type kind: reason}``, a `DataType` class
+    name such as ``"DataTypeStruct"``) refuses a declared local of that
+    type, with its reason."""
     out: List[str] = []
 
     def site(comp, fn) -> str:
@@ -159,6 +165,18 @@ def refusals(bodies: Iterable, kinds: FrozenSet[str],
             cn = _dt_name(n)
             if cn.startswith("Stmt"):
                 stmt = n
+            if cn in unsupported and place != "callee":
+                refuse(n, stmt, f"{_PSS.get(cn, cn)} is not lowered to "
+                                f"{language}: {unsupported[cn]}")
+                return
+            if cn == "StmtAnnAssign":
+                ann = getattr(n, "annotation", None)
+                tn = _dt_name(ann) if ann is not None else None
+                if tn in unsupported_locals:
+                    name = getattr(getattr(n, "target", None), "name", "?")
+                    refuse(n, stmt, f"local '{name}' of type "
+                           f"{getattr(ann, 'name', None) or tn} is not "
+                           f"lowered to {language}: {unsupported_locals[tn]}")
             if cn in AGGREGATES:
                 if not (place in AGGREGATE_PLACES
                         or (place == "in" and cn == "ExprList")) or (
@@ -169,7 +187,8 @@ def refusals(bodies: Iterable, kinds: FrozenSet[str],
                            f"type from where it is assigned, returned or "
                            f"passed (LRM 8.4.2)")
                     return
-            elif cn not in PARTS and cn not in kinds and place != "callee":
+            elif cn not in PARTS and kinds is not None and \
+                    cn not in kinds and place != "callee":
                 refuse(n, stmt, f"{_PSS.get(cn, cn)} is not lowered to "
                                 f"{language}")
                 return
