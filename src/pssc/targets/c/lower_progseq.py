@@ -265,6 +265,11 @@ def _c_unbracket(text: str) -> str:
     return text
 
 
+def _same_struct(a, b) -> bool:
+    """Whether two `DataTypeStruct`s are one type (by qualified name)."""
+    return a is b or getattr(a, "name", None) == getattr(b, "name", 0)
+
+
 def _has_call(e) -> bool:
     """Whether an IR expression contains a call (and so may not be read twice)."""
     if isinstance(e, (list, tuple)):
@@ -2001,11 +2006,71 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
                 f"{pad}{self.reg_read_into(*parts, name)};"]
 
     def _word(self, e):
-        """``(parts, whole)`` when ``e`` names a `_read_word` local."""
+        """``(parts, whole)`` when ``e`` names a `_read_word` local or a
+        word-held value local (`_value_local`)."""
         if _dt_name(e) != "ExprRefLocal":
             return None
+        vl = self._value_local(e)
+        if vl is not None:
+            return vl, self.arg_rename.get(e.name) or mangle(e.name)
         return getattr(self, "_words", {}).get(
             self.arg_rename.get(e.name) or mangle(e.name))
+
+    def _word_spelled(self, parts) -> bool:
+        """Whether the target spells this register's `read()` as its word:
+        `reg_access` gives `read()` and `read_val()` one spelling."""
+        ra, lw = (dc.replace(parts[0], args=()), dc.replace(parts[1], args=()))
+        return ra.accessor.value_struct is not None and \
+            self.reg_access(dc.replace(ra, method="read"), lw) == \
+            self.reg_access(dc.replace(ra, method="read_val"), lw)
+
+    def _value_local(self, e):
+        """The binding access ``(RegAccess, LoweredRegAccess)`` when ``e``
+        names a local of a register's value struct that the target holds as
+        the register's word (`_word_spelled`), else None. Bound once per
+        function by `reg_value_locals.bind`, on first use (the indices
+        render through the emitter); only its accessor and layout may be
+        relied on."""
+        if _dt_name(e) != "ExprRefLocal":
+            return None
+        if "_value_locals" not in self.__dict__:
+            self._value_locals = self._bind_value_locals()
+        lb = self._value_locals.get(e.name)
+        return None if lb is None else lb.access
+
+    def _bind_value_locals(self):
+        if self.reg_read_form != "statement":
+            return {}
+        from ..effect_seq import TEMP
+        from ..ir_walk import walk
+        from ..reg_value_locals import bind
+
+        def access_of(call):
+            f = call.func
+            if _dt_name(f) != "ExprAttribute" or f.attr not in ("read",
+                                                                 "write"):
+                return None
+            parts = self._reg_parts(call)
+            return None if parts is None else (parts, f.attr)
+
+        # The value structs whose registers the body reads or writes and
+        # the target spells as words: a local of one is word-held.
+        words = []
+        for n in walk(self.fn.body):
+            if _dt_name(n) == "ExprCall":
+                acc = access_of(n)
+                if acc is not None and self._word_spelled(acc[0]):
+                    words.append(acc[0][0].accessor.value_struct)
+
+        def candidate(s) -> bool:
+            return not getattr(s, TEMP, False) and \
+                _dt_name(s.annotation) == _DT_STRUCT and \
+                any(_same_struct(s.annotation, w) for w in words)
+
+        def same_layout(a, b) -> bool:
+            return a[0].accessor.value_struct is b[0].accessor.value_struct \
+                and a[1].acc.prim == b[1].acc.prim
+        return bind(self.fn.body, access_of, candidate, same_layout)
 
     @overridable(since='0.3', stability='provisional')
     def reg_value_field_set(self, local: str, fs, value: str, ra,
@@ -2771,6 +2836,18 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             # Each element its type's default (LRM 8.1); `{0}` zeroes all.
             init = _default_init(s.annotation, self.enums) or "{0}"
             return [f"{pad}{decl} = {init};"] + tail
+        vl = self._value_local(s.target)
+        if vl is not None:
+            if getattr(s, "value", None) is None and \
+                    _default_init(s.annotation, self.enums) is not None:
+                raise Refusal(
+                    f"local '{s.target.name}' is held as its register's "
+                    f"word, which has no spelling for the value struct's "
+                    f"non-zero defaults; initialize it from a read", s)
+            init = ([] if getattr(s, "value", None) is None
+                    else self._word_assign(name, s.value, pad))
+            return ([f"{pad}{self.reg_value_local(*vl)[0]} {name}"
+                     f"{'' if init else ' = 0'};"] + init + tail)
         if getattr(s, "value", None) is not None:
             word = self._read_word(s, name, pad)
             if word is not None:
@@ -2799,9 +2876,34 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             return [f"{pad}{ct} {name} = {init};"] + tail
         return [f"{pad}{ct} {name};"] + tail
 
+    def _word_assign(self, name: str, value, pad: str) -> List[str]:
+        """A word-held value local assigned whole: from a register's read
+        (`reg_read_into`, that read's own register) or from another such
+        local (`reg_value_locals.bind` allows nothing else)."""
+        if _dt_name(value) == "ExprCall":
+            return [f"{pad}{self.reg_read_into(*self._reg_parts(value), name)};"]
+        return [f"{pad}{name} = {self.expr(value)};"]
+
+    def _word_field(self, tgt):
+        """``(local, FieldSlice, parts)`` when ``tgt`` is a field of a
+        word-held value local, else None."""
+        if _dt_name(tgt) != "ExprAttribute":
+            return None
+        vl = self._value_local(tgt.value)
+        if vl is None:
+            return None
+        tm = getattr(self.ctx, "type_map", None) or {}
+        fs = field_map(vl[0].accessor.dtype, tm.get).get(tgt.attr)
+        if fs is None:
+            raise ValueError(f"internal error: '{tgt.attr}' is not a field "
+                             f"of register '{vl[0].accessor.name}'")
+        return self.expr(tgt.value), fs, vl
+
     def stmt_assign(self, s, ind: int) -> List[str]:
         pad = self.pad(ind)
         tgt = s.targets[0]
+        if self._value_local(tgt) is not None:
+            return self._word_assign(self.expr(tgt), s.value, pad)
         tt = self.types.type_of(tgt)
         if tt is not None and tt.kind == "array":
             return self._array_assign(self.expr(tgt), s.value, tt.dtype, pad,
@@ -2811,6 +2913,11 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             tgt, value = sel.base, self._select_assign_value(sel, s.value)
         else:
             value = self.convert_to(s.value, self.types.type_of(tgt))
+        wf = self._word_field(tgt)
+        if wf is not None:
+            local, fs, vl = wf
+            return [f"{pad}"
+                    f"{self.reg_value_field_set(local, fs, value, *vl, fs.mask)};"]
         if self.reg_style == "accessors":
             sf = self._struct_field(tgt)
             if sf is not None:
@@ -2881,8 +2988,10 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
                 f"unsupported augmented-assign op {s.op.name}")
         pad = self.pad(ind)
         whole = ir.ExprBin(lhs=s.target, op=s.op, rhs=s.value)
-        if bit_select(s.target, self.types) is not None:
-            # A select is written by read-modify-write (W17).
+        if bit_select(s.target, self.types) is not None or \
+                self._word_field(s.target) is not None:
+            # A select is written by read-modify-write (W17); a word-held
+            # local's field by `reg_value_field_set`.
             return self.stmt_assign(
                 ir.StmtAssign(targets=[s.target], value=whole), ind)
         target = self.types.type_of(s.target)
@@ -2914,6 +3023,13 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
                 if one is None:
                     return self._composed_masked_write(*parts, ind)
                 return [f"{self.pad(ind)}{one};"]
+        if _dt_name(e) == "ExprCall" and \
+                _dt_name(e.func) == "ExprAttribute" and \
+                e.func.attr == "write" and len(e.args) == 1 and \
+                self._value_local(e.args[0]) is not None:
+            parts = self._reg_parts(e)
+            return [f"{self.pad(ind)}"
+                    f"{self.reg_write_from(*parts, self.expr(e.args[0]))};"]
         return [f"{self.pad(ind)}{self.expr(e)};"]
 
     def stmt_return(self, s, ind: int) -> List[str]:

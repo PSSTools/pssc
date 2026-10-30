@@ -162,14 +162,14 @@ SCENARIO = [
 RETURNS = {"set_mode", "wait_idle", "start", "stat_count", "classify"}
 
 
-def _driver(path, call):
-    """A main() running SCENARIO, printing a marker before each call and the
+def _driver(path, call, scenario=SCENARIO):
+    """A main() running ``scenario``, printing a marker before each call and the
     status it returns; ``call(name, args)`` is the C call."""
     lines = ['#include <stdio.h>', '#include "dev.h"', '#include "tb_mem.h"',
              "", "int main(void) {"]
     if "dev_init" in call("init", ()):
         lines.append(f"    {call('init', ())};")
-    for name, args in SCENARIO:
+    for name, args in scenario:
         if name is None:
             lines.append(f"    tb_busy(0x{STAT_ADDR:x}, {args});")
             continue
@@ -188,12 +188,12 @@ def _run(exe):
     return r.stdout.splitlines()
 
 
-def _traces(tmp_path, mutate=None):
+def _traces(tmp_path, mutate=None, src=MODEL, scenario=SCENARIO):
     """The scenario's bus trace through op-model-c and through the fixture,
     after ``mutate(out)`` has had a go at the fixture's output."""
-    base = _compile("op-model-c", tmp_path / "base", c_link_style="direct",
-                    c_lifecycle="static")
-    out = _compile(TARGET, tmp_path / "hal")
+    base = _compile("op-model-c", tmp_path / "base", src=src,
+                    c_link_style="direct", c_lifecycle="static")
+    out = _compile(TARGET, tmp_path / "hal", src=src)
     if mutate is not None:
         mutate(out)
 
@@ -215,10 +215,10 @@ def _traces(tmp_path, mutate=None):
 
     want = _run(_build(base, [base / "dev.c", PLATFORM / "pssc_seam.c",
                               PLATFORM / "tb_mem.c",
-                              _driver(tmp_path / "base_main.c", base_call)],
+                              _driver(tmp_path / "base_main.c", base_call, scenario)],
                        tmp_path / "base_run"))
     got = _run(_build(out, [out / "dev.c", PLATFORM / "tb_mem.c",
-                            _driver(tmp_path / "hal_main.c", hal_call)],
+                            _driver(tmp_path / "hal_main.c", hal_call, scenario)],
                       tmp_path / "hal_run"))
     return want, got
 
@@ -477,3 +477,72 @@ def test_a_call_in_a_field_the_mask_leaves_out_is_refused(hal, tmp_path, target)
         in errs
     line = src.splitlines().index(write) + 1
     assert f"m.pss:{line}:" in errs
+
+
+
+BUMP = """\
+    target function void bump() {
+        dev_pkg::mode_s v = ctl.mode.read();
+        dev_pkg::mode_s w;
+        v.en = 1;
+        v.level += 2;
+        w = v;
+        if (w.level > 3) { w.mode = 1; }
+        ctl.mode.write(w);
+    }
+    export target function bump;
+"""
+
+DEV_BUMP = """\
+void dev_bump(uintptr_t ctl_base) {
+    uint32_t v;
+    DEV_READ32_INTO(ctl_base, CTL_MODE, 0, v);
+    uint32_t w = 0;
+    DEV_FIELD_SET(CTL_MODE, en, (1), v);
+    DEV_FIELD_SET(CTL_MODE, level, (((uint32_t)DEV_FIELD_GET(CTL_MODE, level, v) + 2) & 0xfff), v);
+    w = v;
+    if (DEV_FIELD_GET(CTL_MODE, level, w) > 3) {
+        DEV_FIELD_SET(CTL_MODE, mode, (1), w);
+    }
+    DEV_WRITE32(ctl_base, CTL_MODE, 0, w);
+}
+"""
+
+
+def test_a_value_struct_local_is_held_as_the_word(hal, tmp_path):
+    """A local of a register's value struct, where the target spells the
+    read as the word: declared as the word, read by `reg_read_into`, its
+    fields read and set by `reg_value_field_get`/`_set`, copied plain and
+    written by `reg_write_from` (PC-11). It was `mode_s v;` with `v.en`
+    member accesses on a word, and `write(v)` was refused. The bus trace is
+    op-model-c's, whose `v` is the value union."""
+    src = MODEL.read_text().replace("    export target function set_mode;",
+                                    BUMP + "    export target function set_mode;")
+    (tmp_path / "m.pss").write_text(src)
+    out = _compile(TARGET, tmp_path / "out", src=tmp_path / "m.pss")
+    assert DEV_BUMP in (out / "dev.c").read_text()
+    want, got = _traces(tmp_path, src=tmp_path / "m.pss", scenario=[
+        ("set_mode", (5,)), ("bump", ()), ("bump", ())])
+    assert got == want
+
+
+def test_a_value_struct_local_used_whole_is_refused(hal, tmp_path):
+    """A word-held local has no spelling as a value struct: used whole
+    (here, returned) it is refused at the line that does it."""
+    from pssc import driver
+
+    ret = "        return v;"
+    src = MODEL.read_text().replace(
+        "    export target function set_mode;",
+        "    target function dev_pkg::mode_s peek() {\n"
+        "        dev_pkg::mode_s v = ctl.mode.read();\n"
+        f"{ret}\n"
+        "    }\n"
+        "    export target function peek;\n"
+        "    export target function set_mode;")
+    (tmp_path / "m.pss").write_text(src)
+    with pytest.raises(driver.CompileError) as ei:
+        _compile(TARGET, tmp_path / "out", src=tmp_path / "m.pss")
+    assert "used whole" in "\n".join(map(str, ei.value.errors))
+    assert [m["line"] for m in ei.value.markers] == \
+        [src.splitlines().index(ret) + 1]
