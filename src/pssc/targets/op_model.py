@@ -726,6 +726,11 @@ class OpModelTarget(Target):
     #: happens once, at construction, in step with the target's own lifecycle.
     legality_entries: Sequence[Any] = ()
 
+    #: True if :attr:`legality_entries` may mark COMMON (Tier 1) calls
+    #: unsupported -- a subset target. Each such entry needs its reason; see
+    #: `call_legality.register_extension(subset=)`.
+    legality_subset: bool = False
+
     #: Inherited options this target sets itself, by ``dest``:
     #: ``{"c_reg_style": "bitfields"}``. The run sees these values whatever the
     #: command line says, and a user who sets one to anything else is refused.
@@ -752,7 +757,8 @@ class OpModelTarget(Target):
         """
         from .call_legality import register_extension
         register_extension(self.name, self.legality_entries,
-                           inherit=self.derives_from, replace=True)
+                           inherit=self.derives_from, replace=True,
+                           subset=self.legality_subset)
 
     def ancestor(self) -> Optional["OpModelTarget"]:
         """The target named by :attr:`derives_from`, or ``None``.

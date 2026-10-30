@@ -101,7 +101,7 @@ def test_assert_common_tier_fails_for_a_target_that_shrinks_common(monkeypatch):
         with pytest.raises(AssertionError) as exc:
             testing.assert_common_tier("x-shrunk")
         assert common_name in str(exc.value)
-        assert "never shrink" in str(exc.value)
+        assert "declared subset" in str(exc.value)
     finally:
         cl._EXTENSIONS.clear()
         cl._EXTENSIONS.update(saved)
@@ -204,6 +204,7 @@ def registered():
     from pssc.targets import call_legality as cl
     added = []
     saved_legality = {k: dict(v) for k, v in cl._EXTENSIONS.items()}
+    saved_subsets = dict(cl._SUBSETS)
 
     def add(target):
         targets.register(target)
@@ -215,6 +216,8 @@ def registered():
         targets._REGISTRY.pop(name, None)
     cl._EXTENSIONS.clear()
     cl._EXTENSIONS.update(saved_legality)
+    cl._SUBSETS.clear()
+    cl._SUBSETS.update(saved_subsets)
 
 
 # -- the differential test (P6b.T5) -----------------------------------------

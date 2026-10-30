@@ -25,11 +25,14 @@ def registry():
     import pssc.targets as t
     saved_targets = dict(t._REGISTRY)
     saved_legality = {k: dict(v) for k, v in cl._EXTENSIONS.items()}
+    saved_subsets = dict(cl._SUBSETS)
     yield
     t._REGISTRY.clear()
     t._REGISTRY.update(saved_targets)
     cl._EXTENSIONS.clear()
     cl._EXTENSIONS.update(saved_legality)
+    cl._SUBSETS.clear()
+    cl._SUBSETS.update(saved_subsets)
 
 
 def _derived(**attrs):
@@ -46,6 +49,18 @@ def test_legality_inherited(registry):
     tgt = _derived()
     register(tgt)
     assert cl.renderable("op-model-acme") == cl.renderable("op-model-c")
+
+
+def test_legality_subset_target(registry):
+    """`legality_subset` lets a derived target narrow COMMON, with a reason."""
+    narrow = [cl.Entry("message", cl.Disposition.UTILITY, cl.BOTH,
+                       unsupported="no console")]
+    with pytest.raises(cl.LegalityError):
+        _derived(legality_entries=narrow)
+    register(_derived(legality_entries=narrow, legality_subset=True))
+    assert cl.subset_of_common("op-model-acme") == frozenset({"message"})
+    r = cl.classify("message", context=cl.Ctx.TARGET, target="op-model-acme")
+    assert r.outcome is cl.Outcome.UNSUPPORTED_HERE and "no console" in r.message
 
 
 def test_legality_extended_without_restating_the_ancestors(registry):

@@ -871,9 +871,16 @@ Register from the target's `__init__` rather than at module scope: import
 happens once per process, construction happens once per registration, and it is
 the second that must stay in step with what the target can render.
 
-You may **add** to the common tier; you may never shrink it. A target that
-cannot render a common-tier call is not a style — it is a different backend, and
-`assert_common_tier` will say so. To declare a call unsupported, give the reason
+You may **add** to the common tier; you shrink it only by declaring a **subset
+target**. A target that cannot render a common-tier call is not a style — it is
+a different backend, and `register_extension` refuses the entry and
+`assert_common_tier` fails, unless the target says so: pass `subset=True` to
+`register_extension` (or set `legality_subset = True` on an `OpModelTarget` with
+`derives_from`), and give each narrowed common call a non-blank reason.
+`classify` then refuses the call with that reason, `subset_of_common(target)`
+lists the narrowed names, and `assert_common_tier` holds the target to the rest.
+A target inheriting from a subset carries its narrowing; an entry of its own
+that supports the call lifts it. To declare a call unsupported, give the reason
 in the entry; it is printed to the model author, so make it a sentence they can
 act on. `pssc.targets.call_legality` is where the tiers and the dispositions
 are declared.
