@@ -73,6 +73,10 @@ def lower_struct(ctx: LoweringContext, dtype: ir.DataTypeStruct) -> SVClass:
             extends = _resolve_super(ctx, dtype.super.ref_name)
         elif hasattr(dtype.super, 'name') and dtype.super.name:
             extends = _resolve_super(ctx, dtype.super.name)
+    # std_pkg::packed_s only fixes a bit layout; zsp_rt_pkg declares no class
+    # for it, so a struct derived from it is a plain class here.
+    if extends is not None and extends.split("__")[-1].startswith("packed_s"):
+        extends = None
 
     # Fields
     fields: List[SVClassField] = []
