@@ -212,3 +212,136 @@ def test_custom_predicate():
                               pred=pred)
     assert out[0].value.func.name == "h" and out[0].annotation.bits == 8
     assert out[1].value.rhs.func.attr == "read"     # not matched: left
+
+
+# -- conditions and bounds (PC-10c) ------------------------------------------
+
+def _eq(a, v):
+    return ir.ExprCompare(left=a, ops=[ir.CmpOp.Eq],
+                          comparators=[ir.ExprConstant(value=v)])
+
+
+def _ret(name):
+    return ir.StmtReturn(value=_local(name))
+
+
+def _breaks_unless(st, t):
+    # if (!t) break;
+    assert isinstance(st, ir.StmtIf) and st.test.op == ir.UnaryOp.Not
+    assert st.test.operand.name == t and isinstance(st.body[0], ir.StmtBreak)
+
+
+def test_if_test_is_hoisted_and_bodies_sequenced():
+    st = ir.StmtIf(test=_eq(_rd(), 1),
+                   body=[ir.StmtReturn(value=_add(_rd("s"), _local("y")))],
+                   orelse=[])
+    out = effect_seq.sequence([st])
+    t = _decl(out[0])
+    assert out[1].test.left.name == t
+    assert _decl(out[1].body[0]) and out[1].body[0].value.func.value.attr == "s"
+
+
+def test_if_chain_later_test_nests_under_else():
+    # if (a) A else if (r.read()==1) B else if (c) C else D
+    ch = ir.StmtIfChain(clauses=[
+        ir.StmtIfClause(test=_local("a"), body=[_ret("A")]),
+        ir.StmtIfClause(test=_eq(_rd(), 1), body=[_ret("B")]),
+        ir.StmtIfClause(test=_local("c"), body=[_ret("C")])],
+        orelse=[_ret("D")])
+    out = effect_seq.sequence([ch])
+    assert len(out) == 1
+    top = out[0]
+    assert [c.test.name for c in top.clauses] == ["a"]
+    assert not _reads(top.clauses)
+    t = _decl(top.orelse[0])
+    rest = top.orelse[1]
+    assert rest.clauses[0].test.left.name == t
+    assert rest.clauses[1].test.name == "c"
+    assert rest.orelse[0].value.name == "D"
+
+
+def test_if_chain_first_test_is_hoisted_before_chain():
+    ch = ir.StmtIfChain(clauses=[
+        ir.StmtIfClause(test=_eq(_rd(), 1), body=[_ret("A")]),
+        ir.StmtIfClause(test=_local("b"), body=[_ret("B")])], orelse=[])
+    out = effect_seq.sequence([ch])
+    t = _decl(out[0])
+    assert out[1].clauses[0].test.left.name == t
+    assert len(out[1].clauses) == 2
+
+
+def test_match_subject_is_hoisted():
+    st = ir.StmtMatch(subject=_rd(), cases=[])
+    out = effect_seq.sequence([st])
+    assert out[1].subject.name == _decl(out[0])
+
+
+def test_match_guard_read_is_refused():
+    case = ir.StmtMatchCase(pattern=None, guard=_eq(_rd(), 1), body=[])
+    st = _loc(ir.StmtMatch(subject=_local("x"), cases=[case]))
+    with pytest.raises(Refusal, match="guard"):
+        effect_seq.sequence([st])
+
+
+def test_while_condition_is_reread_each_iteration():
+    # while (r.read() == 1) { f(); }
+    st = ir.StmtWhile(test=_eq(_rd(), 1),
+                      body=[ir.StmtExpr(expr=_call("f"))], orelse=[])
+    out = effect_seq.sequence([st])
+    assert len(out) == 1
+    w = out[0]
+    assert w.test.value is True
+    t = _decl(w.body[0])
+    assert w.body[0].value.func.attr == "read"
+    assert w.body[1].test.operand.left.name == t
+    assert isinstance(w.body[1].body[0], ir.StmtBreak)
+    assert w.body[2].expr.func.name == "f"
+
+
+def test_while_with_else_is_refused():
+    st = ir.StmtWhile(test=_rd(), body=[], orelse=[_ret("x")])
+    with pytest.raises(Refusal, match="else"):
+        effect_seq.sequence([st])
+
+
+def test_repeat_while_condition_is_read_at_end_of_body():
+    st = ir.StmtRepeatWhile(condition=_rd(),
+                            body=[ir.StmtExpr(expr=_call("f"))])
+    out = effect_seq.sequence([st])
+    w = out[0]
+    assert w.condition.value is True
+    assert w.body[0].expr.func.name == "f"
+    _breaks_unless(w.body[2], _decl(w.body[1]))
+
+
+def test_repeat_while_with_continue_is_refused():
+    cont = _loc(ir.StmtContinue(), 11)
+    st = ir.StmtRepeatWhile(condition=_rd(), body=[
+        ir.StmtIf(test=_local("c"), body=[cont], orelse=[])])
+    with pytest.raises(Refusal) as ei:
+        effect_seq.sequence([st])
+    assert ei.value.nodes[0] is cont
+
+
+def test_repeat_while_continue_of_inner_loop_is_fine():
+    inner = ir.StmtWhile(test=_local("c"), body=[ir.StmtContinue()],
+                         orelse=[])
+    st = ir.StmtRepeatWhile(condition=_rd(), body=[inner])
+    out = effect_seq.sequence([st])
+    assert out[0].body[0] is inner
+
+
+def test_for_iter_and_repeat_count_are_hoisted():
+    fe = ir.StmtForeach(target=_local("i"), iter=_rd(), body=[],
+                        index_var=None)
+    rp = ir.StmtRepeat(count=_rd("s"), iterator=None, body=[])
+    out = effect_seq.sequence([fe, rp])
+    assert out[1].iter.name == _decl(out[0])
+    assert out[3].count.name == _decl(out[2])
+
+
+def test_read_in_assignment_target_is_refused():
+    tgt = ir.ExprSubscript(value=_local("a"), slice=_rd())
+    st = _loc(ir.StmtAssign(targets=[tgt], value=_local("x")))
+    with pytest.raises(Refusal, match="target"):
+        effect_seq.sequence([st])

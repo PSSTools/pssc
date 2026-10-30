@@ -20,9 +20,22 @@ evaluated before a matched call of the same expression (``g() + r.read()``),
 reading the register first would reorder them: that is refused, located,
 rather than reordered.
 
-This pass covers expression statements, declarations, assignments and
-``return``; conditions of ``if`` / ``match`` / loops are left as they are
-(PC-10c). Design: ``docs/design/effect-sequencing.md``.
+Statements with a condition or a bound:
+
+- ``if`` test, ``match`` subject, ``assert`` test, ``for`` / ``foreach``
+  iterable and ``repeat`` count are evaluated once: reads are hoisted before
+  the statement.
+- A read in a later test of an ``if`` / ``else if`` chain runs only when the
+  earlier tests failed: the chain is split there and the rest nested under
+  the ``else``, after the hoisted reads.
+- A ``while`` condition is re-read every iteration:
+  ``while (1) { reads; if (!c) break; body }``. ``repeat { body } while (c)``
+  becomes ``repeat { body; reads; if (!c) break; } while (1)``, refused when
+  the body has a ``continue`` of that loop (it would skip the test).
+- Refused, located: a read in a ``match`` guard, in a ``while`` with an
+  ``else``, or in an assignment target (``a[r.read()] = x``).
+
+Design: ``docs/design/effect-sequencing.md``.
 """
 from __future__ import annotations
 
@@ -97,6 +110,26 @@ def _fresh_names(body) -> Callable[[str], str]:
     return fresh
 
 
+_LOOPS = (ir.StmtWhile, ir.StmtRepeatWhile, ir.StmtRepeat, ir.StmtFor,
+          ir.StmtForeach)
+
+
+def _loop_continue(body):
+    """The first ``continue`` in *body* that belongs to the enclosing loop
+    (not to a loop nested in *body*), or ``None``."""
+    for st in body:
+        if isinstance(st, ir.StmtContinue):
+            return st
+        if isinstance(st, _LOOPS):
+            continue
+        for _, v in child_fields(st):
+            if isinstance(v, list) and v and _is_node(v[0]):
+                c = _loop_continue(v)
+                if c is not None:
+                    return c
+    return None
+
+
 def _callee(call) -> str:
     f = getattr(call, "func", None)
     return getattr(f, "attr", None) or getattr(f, "name", None) or "?"
@@ -157,15 +190,126 @@ class _Sequencer(Transformer):
         return self._stmt(st, "value", True)
 
     def visit_StmtAssign(self, st):
+        self.st = st
+        for t in st.targets:
+            self._refuse_in(t, "an assignment target")
         local = len(st.targets) == 1 and \
             isinstance(st.targets[0], ir.ExprRefLocal)
         return self._stmt(st, "value", local)
 
     def visit_StmtAugAssign(self, st):
+        self.st = st
+        self._refuse_in(st.target, "an assignment target")
         return self._stmt(st, "value", False)
 
     def visit_StmtReturn(self, st):
         return self._stmt(st, "value", False)
+
+    def _refuse_in(self, e, where: str) -> None:
+        for n in walk(e):
+            if self._match(n) is not None:
+                raise Refusal(
+                    f"a register read in {where} cannot be sequenced: read "
+                    f"it into a local first", n, self.st)
+
+    def _head(self, st, *fields):
+        """Hoist reads out of ``st.<fields>`` (each evaluated once, before
+        the body), then sequence the bodies."""
+        self.st = st
+        pre: list = []
+        new = {}
+        for f in fields:
+            v = getattr(st, f)
+            if v is None:
+                continue
+            s, v2, _ = self._expr(v)
+            pre.extend(s)
+            if v2 is not v:
+                new[f] = v2
+        out = self.generic_visit(rebuild(st, **new))
+        return pre + [out] if pre else out
+
+    def visit_StmtIf(self, st):
+        return self._head(st, "test")
+
+    def visit_StmtAssert(self, st):
+        return self._head(st, "test", "msg")
+
+    def visit_StmtFor(self, st):
+        return self._head(st, "iter")
+
+    def visit_StmtForeach(self, st):
+        return self._head(st, "iter")
+
+    def visit_StmtRepeat(self, st):
+        return self._head(st, "count")
+
+    def visit_StmtMatch(self, st):
+        self.st = st
+        for c in st.cases:
+            if c.guard is not None:
+                self._refuse_in(c.guard, "a `match` guard")
+        return self._head(st, "subject")
+
+    def visit_StmtIfChain(self, st):
+        out = self._chain(st, st.clauses, st.orelse)
+        return out[0] if len(out) == 1 else out
+
+    def _chain(self, st, clauses, orelse) -> list:
+        """``if a .. else if b ..``: split the chain at the first later test
+        holding a read; the rest goes under the ``else``, after its reads."""
+        c0 = clauses[0]
+        self.st = c0 if getattr(c0, "loc", None) else st
+        pre, t0, _ = self._expr(c0.test)
+        j = next((i for i in range(1, len(clauses))
+                  if self._contains(clauses[i].test)), len(clauses))
+        head = [rebuild(c0, test=t0)] + list(clauses[1:j])
+        head = [rebuild(c, body=self.visit(c.body)) for c in head]
+        if j < len(clauses):
+            tail = self._chain(st, clauses[j:], orelse)
+        else:
+            tail = self.visit(orelse)
+        if all(a is b for a, b in zip(head, clauses)) and \
+                len(head) == len(clauses) and tail is orelse:
+            return pre + [st]
+        return pre + [rebuild(st, clauses=head, orelse=tail)]
+
+    def _until(self, test, pre):
+        """``pre; if (!test) break;``."""
+        brk = ir.StmtBreak()
+        brk.loc = getattr(self.st, "loc", None)
+        return pre + [ir.StmtIf(
+            test=ir.ExprUnary(op=ir.UnaryOp.Not, operand=test),
+            body=[brk], orelse=[])]
+
+    def visit_StmtWhile(self, st):
+        if not self._contains(st.test):
+            return self.generic_visit(st)
+        self.st = st
+        if st.orelse:
+            raise Refusal("a register read in the condition of a `while` "
+                          "with an `else` cannot be sequenced", st.test, st)
+        pre, t2, _ = self._expr(st.test)
+        head = self._until(t2, pre)
+        return rebuild(st, test=ir.ExprConstant(value=True),
+                       body=head + self.visit(st.body))
+
+    def visit_StmtRepeatWhile(self, st):
+        if not self._contains(st.condition):
+            return self.generic_visit(st)
+        self.st = st
+        cont = _loop_continue(st.body)
+        if cont is not None:
+            raise Refusal(
+                "a register read in a `repeat ... while` condition is read "
+                "at the end of the body, and this `continue` would skip "
+                "it: test the condition in the loop body instead",
+                cont, st)
+        body = self.visit(st.body)
+        self.st = st
+        pre, c2, _ = self._expr(st.condition)
+        return rebuild(st, condition=ir.ExprConstant(value=True),
+                       body=body + self._until(c2, pre))
 
     # -- expressions -------------------------------------------------------
 

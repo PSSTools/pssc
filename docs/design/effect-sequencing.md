@@ -33,9 +33,13 @@ source order, keeping C/PSS semantics:
   become nested `if`s; they are never hoisted unconditionally.
 - **`if` / `else if` chains.** A later clause's test is hoisted under the
   preceding `else` (the `StmtIfChain` rule in AGENTS.md).
-- **Loop conditions** are bottom-tested: evaluated once before the loop and
-  again at the end of each iteration (as `op-model-py` does for awaited
-  calls). `repeat … while` tests only at the bottom.
+- **Loop conditions** are re-read each iteration: `while (c)` becomes
+  `while (1) { reads; if (!c) break; body }`, so a `continue` still re-reads.
+  `repeat { body } while (c)` becomes `repeat { body; reads; if (!c) break; }
+  while (1)`, refused when the body has a `continue` of that loop. A `while`
+  with an `else` is refused. `if`, `match`, `for`/`foreach` and `repeat`
+  heads are evaluated once and hoisted before the statement.
+- **Refused, located:** a read in a `match` guard or an assignment target.
 - **Ordering around other calls.** A read is never moved ahead of a call
   that is evaluated before it in the same expression: the pass refuses,
   with the call's location, unless the predicate is widened to hoist that
