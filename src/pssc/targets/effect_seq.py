@@ -47,6 +47,7 @@ import zuspec.ir.core as ir
 
 from ..diag import Refusal
 from .call_legality import REG_DIRECTION
+from .ir_ops import short_circuit
 from .ir_walk import Transformer, child_fields, rebuild, walk, _is_node
 
 #: ``pred(call)``: the type of the local a matched call is read into, or
@@ -59,8 +60,6 @@ BOOL = ir.DataTypeInt(name="bool", bits=1, signed=False)
 #: The attribute, true on the declaration of a local that holds a matched
 #: call's value (``getattr(decl, TEMP, False)``).
 TEMP = "pss_effect_temp"
-
-_LOGICAL = {ir.BinOp.And: ir.BoolOp.And, ir.BinOp.Or: ir.BoolOp.Or}
 
 _READS = frozenset(m for m, d in REG_DIRECTION.items() if d == "r")
 
@@ -398,14 +397,12 @@ class _Sequencer(Transformer):
             decl, ref = self._local("rd", t, e2, e)
             self.done[id(e)] = ref
             return pre + [decl], ref, None
-        if isinstance(e, ir.ExprBin) and e.op in _LOGICAL and \
-                self._contains(e.rhs):
+        sc = short_circuit(e)
+        if sc is not None and any(self._contains(v) for v in sc[1][1:]):
             # The front end's `&&` / `||` is a binary node, not `ExprBool`.
-            return self._short_circuit(ir.ExprBool(
-                op=_LOGICAL[e.op], values=[e.lhs, e.rhs]))
-        if isinstance(e, ir.ExprBool) and \
-                any(self._contains(v) for v in e.values[1:]):
-            return self._short_circuit(e)
+            return self._short_circuit(
+                e if isinstance(e, ir.ExprBool)
+                else ir.ExprBool(op=sc[0], values=sc[1]))
         if isinstance(e, ir.ExprIfExp) and \
                 (self._contains(e.body) or self._contains(e.orelse)):
             return self._select(e)

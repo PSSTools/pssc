@@ -67,6 +67,16 @@ the body that is printed.
   hoisted read becomes statements before its user). The input is not
   changed; untouched subtrees are shared.
 
+## Operators (`targets/ir_ops.py`)
+
+`is_short_circuit`, `is_bitwise`, `is_comparison` and `swapped` take the
+operator enums (`BinOp`, `BoolOp`, `CmpOp`, `AugOp`), not tables of names.
+The canonical short-circuit form in pssc's IR is `ExprBin(op=BinOp.And |
+BinOp.Or)`, which the front end writes. `ExprBool` can still arrive from
+another producer, so the pass reads both through `short_circuit(e)` ->
+`(BoolOp, operands)` and handles one shape; it builds an `ExprBool` only
+internally, to split `a && b && c` at the first operand with a read.
+
 ## Placement
 
 In `pssc.targets` (`effect_seq.py`), not zuspec-ir-core `xf/`: the pass,
