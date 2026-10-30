@@ -151,6 +151,9 @@ def pss_to_sv_with_ctx(ir_ctx: AstToIrContext) -> Tuple[List[Any], LoweringConte
         result.append(lower_struct(ctx, s))
         s.name = orig_name
 
+    # Everything so far is a type declaration (see n_type_nodes).
+    ctx.n_type_nodes = len(result)
+
     # 3. Import interfaces
     for qname, comp in components:
         orig_name = comp.name

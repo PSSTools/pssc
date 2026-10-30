@@ -168,10 +168,23 @@ def lower_expr(ctx: LoweringContext, expr: ir.Expr) -> str:
                 and isinstance(expr.func.value, ir.TypeExprRefSelf)):
             fname = expr.func.attr
         if fname and fname in ctx.import_function_names():
-            args = ", ".join(lower_expr(ctx, a) for a in expr.args)
-            return f"comp.import_if.{fname}({args})"
-        func = lower_expr(ctx, expr.func)
+            func = f"{ctx.import_if_ref}.{fname}"
+        else:
+            func = lower_expr(ctx, expr.func)
         args = ", ".join(lower_expr(ctx, a) for a in expr.args)
+        # A value-returning function realised as an SV task cannot be called
+        # inside an expression: hoist the call into a temp the enclosing
+        # statement declares and fills first (see lower_stmts).
+        callee = fname
+        if callee is None and isinstance(expr.func, ir.ExprAttribute):
+            callee = expr.func.attr
+        tfuncs = ctx.task_funcs()
+        if callee in tfuncs and tfuncs[callee] is not None:
+            tmp = ctx.new_tmp()
+            sep = ", " if args else ""
+            ctx.pending_task_calls.append(
+                (tmp, tfuncs[callee], f"{func}({tmp}{sep}{args})"))
+            return tmp
         return f"{func}({args})"
 
     if isinstance(expr, ir.ExprHierarchical):

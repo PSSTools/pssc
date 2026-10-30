@@ -19,7 +19,7 @@ from zuspec.be.sv.ir.sv import (
 
 from .context import LoweringContext
 from .lower_constraints import lower_constraint_func
-from .lower_stmts import lower_stmt
+from .lower_stmts import lower_stmt, lower_stmts
 from .lower_coverage import lower_action_covergroups, lower_covergroup_sample_call
 
 
@@ -82,6 +82,23 @@ def _resource_instance_id_field(field_name: str) -> SVClassField:
         dtype="int unsigned",
         is_rand=True,
     )
+
+
+def _is_struct_field(ctx: LoweringContext, field: ir.Field) -> bool:
+    """Return True if *field* is a plain (non flow-object) struct field. A PSS
+    struct is an SV class, so the handle must be constructed before
+    randomize() -- else randomizing it (or a constraint on a sub-field)
+    dereferences null."""
+    from zuspec.ir.core.fields import FieldKind
+    if field.kind != FieldKind.Field:
+        return False
+    dtype = field.datatype
+    if isinstance(dtype, ir.DataTypeRef) and ctx.ir_ctx is not None:
+        dtype = ctx.ir_ctx.type_map.get(getattr(dtype, 'ref_name', ''), dtype)
+    if (not isinstance(dtype, ir.DataTypeStruct)
+            or isinstance(dtype, (ir.DataTypeClass, ir.DataTypeComponent))):
+        return False
+    return getattr(dtype, 'flow_kind', None) is None
 
 
 def _is_action_class_field(ctx: LoweringContext, field: ir.Field) -> bool:
@@ -235,8 +252,7 @@ def lower_action(
         if func.name == "body":
             body_lines: List[str] = []
             if func.body:
-                for stmt in func.body:
-                    body_lines.extend(lower_stmt(ctx, stmt))
+                body_lines.extend(lower_stmts(ctx, func.body))
             if not body_lines:
                 body_lines = ["// empty body"]
             tasks.append(SVTaskDecl(
@@ -249,14 +265,16 @@ def lower_action(
         elif func.name in ("pre_solve", "post_solve"):
             func_lines: List[str] = []
             if func.body:
-                for stmt in func.body:
-                    func_lines.extend(lower_stmt(ctx, stmt))
+                func_lines.extend(lower_stmts(ctx, func.body))
             # For pre_solve: construct any output flow-object fields so that
             # their sub-field constraints don't raise a null-pointer error.
             if func.name == "pre_solve":
                 from zuspec.ir.core.fields import FieldKind
                 for f in dtype.fields:
                     if f.kind == FieldKind.Output:
+                        fname = ctx.safe_field_name(f.name)
+                        func_lines.append(f"if ({fname} == null) {fname} = new();")
+                    elif _is_struct_field(ctx, f):
                         fname = ctx.safe_field_name(f.name)
                         func_lines.append(f"if ({fname} == null) {fname} = new();")
                     elif _is_action_class_field(ctx, f):
@@ -290,16 +308,21 @@ def lower_action(
             ctx.safe_field_name(f.name)
             for f in dtype.fields if _is_action_class_field(ctx, f)
         ]
-        if output_fields or handle_fields:
+        struct_fields = [
+            ctx.safe_field_name(f.name)
+            for f in dtype.fields
+            if not _is_action_class_field(ctx, f) and _is_struct_field(ctx, f)
+        ]
+        if output_fields or handle_fields or struct_fields:
             ctor_lines = []
-            for fname in output_fields:
+            for fname in output_fields + struct_fields:
                 ctor_lines.append(f"if ({fname} == null) {fname} = new();")
             for fname in handle_fields:
                 ctor_lines.append(f"if ({fname} == null) {fname} = new();")
                 # Disable constraints so parent randomize() won't fail on null inputs
                 # (flow-object inputs like 'prev' are only set later in body()).
                 ctor_lines.append(f"{fname}.constraint_mode(0);")
-        fields_to_construct = output_fields + handle_fields  # for empty check
+        fields_to_construct = output_fields + handle_fields + struct_fields
         if fields_to_construct:
             pass  # ctor_lines already built above
         if fields_to_construct:

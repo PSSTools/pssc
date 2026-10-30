@@ -71,16 +71,24 @@ ACTION_RUN_IF = "pss_action_run_if"  # core generic-run facade (in zsp_rt_pkg)
 def _import_sig(ctx, f):
     """Return ``(is_task, sv_args, ret_type)`` for an import function.
 
-    A ``target`` function with no return models a SUT call that may consume
-    time, so it maps to an SV **task**; ``solve`` functions and any function
-    with a return value map to an SV **function**.
+    A ``target`` function models a SUT call that may consume time, so it maps
+    to an SV **task** -- a return value, if any, comes back through a leading
+    ``output`` argument (``ret``); ``solve`` functions map to an SV
+    **function**.
     """
     args = []
     for a in (f.args.args if getattr(f, "args", None) else []):
         dtype = ctx.pss_type_to_sv_type_str(a.annotation) if a.annotation is not None else "int"
         args.append(SVArg(name=a.arg, dtype=dtype))
-    is_task = bool(getattr(f, "is_target", False)) and f.returns is None
+    is_task = bool(getattr(f, "is_target", False))
     ret = ctx.pss_type_to_sv_type_str(f.returns) if f.returns is not None else "void"
+    if is_task and ret != "void":
+        # A target import may consume time, so it is a task even when it
+        # returns a value: the value comes back through a leading output.
+        out = "ret"
+        while any(a.name == out for a in args):
+            out += "_"
+        args = [SVArg(name=out, dtype=ret, direction="output")] + args
     return is_task, args, ret
 
 
@@ -176,8 +184,9 @@ def _lower_export_api_impl(actions: List[ExportAction],
                       implements=[EXPORT_API_IF])
         new_body = ['super.new("top", null);']
         if has_imports:
-            # import_if is inherited from the root component class.
-            new_body.append("import_if = imp_if;")
+            # import_if is inherited from the root component class;
+            # set_import_if hands it down the component tree.
+            new_body.append("set_import_if(imp_if);")
         cls.functions.append(SVFunctionDecl(
             name="new",
             args=[SVArg(name="imp_if", dtype=IMPORT_API_IF)],
@@ -204,7 +213,7 @@ def _lower_export_api_impl(actions: List[ExportAction],
     for a in actions:
         body = [f'automatic {a.comp_sv} top = new("top", null);']
         if has_imports:
-            body.append("top.import_if = m_imp;")
+            body.append("top.set_import_if(m_imp);")
         body.extend(emit_root_action_lifecycle(a.action_sv, a.has_activity,
                                                 indent=""))
         cls.tasks.append(SVTaskDecl(name=a.task_name, body_lines=body))
@@ -287,6 +296,35 @@ def _augment_root_factory(comp_cls: SVClass) -> None:
     ))
 
 
+def _wire_import_if(sv_nodes: List, ctx) -> None:
+    """Give every component class an ``import_if`` handle and a
+    ``set_import_if`` that hands it down to the sub-components, so a
+    component's own function body can reach the import API. The export-API
+    impl calls ``set_import_if`` on the root."""
+    children = getattr(ctx, "component_children", {}) or {}
+    for n in sv_nodes:
+        if not isinstance(n, SVClass) or n.name not in children:
+            continue
+        body = []
+        if n.extends_name and n.extends_name in children:
+            body.append("super.set_import_if(imp);")
+        else:
+            existing = [f for f in n.fields if f.name == "import_if"]
+            if not existing:
+                n.fields.append(SVClassField(name="import_if", dtype=IMPORT_API_IF))
+            if not existing or existing[0].dtype == IMPORT_API_IF:
+                body.append("import_if = imp;")
+        for c in children[n.name]:
+            body.append(f"if ({c} != null) {c}.set_import_if(imp);")
+        n.functions.append(SVFunctionDecl(
+            name="set_import_if",
+            args=[SVArg(name="imp", dtype=IMPORT_API_IF)],
+            return_type="void",
+            is_virtual=True,
+            body_lines=body,
+        ))
+
+
 def build_oo_api_nodes(
     sv_nodes: List,
     actions: List[ExportAction],
@@ -320,6 +358,8 @@ def build_oo_api_nodes(
             f"found among generated SV nodes."
         )
     has_imports = bool(import_funcs)
+    if has_imports and ctx is not None:
+        _wire_import_if(sv_nodes, ctx)
     for n in sv_nodes:
         if isinstance(n, SVClass) and n.name in root_comp_names:
             _augment_root_factory(n)
@@ -327,6 +367,14 @@ def build_oo_api_nodes(
             # exec bodies can reach it via comp.import_if.<fn>(...).
             if has_imports and not any(f.name == "import_if" for f in n.fields):
                 n.fields.append(SVClassField(name="import_if", dtype=IMPORT_API_IF))
+            if has_imports and not any(f.name == "set_import_if" for f in n.functions):
+                # Not wired by _wire_import_if (no component info): the
+                # root alone holds the handle.
+                n.functions.append(SVFunctionDecl(
+                    name="set_import_if",
+                    args=[SVArg(name="imp", dtype=IMPORT_API_IF)],
+                    return_type="void", is_virtual=True,
+                    body_lines=["import_if = imp;"]))
 
     prefix = [_lower_import_api_if(ctx, import_funcs)]
     if has_imports:

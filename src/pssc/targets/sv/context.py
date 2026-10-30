@@ -46,6 +46,62 @@ class LoweringContext:
     # it without linking the C impl produces undefined-symbol errors).
     uses_dpi_solver: bool = dc.field(default=False)
 
+    # How exec-body code reaches the import API. Action bodies reach it
+    # through the root component (``comp.import_if``); a component's own
+    # function body uses its ``import_if`` field.
+    import_if_ref: str = dc.field(default="comp.import_if")
+
+    # Name of the output argument carrying the return value while lowering a
+    # value-returning function realised as an SV task (``None`` elsewhere).
+    ret_out_name: Optional[str] = dc.field(default=None)
+
+    # Value-returning task calls hoisted out of the expression being lowered:
+    # (temp name, SV type, call text with the temp as leading output arg).
+    pending_task_calls: List[Tuple[str, str, str]] = dc.field(default_factory=list)
+    _tmp_count: int = dc.field(default=0)
+
+    # Component SV class name -> names of its sub-component fields (filled
+    # by lower_component; the OO projection uses it to wire import_if).
+    component_children: Dict[str, List[str]] = dc.field(default_factory=dict)
+
+    # Number of leading nodes in pss_to_sv's result that are type
+    # declarations (enums, structs) -- the OO projection inserts its
+    # interface classes after them.
+    n_type_nodes: int = dc.field(default=0)
+
+    _task_funcs: Optional[Dict[str, Optional[str]]] = dc.field(default=None)
+
+    def new_tmp(self) -> str:
+        self._tmp_count += 1
+        return f"__zsp_t{self._tmp_count}"
+
+    def task_funcs(self) -> Dict[str, Optional[str]]:
+        """Functions realised as SV tasks, by name -> SV return type (or
+        ``None`` when void). A value-returning one passes its result back
+        through a leading ``output`` argument.
+
+        These are the package-scope ``import target`` functions (a target
+        import may consume time) and component ``target`` functions with a
+        body.
+        """
+        if self._task_funcs is None:
+            res: Dict[str, Optional[str]] = {}
+            ir_ctx = self.ir_ctx
+            for f in (getattr(ir_ctx, "import_functions", None) or []):
+                if getattr(f, "is_target", False):
+                    res[f.name] = (self.pss_type_to_sv_type_str(f.returns)
+                                   if f.returns is not None else None)
+            for dt in (ir_ctx.type_map.values() if ir_ctx else []):
+                if not isinstance(dt, ir.DataTypeComponent):
+                    continue
+                for f in dt.functions:
+                    if (getattr(f, "is_target", False)
+                            and not getattr(f, "is_import", False) and f.body):
+                        res[f.name] = (self.pss_type_to_sv_type_str(f.returns)
+                                       if f.returns is not None else None)
+            self._task_funcs = res
+        return self._task_funcs
+
     def import_function_names(self) -> Set[str]:
         """Names of package-scope import functions (target/solve).
 

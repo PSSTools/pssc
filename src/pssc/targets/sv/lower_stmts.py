@@ -52,20 +52,84 @@ def _lower_pss_call(ctx, func_attr: str, args) -> str:
 
 
 
+#: Marks a local declaration a statement produced: `lower_stmts` moves it to
+#: the top of the enclosing block, as SV requires declarations before
+#: statements in a `begin`/`end` block or a task/function body.
+_DECL = "\x00decl:"
+
+
 def lower_stmts(ctx: LoweringContext, stmts: List[ir.Stmt]) -> List[str]:
-    """Lower a list of IR statements to SV statement strings.
+    """Lower a list of IR statements -- one block -- to SV statement strings.
 
     Returns a flat list of SV lines (no trailing semicolons on block
-    constructs; semicolons on simple statements).
+    constructs; semicolons on simple statements). Local variable
+    declarations in the block come first.
     """
+    decls: List[str] = []
     lines: List[str] = []
     for stmt in stmts:
-        lines.extend(lower_stmt(ctx, stmt))
-    return lines
+        for l in lower_stmt(ctx, stmt):
+            if l.startswith(_DECL):
+                decls.append(l[len(_DECL):])
+            else:
+                lines.append(l)
+    return decls + lines
+
+
+def _take_single_call(ctx, val: str):
+    """If *val* is exactly one hoisted task call's temp, consume it and return
+    ``(call_text, tmp)``; else None."""
+    pend = ctx.pending_task_calls
+    if len(pend) == 1 and pend[0][0] == val:
+        tmp, _, call = pend.pop()
+        return call, tmp
+    return None
+
+
+def _call_into(call: str, tmp: str, target: str) -> str:
+    """The hoisted call writing its result straight to *target*."""
+    return call.replace(f"({tmp}", f"({target}", 1) + ";"
 
 
 def lower_stmt(ctx: LoweringContext, stmt: ir.Stmt) -> List[str]:
-    """Lower a single IR statement to SV statement line(s)."""
+    """Lower a single IR statement to SV statement line(s).
+
+    A value-returning call of a function realised as an SV task is hoisted
+    out of the statement's expressions into a temp (see `lower_exprs`); the
+    statement is then wrapped in a block that declares the temps and makes
+    the calls first.
+    """
+    saved = ctx.pending_task_calls
+    ctx.pending_task_calls = []
+    try:
+        lines = _lower_stmt(ctx, stmt)
+        pending = ctx.pending_task_calls
+    finally:
+        ctx.pending_task_calls = saved
+    if not pending:
+        return lines
+    if isinstance(stmt, (ir.StmtWhile, ir.StmtRepeatWhile)):
+        ctx.warn("a time-consuming function call in a loop condition is "
+                 "evaluated once, before the loop", type(stmt).__name__)
+    decls = [l for l in lines if l.startswith(_DECL)]
+    body = [l for l in lines if not l.startswith(_DECL)]
+    out = decls + ["begin"]
+    out += [f"  {ty} {tmp};" for tmp, ty, _ in pending]
+    out += [f"  {call};" for _, _, call in pending]
+    out += [f"  {l}" for l in body]
+    out.append("end")
+    return out
+
+
+def _lower_assign(ctx, targets: List[str], val: str) -> List[str]:
+    if len(targets) == 1:
+        one = _take_single_call(ctx, val)
+        if one is not None:
+            return [_call_into(one[0], one[1], targets[0])]
+    return [f"{t} = {val};" for t in targets]
+
+
+def _lower_stmt(ctx: LoweringContext, stmt: ir.Stmt) -> List[str]:
 
     if isinstance(stmt, ir.StmtExpr):
         # Check for PSS built-in function calls before generic lowering
@@ -82,17 +146,27 @@ def lower_stmt(ctx: LoweringContext, stmt: ir.Stmt) -> List[str]:
                     return [f"{sv_stmt};"]
                 return []
         expr_str = lower_expr(ctx, stmt.expr)
+        if any(p[0] == expr_str for p in ctx.pending_task_calls):
+            return []  # the hoisted call is the statement; result discarded
         if expr_str:
             return [f"{expr_str};"]
         return []
 
+    if isinstance(stmt, ir.StmtAnnAssign):
+        # A local variable: `T name [= value];`
+        name = lower_expr(ctx, stmt.target)
+        sv_type = (ctx.pss_type_to_sv_type_str(stmt.annotation)
+                   if stmt.annotation is not None else "int")
+        lines = [f"{_DECL}{sv_type} {name};"]
+        if stmt.value is not None:
+            val = lower_expr(ctx, stmt.value)
+            lines.extend(_lower_assign(ctx, [name], val))
+        return lines
+
     if isinstance(stmt, ir.StmtAssign):
         val = lower_expr(ctx, stmt.value)
         targets = [lower_expr(ctx, t) for t in stmt.targets]
-        lines = []
-        for t in targets:
-            lines.append(f"{t} = {val};")
-        return lines
+        return _lower_assign(ctx, targets, val)
 
     if isinstance(stmt, ir.StmtAugAssign):
         target = lower_expr(ctx, stmt.target)
@@ -103,20 +177,22 @@ def lower_stmt(ctx: LoweringContext, stmt: ir.Stmt) -> List[str]:
     if isinstance(stmt, ir.StmtReturn):
         if stmt.value is not None:
             val = lower_expr(ctx, stmt.value)
+            if ctx.ret_out_name:
+                # A value-returning function realised as a task: the value
+                # goes back through its leading output argument.
+                return _lower_assign(ctx, [ctx.ret_out_name], val) + ["return;"]
             return [f"return {val};"]
         return ["return;"]
 
     if isinstance(stmt, ir.StmtIf):
         cond = lower_expr(ctx, stmt.test)
         lines = [f"if ({cond}) begin"]
-        for s in stmt.body:
-            for l in lower_stmt(ctx, s):
-                lines.append(f"  {l}")
+        for l in lower_stmts(ctx, stmt.body):
+            lines.append(f"  {l}")
         if stmt.orelse:
             lines.append("end else begin")
-            for s in stmt.orelse:
-                for l in lower_stmt(ctx, s):
-                    lines.append(f"  {l}")
+            for l in lower_stmts(ctx, stmt.orelse):
+                lines.append(f"  {l}")
         lines.append("end")
         return lines
 
@@ -125,23 +201,20 @@ def lower_stmt(ctx: LoweringContext, stmt: ir.Stmt) -> List[str]:
         for k, c in enumerate(stmt.clauses):
             head = "if" if k == 0 else "end else if"
             lines.append(f"{head} ({lower_expr(ctx, c.test)}) begin")
-            for s in c.body:
-                for l in lower_stmt(ctx, s):
-                    lines.append(f"  {l}")
+            for l in lower_stmts(ctx, c.body):
+                lines.append(f"  {l}")
         if stmt.orelse:
             lines.append("end else begin")
-            for s in stmt.orelse:
-                for l in lower_stmt(ctx, s):
-                    lines.append(f"  {l}")
+            for l in lower_stmts(ctx, stmt.orelse):
+                lines.append(f"  {l}")
         lines.append("end")
         return lines
 
     if isinstance(stmt, ir.StmtWhile):
         cond = lower_expr(ctx, stmt.test)
         lines = [f"while ({cond}) begin"]
-        for s in stmt.body:
-            for l in lower_stmt(ctx, s):
-                lines.append(f"  {l}")
+        for l in lower_stmts(ctx, stmt.body):
+            lines.append(f"  {l}")
         lines.append("end")
         return lines
 
@@ -150,9 +223,8 @@ def lower_stmt(ctx: LoweringContext, stmt: ir.Stmt) -> List[str]:
         target = lower_expr(ctx, stmt.target)
         iter_expr = lower_expr(ctx, stmt.iter)
         lines = [f"foreach ({iter_expr}[{target}]) begin"]
-        for s in stmt.body:
-            for l in lower_stmt(ctx, s):
-                lines.append(f"  {l}")
+        for l in lower_stmts(ctx, stmt.body):
+            lines.append(f"  {l}")
         lines.append("end")
         return lines
 
@@ -160,27 +232,24 @@ def lower_stmt(ctx: LoweringContext, stmt: ir.Stmt) -> List[str]:
         target = lower_expr(ctx, stmt.target)
         collection = lower_expr(ctx, stmt.iter)
         lines = [f"foreach ({collection}[{target}]) begin"]
-        for s in stmt.body:
-            for l in lower_stmt(ctx, s):
-                lines.append(f"  {l}")
+        for l in lower_stmts(ctx, stmt.body):
+            lines.append(f"  {l}")
         lines.append("end")
         return lines
 
     if isinstance(stmt, ir.StmtRepeat):
         count = lower_expr(ctx, stmt.count)
         lines = [f"repeat ({count}) begin"]
-        for s in stmt.body:
-            for l in lower_stmt(ctx, s):
-                lines.append(f"  {l}")
+        for l in lower_stmts(ctx, stmt.body):
+            lines.append(f"  {l}")
         lines.append("end")
         return lines
 
     if isinstance(stmt, ir.StmtRepeatWhile):
         cond = lower_expr(ctx, stmt.condition)
         lines = ["do begin"]
-        for s in stmt.body:
-            for l in lower_stmt(ctx, s):
-                lines.append(f"  {l}")
+        for l in lower_stmts(ctx, stmt.body):
+            lines.append(f"  {l}")
         lines.append(f"end while ({cond});")
         return lines
 
@@ -212,9 +281,8 @@ def lower_stmt(ctx: LoweringContext, stmt: ir.Stmt) -> List[str]:
         for case in stmt.cases:
             pat = _lower_pattern(ctx, case.pattern)
             lines.append(f"  {pat}: begin")
-            for s in case.body:
-                for l in lower_stmt(ctx, s):
-                    lines.append(f"    {l}")
+            for l in lower_stmts(ctx, case.body):
+                lines.append(f"    {l}")
             lines.append("  end")
         lines.append("endcase")
         return lines

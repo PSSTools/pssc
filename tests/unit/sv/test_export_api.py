@@ -77,7 +77,8 @@ def test_import_api_surface_target_task_solve_function():
     assert "class import_api_base implements import_api_if;" in txt
     assert 'doit not implemented' in txt
     # root component gains an import_if handle and wires it in the impl ctor
-    assert "import_if = imp_if;" in txt
+    assert "import_if = imp;" in txt
+    assert "set_import_if(imp_if);" in txt
 
 
 def test_missing_root_component_raises():

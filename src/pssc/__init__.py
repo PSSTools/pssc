@@ -314,7 +314,10 @@ def _generate_sv_from_ctx(ir_ctx: AstToIrContext, output_dir: str, **options) ->
         prefix, suffix = build_oo_api_nodes(
             sv_nodes, specs, ctx=ctx,
             import_funcs=getattr(ir_ctx, "import_functions", None))
-        sv_nodes = prefix + sv_nodes + suffix
+        # The interface classes spell the user's types (enums, structs), so
+        # they go after the type declarations and before the components.
+        n_types = getattr(ctx, "n_type_nodes", 0)
+        sv_nodes = sv_nodes[:n_types] + prefix + sv_nodes[n_types:] + suffix
     else:
         # Legacy standalone harness projection (zsp_test_top). Resolve the root
         # from the explicit PSS name, else auto-detect it.
