@@ -226,6 +226,24 @@ separately so that two of them cannot quietly fail together:
 Note that `derives_from` names a target **by name, not by class**: the ancestor
 may live in another distribution, and deriving must not require importing it.
 
+A derived target that is not a general-purpose C backend usually fixes some of
+the inherited options and has no use for others. Say so, and pssc enforces it:
+
+```python
+class AcmeTarget(CProgSeqTarget):
+    derives_from = "op-model-c"
+    fixed_options = {"c_link_style": "direct", "c_reg_style": "bitfields"}
+    accepted_options = ("progseq_root", "c_prefix")
+    requires_pssc = ">=0.2"
+```
+
+Keys are option `dest`s. The run sees the fixed values; an inherited option in
+neither list that the user sets is refused, every such option named in one
+message, before any source is read. Accepting is opt-in, so an option
+`op-model-c` adds later is refused rather than passed through. Leaving both
+unset keeps every inherited option open. `requires_pssc` is checked when the
+target registers.
+
 ### What you may override
 
 Only methods marked `@overridable` are contract. Ask:

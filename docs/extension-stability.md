@@ -27,6 +27,7 @@ methods were designed to be wrapped from which merely happen to be callable.
 | Statement-form register reads (provisional) | `OpModelTarget.reg_read_form` (`"expression"`, the default, or `"statement"`: every read reaches `CBodyEmitter.reg_read_into` as a statement of its own, in evaluation order); `pssc.targets.effect_seq` (`sequence`, `reg_reads`, `TEMP`, the attribute marking a local the pass introduced); `pssc.targets.ir_walk` (`walk`, `children`, `child_fields`, `rebuild`, `Transformer`); `pssc.targets.reg_value_locals` (`bind`, `LocalBinding`: a value-struct local held as the register's word when the target spells `read()` as it, through the register hooks) | `tests/unit/test_reg_read_form.py`, `test_effect_seq.py`, `test_ir_walk.py`, `test_reg_value_locals.py`, `test_hal_fixture.py` (bus-trace read order, value-struct locals) |
 | Composed masked writes (provisional) | `pssc.reg_rmw.RegWriteProvenance.fields` (`RegFieldWrite`: `slice`, `value`, `mask`), `pssc.reg_rmw.field_writes` (the one partial-field policy); a `write_masked` value-literal field the mask leaves out is never written, and one whose value calls a function is refused on every target | `tests/unit/test_hal_fixture.py`, `tests/progseq/test_c_reg_access.py` |
 | C names (provisional) | `pssc.targets.c.c_names`: `C_KEYWORDS` (the one list), `check_identifier(name, node, reserved=())` (a located `Refusal` for a non-identifier, a keyword, a name C reserves, the generated code's own `RESERVED`, or `reserved`), `parameter_clashes` (run by `check`: a signature parameter that is refused, repeated, a local of the body, or a type's name); `CBodyEmitter.fresh_local(stem, ctype, scope="block")`, a local no name of the body takes (`"function"`: declared at the function's top) | `tests/unit/test_c_names.py`, `tests/progseq/test_c_names.py` |
+| Derived-target options | `OpModelTarget.fixed_options`, `accepted_options` (by `dest`; either set turns the policy on, inherited options in neither are refused when set), `inherited_options()`, `Target.resolve_options(opts)` (called by the driver before parsing), `Target.requires_pssc` | `tests/unit/test_option_policy.py` |
 | Source annotations | `pssc.annotations` (`of`, `all_of`), read from `annotations` on a component, action, struct, enum, field, function or exec block of the IR | `tests/unit/test_annotations.py` |
 | The testing kit | `pssc.testing` | used by pssc's own suite |
 | Entry-point groups | `pssc.targets`, `pssc.styles` | `tests/unit/test_plugin_integration.py`, against a really-installed plugin |
@@ -163,6 +164,10 @@ Two things are outside the window, deliberately:
   choice: a target that half-works produces generated code nobody can trust, so
   a clean refusal beats a plugin failing later against a `run()` signature that
   moved.
+* **`Target.requires_pssc`.** A member added since a plugin's major (such as
+  `resolve_options`) is not a reason to bump the integer; a plugin that needs
+  one declares a floor (`">=0.3"`), checked at registration, instead of probing
+  with `hasattr`.
 
 ---
 

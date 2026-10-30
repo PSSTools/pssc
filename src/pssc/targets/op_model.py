@@ -34,8 +34,8 @@ import shutil
 import stat
 import tempfile
 from pathlib import Path
-from typing import (Any, Dict, FrozenSet, List, Mapping, Optional, Sequence,
-                    Tuple)
+from typing import (Any, Collection, Dict, FrozenSet, List, Mapping, Optional,
+                    Sequence, Tuple)
 
 from . import progseq_model as pm
 from .base import Target
@@ -705,6 +705,19 @@ class OpModelTarget(Target):
     #: happens once, at construction, in step with the target's own lifecycle.
     legality_entries: Sequence[Any] = ()
 
+    #: Inherited options this target sets itself, by ``dest``:
+    #: ``{"c_reg_style": "bitfields"}``. The run sees these values whatever the
+    #: command line says, and a user who sets one to anything else is refused.
+    fixed_options: Mapping[str, Any] = {}
+
+    #: Inherited options (by ``dest``) the user may still set. ``None`` -- the
+    #: default -- leaves every inherited option open, as before. Any other
+    #: value, or a non-empty :attr:`fixed_options`, turns the policy on: an
+    #: inherited option in neither is refused when set, including one the
+    #: ancestor adds later. Accepting is opt-in; ``"progseq_root"`` (``--root``)
+    #: is usually wanted.
+    accepted_options: Optional[Collection[str]] = None
+
     def __init__(self) -> None:
         if self.derives_from:
             self.inherit_legality()
@@ -736,6 +749,54 @@ class OpModelTarget(Target):
             raise ValueError(
                 f"target '{self.name}' derives from '{self.derives_from}', "
                 f"which is not registered: {e}") from None
+
+    def inherited_options(self) -> Dict[str, Tuple[Tuple[str, ...], Any]]:
+        """``dest -> (option strings, default)`` for each ancestor option.
+
+        Asked of the ancestor's `add_args`, so an option it gains later is
+        here without this target naming it.
+        """
+        anc = self.ancestor()
+        if anc is None:
+            return {}
+        probe = argparse.ArgumentParser(add_help=False)
+        anc.add_args(probe)
+        return {a.dest: (tuple(a.option_strings), a.default)
+                for a in probe._actions if a.option_strings}
+
+    def resolve_options(self, opts: argparse.Namespace) -> argparse.Namespace:
+        """Apply :attr:`fixed_options` and refuse inherited options not taken.
+
+        Every refused option the user set is named in the one message. The
+        caller's namespace is not changed; the fixed values go on a copy.
+        """
+        if self.accepted_options is None and not self.fixed_options:
+            return opts
+        inherited = self.inherited_options()
+        accepted = set(self.accepted_options or ())
+        unknown = sorted((set(self.fixed_options) | accepted) - set(inherited))
+        if unknown:
+            raise ValueError(
+                f"target '{self.name}' fixes or accepts {', '.join(unknown)}, "
+                f"which '{self.derives_from}' does not declare")
+        refused = []
+        for dest, (strings, default) in inherited.items():
+            value = getattr(opts, dest, default)
+            if dest in accepted or value == default:
+                continue
+            if dest in self.fixed_options and value == self.fixed_options[dest]:
+                continue
+            refused.append(strings[-1])
+        if refused:
+            fixed = ", ".join(f"{d}={v!r}" for d, v in self.fixed_options.items())
+            raise ValueError(
+                f"target '{self.name}' does not take {', '.join(refused)} "
+                f"(inherited from '{self.derives_from}')"
+                + (f"; it fixes {fixed}" if fixed else ""))
+        out = argparse.Namespace(**vars(opts))
+        for dest, value in self.fixed_options.items():
+            setattr(out, dest, value)
+        return out
 
     def resolved_target_cfg(self) -> Optional[Dict[str, bool]]:
         """The capabilities published to the model -- the ancestor's, with this
