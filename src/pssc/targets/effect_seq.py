@@ -39,6 +39,7 @@ Design: ``docs/design/effect-sequencing.md``.
 """
 from __future__ import annotations
 
+import dataclasses as dc
 import itertools
 from typing import Any, Callable, List, Optional, Tuple
 
@@ -159,6 +160,18 @@ def sequence(body: List[Any], pred: Optional[Pred] = None,
     return seq.visit(body)
 
 
+class _Subst(Transformer):
+    """Replaces each node whose ``id`` is in *done* by its value there."""
+
+    def __init__(self, done: dict) -> None:
+        self.done = done
+
+    def visit(self, node):
+        if not isinstance(node, list) and id(node) in self.done:
+            return self.done[id(node)]
+        return super().visit(node)
+
+
 class _Sequencer(Transformer):
 
     def __init__(self, pred: Pred, fresh, type_of) -> None:
@@ -167,6 +180,8 @@ class _Sequencer(Transformer):
         self.type_of = type_of
         self.st = None
         self.temps: set = set()
+        #: ``id(call) -> ref``: each matched call this pass replaced.
+        self.done: dict = {}
 
     # -- statements --------------------------------------------------------
 
@@ -190,7 +205,33 @@ class _Sequencer(Transformer):
             last = out[-1].expr
             if isinstance(last, ir.ExprRefLocal) and last.name in self.temps:
                 out = out[:-1]          # `t;` of a sequenced `a && f()`
+            elif out[-1] is not st:
+                out[-1] = self._fields_too(out[-1], st)
         return out
+
+    def _fields_too(self, new, st):
+        """``new`` (``st`` sequenced) with its masked write's field values
+        (`reg_rmw.RegWriteProvenance`) given the same locals as its
+        arguments: they are the arguments' own nodes, and a backend that
+        writes field by field renders them, so a read left in one would be
+        read a second time, after the destination."""
+        from ..reg_rmw import RegWriteProvenance
+        call = new.expr
+        prov = getattr(call, "provenance", None)
+        if not isinstance(prov, RegWriteProvenance) or not prov.fields:
+            return new
+        sub = _Subst(self.done)
+        fields = tuple(dc.replace(fw, value=sub.visit(fw.value))
+                       for fw in prov.fields)
+        for fw in fields:
+            if self._contains(fw.value):
+                raise Refusal(
+                    f"internal error: field '{fw.slice.name}' of a masked "
+                    f"write reads a register its arguments do not", st)
+        if all(a.value is b.value for a, b in zip(fields, prov.fields)):
+            return new
+        call = dc.replace(call, provenance=dc.replace(prov, fields=fields))
+        return rebuild(new, expr=call)
 
     def visit_StmtAnnAssign(self, st):
         return self._stmt(st, "value", True)
@@ -355,6 +396,7 @@ class _Sequencer(Transformer):
             if t is None:
                 return pre, e2, residual or e
             decl, ref = self._local("rd", t, e2, e)
+            self.done[id(e)] = ref
             return pre + [decl], ref, None
         if isinstance(e, ir.ExprBin) and e.op in _LOGICAL and \
                 self._contains(e.rhs):

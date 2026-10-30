@@ -358,3 +358,25 @@ def test_read_in_assignment_target_is_refused():
     st = _loc(ir.StmtAssign(targets=[tgt], value=_local("x")))
     with pytest.raises(Refusal, match="target"):
         effect_seq.sequence([st])
+
+
+def test_masked_write_field_values_share_the_arguments_locals():
+    # r.write_val_masked(m, f(s.read())) with fields [(lvl, s.read())]: the
+    # field value is the argument's own node, so it names the same local.
+    # Left alone, a field-wise backend would read `s` a second time.
+    from pssc.reg_field_resolve import FieldSlice
+    from pssc.reg_rmw import RegFieldWrite, RegWriteProvenance
+    rd = _rd("s")
+    call = ir.ExprCall(func=ir.ExprAttribute(
+        value=ir.ExprAttribute(value=ir.TypeExprRefSelf(), attr="r"),
+        attr="write_val_masked"), args=[ir.ExprConstant(value=0xF0),
+                                        _call("f", rd)])
+    fs = FieldSlice("lvl", 4, 4)
+    prov = RegWriteProvenance(pass_name="reg_rmw",
+                              fields=(RegFieldWrite(fs, rd, fs.mask),))
+    call.provenance = prov
+    out = effect_seq.sequence([ir.StmtExpr(expr=call)])
+    t = _decl(out[0])
+    fw = out[1].expr.provenance.fields
+    assert fw[0].value.name == t and out[1].expr.args[1].args[0].name == t
+    assert not _reads(out[1:]) and prov.fields[0].value is rd

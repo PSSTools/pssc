@@ -313,3 +313,35 @@ def test_state_without_a_handle_is_refused_with_its_location(hal, tmp_path):
     line = src.splitlines().index(
         "    target function bit[32] get_count() { return count; }") + 1
     assert [m["line"] for m in ei.value.markers] == [line]
+
+
+SET_LEVEL = """\
+void dev_set_level(uintptr_t ctl_base, uintptr_t sts_base) {
+    uint32_t data;
+    uint32_t _pss_rd0;
+    DEV_READ32_INTO(sts_base, STS_STAT, 0, _pss_rd0);
+    DEV_READ32_INTO(ctl_base, CTL_MODE, 0, data);
+    DEV_FIELD_SET(CTL_MODE, en, (1), data);
+    DEV_FIELD_SET(CTL_MODE, level, (DEV_FIELD_GET(STS_STAT, count, _pss_rd0)), data);
+    DEV_WRITE32(ctl_base, CTL_MODE, 0, data);
+}
+"""
+
+
+def test_a_field_value_that_reads_is_read_once_before_the_write(hal, tmp_path):
+    """A field written from another register: that register is read once,
+    before the destination's read, and the field names the read's local
+    (PC-12). The field values are the write's arguments' own nodes; left
+    unsequenced, `DEV_FIELD_SET` re-read `stat` after `mode`."""
+    src = MODEL.read_text().replace(
+        "    export target function set_mode;",
+        "    target function void set_level() {\n"
+        "        ctl.mode.write_fields({\"en\", \"level\"},\n"
+        "                              {1, sts.stat.read().count});\n"
+        "    }\n"
+        "    export target function set_level;\n"
+        "    export target function set_mode;")
+    (tmp_path / "m.pss").write_text(src)
+    out = _compile(TARGET, tmp_path / "out", src=tmp_path / "m.pss")
+    c = "".join(p.read_text() for p in sorted(out.glob("*.c")))
+    assert SET_LEVEL in c
