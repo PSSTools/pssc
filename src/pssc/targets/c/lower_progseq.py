@@ -2024,11 +2024,24 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
     def _composed_masked_write(self, ra, lw, ind: int) -> List[str]:
         ct, name = self.reg_value_local(ra, lw)
         t = self.function_local(ct, name)
-        out = [self.reg_read_into(ra, lw, t)]
+        # A field value with a call runs before the register is read, in
+        # source order, as the model's one write would have run it: each is
+        # first a temp at the field's width (the width it is written at).
+        out, vals = [], []
+        for i, fw in enumerate(ra.fields or ()):
+            if not _has_call(fw.value):
+                vals.append(self.expr(fw.value))
+                continue
+            ft = PssType("int", fw.slice.width, False)
+            v = self.function_local(f"uint{_prim_bits(fw.slice.width)}_t",
+                                    f"_pss_fv{i}")
+            out.append(f"{v} = {self.convert_to(fw.value, ft)}")
+            vals.append(v)
+        out.append(self.reg_read_into(ra, lw, t))
         if ra.fields:
-            for fw in ra.fields:
+            for fw, val in zip(ra.fields, vals):
                 out.append(self.reg_value_field_set(
-                    t, fw.slice, self.expr(fw.value), ra, lw, fw.mask))
+                    t, fw.slice, val, ra, lw, fw.mask))
         else:
             out.append(self.reg_value_merge(t, lw.args[0], lw.args[1], ra, lw))
         out.append(self.reg_write_from(ra, lw, t))
