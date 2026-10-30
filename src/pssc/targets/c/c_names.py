@@ -18,10 +18,11 @@ a namespace of its own, and the macros are counts in upper case.
 """
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+import re
+from typing import Any, Dict, Iterable, List, Tuple
 
-__all__ = ["HANDLE", "BUS", "RESERVED", "declared_names", "occupied_names",
-           "check"]
+__all__ = ["HANDLE", "BUS", "RESERVED", "C_KEYWORDS", "check_identifier",
+           "declared_names", "occupied_names", "check"]
 
 #: The component handle every generated function takes, and the constructor's
 #: bus parameter. Both are only ever parameters and locals, where a leading
@@ -32,6 +33,52 @@ __all__ = ["HANDLE", "BUS", "RESERVED", "declared_names", "occupied_names",
 HANDLE = "_self"
 BUS = "_bus"
 RESERVED = frozenset({HANDLE, BUS})
+
+#: The C keywords: C11's, and the ones C23 adds without a leading `_`. A name
+#: spelled as one is renamed by `lower_progseq.mangle` and refused by
+#: `check_identifier`; this is the one list of them.
+C_KEYWORDS = frozenset({
+    "auto", "break", "case", "char", "const", "continue", "default", "do",
+    "double", "else", "enum", "extern", "float", "for", "goto", "if", "inline",
+    "int", "long", "register", "restrict", "return", "short", "signed", "sizeof",
+    "static", "struct", "switch", "typedef", "union", "unsigned", "void",
+    "volatile", "while", "_Alignas", "_Alignof", "_Atomic", "_Bool",
+    "_Complex", "_Generic", "_Imaginary", "_Noreturn", "_Static_assert",
+    "_Thread_local",
+    # C23
+    "alignas", "alignof", "bool", "constexpr", "false", "nullptr",
+    "static_assert", "thread_local", "true", "typeof", "typeof_unqual",
+})
+
+_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
+def check_identifier(name: str, node: Any = None,
+                     reserved: Iterable[str] = ()) -> str:
+    """``name``, if C lets the generated code declare it; else a `Refusal`
+    located at ``node``. Refused: a name that is not an identifier, a C
+    keyword (`C_KEYWORDS`), a name C reserves everywhere (a leading `__`, or
+    `_` and a capital: C11 7.1.3), the generated code's own `RESERVED`
+    names, and ``reserved`` (a style's or a target's own). A leading `_`
+    and a lower-case letter passes: it is reserved only at file scope, so a
+    caller naming a file-scope symbol checks that itself."""
+    from ...diag import Refusal
+
+    why = None
+    if not isinstance(name, str) or not _IDENT.match(name):
+        why = "is not a C identifier"
+    elif name in C_KEYWORDS:
+        why = "is a C keyword"
+    elif name.startswith("__") or re.match(r"_[A-Z]", name):
+        why = "is reserved by C (a leading '__', or '_' and a capital)"
+    elif name in RESERVED:
+        why = "is a name the generated code takes for itself"
+    elif name in set(reserved):
+        why = "is reserved by the target"
+    if why is not None:
+        raise Refusal(f"'{name}' {why}; it cannot name a C declaration",
+                      *(() if node is None else (node,)))
+    return name
 
 
 def _short(dtype) -> str:

@@ -37,7 +37,7 @@ from ..progseq_model import (
 )
 from .lower_reg_model import (accessor_base, c_struct_name, _prim_bits,
                              map_type_name)
-from .c_names import BUS, HANDLE, RESERVED
+from .c_names import BUS, C_KEYWORDS as _C_KEYWORDS, HANDLE, RESERVED
 from .mem_access import DEFAULT as DEFAULT_MEM, MemAccess
 from .style import coerce as _style
 from ...diag import Refusal
@@ -70,15 +70,6 @@ _DT_CHANNEL = "DataTypeChannel"
 #: The C type every depth-1 channel lowers to, and its operations. One type for
 #: every element type -- see share/c/pssc_chan.h for why the payload is 64 bits.
 _CHAN_T = "pssc_chan1_t"
-
-# C reserved words that could collide with PSS identifiers (small, extend as needed).
-_C_KEYWORDS = frozenset({
-    "auto", "break", "case", "char", "const", "continue", "default", "do",
-    "double", "else", "enum", "extern", "float", "for", "goto", "if", "inline",
-    "int", "long", "register", "restrict", "return", "short", "signed", "sizeof",
-    "static", "struct", "switch", "typedef", "union", "unsigned", "void",
-    "volatile", "while", "bool",
-})
 
 
 def mangle(name: str) -> str:
