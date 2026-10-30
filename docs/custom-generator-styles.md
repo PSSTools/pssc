@@ -451,6 +451,25 @@ and a field of one is `reg_value_field_get` of its local:
 `reg_access` must still spell a read: pssc uses it to find the read inside a
 conversion, and never prints it.
 
+**A value-struct local.** When `reg_access` gives `read()` and `read_val()`
+one spelling, the target has no value struct in C, so a local of one
+(`dev_pkg::mode_s v = ctl.mode.read();`) is held as the register's word:
+declared as `reg_value_local`'s type, read by `reg_read_into`, a field read
+by `reg_value_field_get` and set (also `v.f += x`) by `reg_value_field_set`,
+copied plain (`w = v;`), and `ctl.mode.write(v)` is `reg_write_from`:
+
+```c
+    uint32_t v;
+    DEV_READ32_INTO(ctl_base, CTL_MODE, 0, v);
+    DEV_FIELD_SET(CTL_MODE, en, (1), v);
+    DEV_WRITE32(ctl_base, CTL_MODE, 0, v);
+```
+
+The hooks get the register the local was first read from or written to
+(`pssc.targets.reg_value_locals.bind`); only its layout may be relied on.
+A local bound to two layouts, never read or written, or used whole anywhere
+else (an argument, a return value) is refused at its line.
+
 **Leaving the object out** is the lifecycle pair, returned empty, and three
 sections removed by name (`sections.remove` raises on a name that does not
 exist, so an upstream rename cannot silently undo it):

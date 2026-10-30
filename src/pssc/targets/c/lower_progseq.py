@@ -1926,8 +1926,10 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         """``(C type, name)`` of the local a composed masked write reads the
         register into. Declared where `reg_value_local_scope` says: by
         default once, at the top of the function, where two composed writes
-        asking for one name share the local when the types agree. The
-        default is the register's transaction width."""
+        asking for one name share the local when the types agree. Its C
+        type is also the declared type of a value-struct local held as the
+        word (`_value_local`; the name is then the local's). The default
+        is the register's transaction width."""
         return f"uint{lw.acc.prim}_t", "_pss_reg"
 
     @overridable(since='0.3', stability='provisional')
@@ -2080,7 +2082,10 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         named (`ra.fields`), in source order. ``value`` is as the model
         wrote it, NOT narrowed to the field; ``mask`` is the register bits
         written for this field (all of ``fs.mask`` unless the source masked
-        it), and only those may change."""
+        it), and only those may change. Also a field set of a value-struct
+        local held as the word (`_value_local`): ``ra``/``lw`` are then the
+        register it was bound to, of which only the layout may be relied
+        on."""
         ct = self.reg_value_local(ra, lw)[0]
         bits = lw.acc.prim
         return (f"{local} = ({local} & ~{_c_word(mask, bits)}) | "
@@ -2097,7 +2102,8 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
     @overridable(since='0.3', stability='provisional')
     def reg_write_from(self, ra, lw: "LoweredRegAccess", local: str) -> str:
         """The statement (without its `;`) that writes ``local`` to the
-        register: the last step of a composed masked write. The default is
+        register: the last step of a composed masked write, and `r.write(v)`
+        of a value-struct local held as the word. The default is
         `reg_access` of a `write_val`."""
         return self.reg_access(dc.replace(ra, method="write_val", args=()),
                                dc.replace(lw, args=(local,)))
@@ -2107,7 +2113,8 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
                             lw: "LoweredRegAccess") -> str:
         """Field ``fs`` (a `FieldSlice`) of a register's value read whole
         (`regs.r.read().f`), as an expression. ``value`` is the read,
-        rendered by `reg_access`. The default names the value union's
+        rendered by `reg_access`, or the local holding it as the word (a
+        statement-form read's, or a value-struct local's). The default names the value union's
         member, `<value>.f`."""
         return f"{value}.{fs.name}"
 
