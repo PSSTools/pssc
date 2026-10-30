@@ -247,6 +247,20 @@ inheriting the other is refused **at target registration**, naming both, rather
 than producing a header that is subtly wrong somewhere the override does not
 appear.
 
+**Names you introduce.** A hook that needs a local of its own asks
+`self.fresh_local(stem, ctype)` for its name: `stem`, suffixed past every
+name the body can see (the model's locals, the parameters as your
+`signature` names them, the handle, operations, imports, and locals already
+handed out). With the default `scope="block"` you declare it where you use
+it; `scope="function"` declares it at the top of the function. A name you
+spell yourself -- a renamed parameter, a macro argument -- can be checked
+with `c_names.check_identifier(name, node)`, which refuses a C keyword, a
+reserved spelling (`__x`, `_X`) or one of pssc's own names, located at
+`node`. Parameters a `signature` renames are checked for you before any file
+is written: one that C refuses, that two parameters share, that a local of
+the body declares, or that is a type's name is a compile error naming the
+operation.
+
 If you find yourself reaching for a private name, that is evidence the surface
 has a hole in it. Report it — that is a finding, not a style violation.
 
