@@ -13,6 +13,10 @@ What is held here, in order of how much it proves:
     op-model-c's output and through the fixture's, gives the same bus trace.
     A wrong offset, a lost field or an extra access fails here; a snapshot
     cannot see any of them.
+  * every read is the platform's statement macro (`reg_read_form =
+    "statement"`), in a loop test, under `&&`, in a later if-chain test, in
+    a return and as a call argument, and the trace still matches; three
+    misplaced reads fail it;
   * the output compiles with `-Wall -Wextra -Werror` against the platform's
     header, and one function is byte-exact (the fixture's own golden, which
     an in-tree plugin may keep);
@@ -85,7 +89,7 @@ SET_MODE = """\
 /* Enable the device in `mode`. */
 status_e dev_set_mode(uintptr_t ctl_base, uint8_t mode) {
     uint32_t data;
-    data = DEV_READ32(ctl_base, CTL_MODE, 0);
+    DEV_READ32_INTO(ctl_base, CTL_MODE, 0, data);
     DEV_FIELD_SET(CTL_MODE, en, (1), data);
     DEV_FIELD_SET(CTL_MODE, mode, (mode), data);
     DEV_WRITE32(ctl_base, CTL_MODE, 0, data);
@@ -112,6 +116,11 @@ def test_the_api_is_stateless(hal, tmp_path):
     for absent in ("dev_c *", "dev_c;", "_self", "dev_init", "pssc_",
                    "STATUS_OK ="):
         assert absent not in h + c, absent
+    # Every read is a statement, its fields taken from the local.
+    assert "DEV_READ32(" not in c
+    assert ("        DEV_READ32_INTO(sts_base, STS_STAT, 0, _pss_rd0);\n"
+            "        if (!(DEV_FIELD_GET(STS_STAT, busy, _pss_rd0) == 1)) {\n"
+            "            break;") in c
     assert sorted(p.name for p in out.iterdir()) == [
         "dev.c", "dev.h", "dev_api.json", "dev_map.h"]
 
@@ -123,7 +132,8 @@ def test_the_api_description(hal, tmp_path):
     assert api["dev_start"]["bases"] == ["ctl_base", "sts_base"]
     assert api["dev_kick"]["exported"] is False
     assert sorted(n for n, f in api.items() if f["exported"]) == [
-        "dev_set_len", "dev_set_mode", "dev_start", "dev_wait_idle"]
+        "dev_classify", "dev_copy_len", "dev_set_len", "dev_set_mode",
+        "dev_start", "dev_stat_count", "dev_wait_idle"]
 
 
 def test_it_compiles_against_the_platform(hal, tmp_path):
@@ -144,8 +154,12 @@ SCENARIO = [
     (None, 2), ("wait_idle", (5,)),       # idle on the third read
     (None, 3), ("wait_idle", (2,)),       # times out after two reads
     (None, 1), ("start", (3, 4)),
+    ("stat_count", ()),                   # a read in a return
+    (None, 1), ("classify", (5,)),        # busy: both && reads -> 2
+    ("classify", (5,)),                   # idle: && stops, else-if reads
+    ("copy_len", (1,)),                   # a read as a call argument
 ]
-RETURNS = {"set_mode", "wait_idle", "start"}
+RETURNS = {"set_mode", "wait_idle", "start", "stat_count", "classify"}
 
 
 def _driver(path, call):
@@ -221,8 +235,19 @@ def test_the_bus_trace_is_op_model_cs(hal, tmp_path):
     assert want[:3] == ["-- set_mode", "R 0x10000 0xa5a5a5a4",
                         "W 0x10000 0xa5a5a5ab"]
     assert "W 0x10030 0x00000040" in want
-    assert want.count(f"R 0x{STAT_ADDR:x} 0xa5a5a5a5") == 2 + 2 + 1
-    assert want[-1] == "= 0"
+    assert want.count(f"R 0x{STAT_ADDR:x} 0xa5a5a5a5") == 2 + 2 + 1 + 1
+    # ...and the reads in expressions ran in C's order, and only when C
+    # evaluates them: both `&&` operands while busy, then the first test
+    # and the else-if's.
+    stat = f"R 0x{STAT_ADDR:x}"
+    first = want.index("-- classify")
+    second = want.index("-- classify", first + 1)
+    assert want[first:second] == [
+        "-- classify", f"{stat} 0xa5a5a5a5", f"{stat} 0xa5a5a5a4", "= 2"]
+    assert want[second:second + 4] == [
+        "-- classify", f"{stat} 0xa5a5a5a4", f"{stat} 0xa5a5a5a4", "= 0"]
+    assert want[-3:] == ["-- copy_len", "R 0x10020 0xa5a5a5a4",
+                         "W 0x10028 0xa5a5a5a4"]
 
 
 def _edit(name, old, new):
@@ -236,7 +261,23 @@ def _edit(name, old, new):
 @pytest.mark.parametrize("mutate", [
     _edit("dev_map.h", "#define CTL_LEN_STRIDE 0x8u", "#define CTL_LEN_STRIDE 0x4u"),
     _edit("dev.c", "    DEV_FIELD_SET(CTL_MODE, en, (1), data);\n", ""),
-], ids=["wrong-stride", "lost-field"])
+    # A loop test read once, before the loop, instead of on each pass.
+    _edit("dev.c", "    while (1) {\n"
+                   "        uint32_t _pss_rd0;\n"
+                   "        DEV_READ32_INTO(sts_base, STS_STAT, 0, _pss_rd0);\n",
+          "    uint32_t _pss_rd0;\n"
+          "    DEV_READ32_INTO(sts_base, STS_STAT, 0, _pss_rd0);\n"
+          "    while (1) {\n"),
+    # `a && b` with b read whether or not a holds.
+    _edit("dev.c", "    if (_pss_and1) {\n        uint32_t _pss_rd2;",
+          "    if (1) {\n        uint32_t _pss_rd2;"),
+    # The else-if testing the first read's value instead of reading again.
+    _edit("dev.c", "        uint32_t _pss_rd3;\n"
+                   "        DEV_READ32_INTO(sts_base, STS_STAT, 0, _pss_rd3);\n"
+                   "        if (DEV_FIELD_GET(STS_STAT, count, _pss_rd3) == 0)",
+          "        if (DEV_FIELD_GET(STS_STAT, count, _pss_rd0) == 0)"),
+], ids=["wrong-stride", "lost-field", "loop-read-once", "and-not-short",
+        "else-if-no-read"])
 def test_the_trace_sees_what_a_snapshot_cannot(hal, tmp_path, mutate):
     """The check above, run on broken output: it must fail, or it is not
     checking."""

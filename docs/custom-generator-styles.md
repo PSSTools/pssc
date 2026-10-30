@@ -289,7 +289,7 @@ and one of its functions comes out as:
 /* Enable the device in `mode`. */
 status_e dev_set_mode(uintptr_t ctl_base, uint8_t mode) {
     uint32_t data;
-    data = DEV_READ32(ctl_base, CTL_MODE, 0);
+    DEV_READ32_INTO(ctl_base, CTL_MODE, 0, data);
     DEV_FIELD_SET(CTL_MODE, en, (1), data);
     DEV_FIELD_SET(CTL_MODE, mode, (mode), data);
     DEV_WRITE32(ctl_base, CTL_MODE, 0, data);
@@ -390,10 +390,16 @@ method, and for a masked write the fields the source named) and its C side
 # tests/plugins/pssc_hal_fixture/pssc_hal_fixture/backend.py
     def reg_access(self, ra, lw):
         if ra.method in ("read", "read_val"):
+            # Never printed: every read is a statement (`reg_read_into`).
+            # pssc still asks for this spelling to find the read in a
+            # conversion, so it must be unique to this read.
             return f"DEV_READ32({self._where(ra, lw)})"
         if ra.method == "write_val":
             return f"DEV_WRITE32({self._where(ra, lw)}, {lw.args[0]})"
         raise Refusal(f"'{ra.method}' has no spelling in this API")
+
+    def reg_read_into(self, ra, lw, local):
+        return f"DEV_READ32_INTO({self._where(ra, lw)}, {local})"
 
     def reg_masked_write_inline(self, ra, lw):
         return None         # read, set each field, write: pssc's shape
@@ -415,9 +421,30 @@ method, and for a masked write the fields the source named) and its C side
 The masked write's shape is pssc's: returning `None` from
 `reg_masked_write_inline` composes it as read into a function-top local
 (`reg_value_local`), set each named field (`reg_value_field_set`), write the
-local back. The read and the write are `reg_read_into`/`reg_write_from`, whose
-defaults go through your `reg_access`. You spell the steps; you cannot drop
-the read or reorder the bus operations.
+local back. The read and the write are `reg_read_into`/`reg_write_from`; the
+write's default goes through your `reg_access`. You spell the steps; you
+cannot drop the read or reorder the bus operations.
+
+**A read that is a statement.** The platform's read is
+`DEV_READ32_INTO(base, REG, i, out)`, which has no value, so the target class
+sets `reg_read_form = "statement"`. pssc then reads every register into a
+local before the statement that uses it, in C's evaluation order: a read
+under `&&` only when the left side holds, a loop test's read on every pass,
+an else-if's read only when the tests before it failed
+(`docs/design/effect-sequencing.md`). Each of those reads is `reg_read_into`,
+and a field of one is `reg_value_field_get` of its local:
+
+```c
+    while (1) {
+        uint32_t _pss_rd0;
+        DEV_READ32_INTO(sts_base, STS_STAT, 0, _pss_rd0);
+        if (!(DEV_FIELD_GET(STS_STAT, busy, _pss_rd0) == 1)) {
+            break;
+        }
+```
+
+`reg_access` must still spell a read: pssc uses it to find the read inside a
+conversion, and never prints it.
 
 **Leaving the object out** is the lifecycle pair, returned empty, and three
 sections removed by name (`sections.remove` raises on a name that does not
@@ -463,8 +490,8 @@ declares is used and never defined, and its enum items keep their PSS names:
 The proof is differential, as above, and also DRIVEN: `tests/unit/test_hal_fixture.py`
 runs every exported function through `op-model-c`'s output and through the
 fixture's against one tracing memory, and requires the same bus trace. A
-wrong offset, a lost field or an extra access fails there, and a snapshot
-can see none of them. The check is run on broken output too, so it is known
+wrong offset, a lost field, an extra access or a read moved out of its
+place fails there, and a snapshot can see none of them. The check is run on broken output too, so it is known
 to fail when it should:
 
 ```python
@@ -472,7 +499,23 @@ to fail when it should:
 @pytest.mark.parametrize("mutate", [
     _edit("dev_map.h", "#define CTL_LEN_STRIDE 0x8u", "#define CTL_LEN_STRIDE 0x4u"),
     _edit("dev.c", "    DEV_FIELD_SET(CTL_MODE, en, (1), data);\n", ""),
-], ids=["wrong-stride", "lost-field"])
+    # A loop test read once, before the loop, instead of on each pass.
+    _edit("dev.c", "    while (1) {\n"
+                   "        uint32_t _pss_rd0;\n"
+                   "        DEV_READ32_INTO(sts_base, STS_STAT, 0, _pss_rd0);\n",
+          "    uint32_t _pss_rd0;\n"
+          "    DEV_READ32_INTO(sts_base, STS_STAT, 0, _pss_rd0);\n"
+          "    while (1) {\n"),
+    # `a && b` with b read whether or not a holds.
+    _edit("dev.c", "    if (_pss_and1) {\n        uint32_t _pss_rd2;",
+          "    if (1) {\n        uint32_t _pss_rd2;"),
+    # The else-if testing the first read's value instead of reading again.
+    _edit("dev.c", "        uint32_t _pss_rd3;\n"
+                   "        DEV_READ32_INTO(sts_base, STS_STAT, 0, _pss_rd3);\n"
+                   "        if (DEV_FIELD_GET(STS_STAT, count, _pss_rd3) == 0)",
+          "        if (DEV_FIELD_GET(STS_STAT, count, _pss_rd0) == 0)"),
+], ids=["wrong-stride", "lost-field", "loop-read-once", "and-not-short",
+        "else-if-no-read"])
 def test_the_trace_sees_what_a_snapshot_cannot(hal, tmp_path, mutate):
     """The check above, run on broken output: it must fail, or it is not
     checking."""

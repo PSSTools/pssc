@@ -12,7 +12,10 @@ typedef enum { STATUS_OK = 0, STATUS_TIMEOUT = 1 } status_e;
 
 #define DEV_ADDR(base, REG, i) \
     ((uintptr_t)(base) + REG##_OFF + (uintptr_t)(i) * REG##_STRIDE)
-#define DEV_READ32(base, REG, i) tb_read32(DEV_ADDR(base, REG, i))
+/* A read is a statement, never a value: the generated code reads each
+ * register into a local before the expression that uses it. */
+#define DEV_READ32_INTO(base, REG, i, out) \
+    do { (out) = tb_read32(DEV_ADDR(base, REG, i)); } while (0)
 #define DEV_WRITE32(base, REG, i, v) \
     tb_write32(DEV_ADDR(base, REG, i), (uint32_t)(v))
 #define DEV_FIELD_SET(REG, F, x, v) \

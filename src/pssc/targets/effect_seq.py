@@ -55,6 +55,10 @@ Pred = Callable[[Any], Optional[Any]]
 #: The type of a ``&&`` / ``||`` result read into a local.
 BOOL = ir.DataTypeInt(name="bool", bits=1, signed=False)
 
+#: The attribute, true on the declaration of a local that holds a matched
+#: call's value (``getattr(decl, TEMP, False)``).
+TEMP = "pss_effect_temp"
+
 _LOGICAL = {ir.BinOp.And: ir.BoolOp.And, ir.BinOp.Or: ir.BoolOp.Or}
 
 _READS = frozenset(m for m, d in REG_DIRECTION.items() if d == "r")
@@ -327,6 +331,10 @@ class _Sequencer(Transformer):
         decl = ir.StmtAnnAssign(target=ir.ExprRefLocal(name=name),
                                 annotation=dtype, value=value)
         decl.loc = getattr(at, "loc", None) or getattr(self.st, "loc", None)
+        # `TEMP`: the local is the pass's, assigned once here and only read
+        # after, so a printer may hold it in another form (a raw register
+        # word for a value-struct read).
+        setattr(decl, TEMP, True)
         return decl, ir.ExprRefLocal(name=name)
 
     def _set(self, name_ref, value):

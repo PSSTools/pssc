@@ -1925,6 +1925,44 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         return [f"{pad}{self.reg_read_into(*parts, t)};",
                 f"{pad}{local} = {conv.replace(rd, t)};"]
 
+    def _read_word(self, s, name: str, pad: str) -> Optional[List[str]]:
+        """The sequencing pass's local for a value-struct `read()`
+        (`effect_seq.TEMP`) when the target spells that read as the
+        register's word (`reg_access` gives `read()` and `read_val()` one
+        spelling, so it has no value struct in C): held as the word,
+        declared as `reg_value_local`'s type and read by `reg_read_into`,
+        so a field of it is `reg_value_field_get` -- as it is of the read
+        in expression form. None for any other declaration, which is then
+        a local of the value struct."""
+        from ..effect_seq import TEMP
+        if self.reg_read_form != "statement" or \
+                not getattr(s, TEMP, False) or \
+                _dt_name(s.value) != "ExprCall":
+            return None
+        parts = self._reg_parts(s.value)
+        if parts is None or parts[0].method != "read" or \
+                parts[0].accessor.value_struct is None:
+            return None
+        rd = self.reg_access(*parts)
+        if rd != self.reg_access(dc.replace(parts[0], method="read_val"),
+                                 parts[1]):
+            return None
+        whole = self.convert_to(s.value, self.types.of_datatype(s.annotation))
+        if whole.count(rd) != 1:
+            raise ValueError(f"internal error: the conversion of '{rd}' "
+                             f"to '{name}' is '{whole}'")
+        self._words = getattr(self, "_words", {})
+        self._words[name] = (parts, whole.replace(rd, name))
+        return [f"{pad}{self.reg_value_local(*parts)[0]} {name};",
+                f"{pad}{self.reg_read_into(*parts, name)};"]
+
+    def _word(self, e):
+        """``(parts, whole)`` when ``e`` names a `_read_word` local."""
+        if _dt_name(e) != "ExprRefLocal":
+            return None
+        return getattr(self, "_words", {}).get(
+            self.arg_rename.get(e.name) or mangle(e.name))
+
     @overridable(since='0.3', stability='provisional')
     def reg_value_field_set(self, local: str, fs, value: str, ra,
                             lw: "LoweredRegAccess", mask: int) -> str:
@@ -2165,6 +2203,9 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
 
     def expr_ref_local(self, e) -> str:
         # A local is renamed as a parameter is: `int char;` does not compile.
+        word = self._word(e)
+        if word is not None:
+            return word[1]      # a register word, used whole
         return self.arg_rename.get(e.name) or mangle(e.name)
 
     def expr_attribute(self, e) -> str:
@@ -2193,6 +2234,15 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             if sf is not None:
                 ct, local, field = sf
                 return f"{ct}_{field}_get({local})"
+        word = self._word(base)
+        if word is not None:
+            parts = word[0]
+            tm = getattr(self.ctx, "type_map", None) or {}
+            fs = field_map(parts[0].accessor.dtype, tm.get).get(e.attr)
+            if fs is not None:
+                return self.reg_value_field_get(
+                    self.arg_rename.get(base.name) or mangle(base.name), fs,
+                    *parts)
         if _dt_name(base) == "ExprCall" and \
                 _dt_name(base.func) == "ExprAttribute" and \
                 base.func.attr == "read":
@@ -2649,6 +2699,9 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             init = _default_init(s.annotation, self.enums) or "{0}"
             return [f"{pad}{decl} = {init};"] + tail
         if getattr(s, "value", None) is not None:
+            word = self._read_word(s, name, pad)
+            if word is not None:
+                return word
             rd = self._read_into(name, s.value,
                                  self.types.of_datatype(s.annotation), pad)
             if rd is not None:
