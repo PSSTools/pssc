@@ -316,6 +316,14 @@ class OpModel:
                 return c
         return None
 
+    def reachable(self, roots, follow=None) -> List[Any]:
+        """The functions reachable from *roots*, callee-first, each once;
+        recursion is a located `Refusal` naming the cycle. *follow* filters
+        edges (`state_uses.Call`: ``kind``, ``owner``, ``path``)
+        (`state_uses.reachable`). Provisional (see `extension-stability.md`)."""
+        from .state_uses import reachable
+        return reachable(roots, self.owner_of, self.ctx, follow)
+
     def state_uses(self, fn):
         """What ``fn`` touches, transitively (`state_uses.StateUses`):
         register groups and registers, component fields, imports, unbounded

@@ -264,6 +264,69 @@ class StateUses:
 _LOOPS_UNBOUNDED = ("StmtWhile", "StmtRepeatWhile", "StmtDoWhile")
 
 
+def package_callees(fn, ctx) -> List[Call]:
+    """Every call package function ``fn`` makes to another package function
+    or an import, in body order."""
+    from . import pkg_functions as pf
+    pkg = pf.declared(ctx) if ctx is not None else {}
+    imports = {f.name: f for f in getattr(ctx, "import_functions", None) or []}
+    out: List[Call] = []
+    for n in _walk(getattr(fn, "body", None)):
+        if _dt_name(n) != "ExprCall":
+            continue
+        target = pf.callee(n, pkg) if pkg else None
+        name = getattr(n.func, "name", None)
+        if target is not None:
+            out.append(Call("package", target, None, (), n))
+        elif name in imports:
+            out.append(Call("import", imports[name], None, (), n))
+    return out
+
+
+def reachable(roots, owner_of, ctx, follow=None) -> List[Any]:
+    """Every function reachable from *roots* (functions of the model),
+    roots included, each once and callee-first: a function comes after
+    every function it calls. *owner_of(fn)* is the component type that
+    declares ``fn`` (``None`` for a package function); an import is a leaf.
+    *follow(call)*, a predicate on each `Call`, keeps an edge (and so what
+    is reached only through it) out when false.
+
+    Recursion -- a function that reaches itself through edges followed --
+    is a `Refusal` at the call that closes the cycle, naming the cycle."""
+    from ..diag import Refusal
+    out: List[Any] = []
+    done: Set[int] = set()
+    stack: List[Any] = []
+
+    def visit(fn, comp, via):
+        if id(fn) in done:
+            return
+        for i, f in enumerate(stack):
+            if f is fn:
+                names = [g.name for g in stack[i:]] + [fn.name]
+                raise Refusal(
+                    "recursion is not supported: "
+                    + " -> ".join(f"`{n}`" for n in names), via, fn)
+        stack.append(fn)
+        if comp is not None:
+            calls = callees(fn, comp, ctx)
+        elif getattr(fn, "body", None) is not None:
+            calls = package_callees(fn, ctx)
+        else:
+            calls = []
+        for c in calls:
+            if follow is not None and not follow(c):
+                continue
+            visit(c.function, c.owner if c.kind == "member" else None, c.call)
+        stack.pop()
+        done.add(id(fn))
+        out.append(fn)
+
+    for fn in roots:
+        visit(fn, owner_of(fn), None)
+    return out
+
+
 def state_uses(fn, comp, ctx) -> StateUses:
     """:class:`StateUses` of ``fn``, a function of ``comp``. Recursion-safe:
     each (function, instance path) is visited once."""
