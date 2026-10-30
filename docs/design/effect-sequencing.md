@@ -1,8 +1,9 @@
 # Effect sequencing: statement-form register reads
 
-Status: design (PC-10). Building blocks landed: `ir_walk.walk`,
-`ir_walk.rebuild`, `ir_walk.Transformer`. The pass itself
-(`targets/effect_seq.py`), the target flag and the fixture change follow.
+Status: implemented (PC-10): `ir_walk`, `effect_seq.sequence`,
+`OpModelTarget.reg_read_form`, the C emitter's statement-form reads and the
+HAL fixture's `DEV_READ32_INTO`. The last section is the contract a be-*
+printer inherits.
 
 ## Problem
 
@@ -85,6 +86,65 @@ They can move to ir-core (ZIR-3, ZIR-4) without changing the contract.
 
 ## Contract to carry into be-* printing
 
-When statement printing moves to be-*: reads reach the printer already
-sequenced, and the register hooks (`reg_read_into`, `reg_write_from`,
-`reg_value_field_get/set`, `reg_value_local`) stay the plugin surface.
+When statement printing moves from pssc's emitters to zuspec-be-sw, the
+printer takes over spelling, not sequencing. The HAL plugins written
+against today's hooks must keep working unchanged. What a be-* printer may
+rely on, and what it must keep:
+
+**What reaches the printer.** `OpModelTarget.sequence_reads` runs at the
+end of `build_model`, before `body_kinds`, `call_legality` and
+`state_uses`, and records the form on the model (`OpModel.reg_read_form`).
+Under `"statement"` every register read (`read`, `read_val`, `read_field`
+on a `self`-rooted path) is, in the body the printer gets, exactly one of
+
+- the whole `value` of a `StmtAnnAssign` declaring a local,
+- the whole `value` of a `StmtAssign` to a local, or
+- the whole expression of a `StmtExpr`;
+
+and no read is anywhere else: not in a condition, an operand, a call
+argument or a `return`. Order, short circuit, `else if` placement and loop
+re-reads are already decided (see "The pass"); the printer prints the
+statements in list order and must not reorder, merge or drop a read.
+Bodies that could not be sequenced never reach the printer: they were
+refused, located, before emission. Under `"expression"` (the default) the
+body is the model's as written, and the printer is asked for reads in
+expression position.
+
+**Temporaries.** A local the pass introduced is declared by a
+`StmtAnnAssign` carrying `getattr(decl, effect_seq.TEMP, False) == True`.
+Its name is fresh in the function; its type is the read's (the register's
+value struct for `read()` of a struct-valued register, else unsigned at the
+register's width; `effect_seq.BOOL` for a split `&&`/`||`). It is set by
+the pass alone (at its declaration, or in the arms of the `if` that
+replaced a short circuit) and only read after. So a
+printer may hold a `TEMP` local in another form: the C emitter holds a
+value-struct `read()` temporary as the register word (`_read_word`) when
+the target spells `read()` and `read_val()` alike, and reads its fields
+through `reg_value_field_get`. A local without `TEMP` is the model's and
+keeps its declared type.
+
+**The plugin surface.** These hooks stay the way a target spells register
+accesses, with today's arguments (`ra`: the `reg_layout.RegAccess`; `lw`:
+the access lowered for the language) and today's meaning:
+
+| Hook | Asked for |
+|---|---|
+| `reg_access(ra, lw)` | an access as an expression; under `"statement"` never a read |
+| `reg_read_into(ra, lw, local)` | each read under `"statement"`, and the first step of a composed masked write |
+| `reg_write_from(ra, lw, local)` | the last step of a composed masked write; `r.write(v)` of a value-struct local held as the word |
+| `reg_value_field_get(value, fs, ra, lw)` | a field of a value read whole, or of a local holding it |
+| `reg_value_field_set(local, fs, value, ra, lw, mask)` | each named field of a composed masked write |
+| `reg_value_local(ra, lw)`, `reg_value_local_scope(ra, lw)` | the word local's type and name, and where it is declared |
+
+A be-* printer calls these hooks (or forwards to a target that defines
+them); it does not add a second way to spell a register access. Anything
+it needs beyond them is a new hook, published with `@overridable` and a
+row in docs/extension-stability.md.
+
+**`reg_read_form` semantics.** It is a property of the target class
+(`"expression"` or `"statement"`; anything else is an error naming the
+target). It changes where reads sit, never which reads happen or their
+order relative to each other and to other calls: a body that would need a
+read moved past another call is refused rather than reordered. With
+`"expression"` nothing is rewritten, so output is byte-identical to a
+target that never heard of the pass.
