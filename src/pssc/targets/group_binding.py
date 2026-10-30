@@ -70,8 +70,21 @@ class Binding:
     #: sub-component's constructor call, or a `super.` constructor that is
     #: itself only bindings -- with no control flow. One parameter may bind
     #: two groups (two views of one register window are legal). A component
-    #: with no constructor, or an empty one, is pure.
+    #: with no constructor, or an empty one, is pure. A conflict (below)
+    #: makes it impure.
     pure_bindings: bool = True
+    #: Every group path the constructor binds to two or more different
+    #: parameters, to those parameters in the order bound (`params` maps
+    #: such a path to ``None``).
+    conflicts: Mapping[Tuple[str, ...], Tuple[str, ...]] = dc.field(
+        default_factory=dict, compare=False, hash=False)
+    #: The constructor's parameters, in declaration order, that give no
+    #: group a handle: not passed (alone) to a `set_handle`, the implicit
+    #: binding, a `super.` constructor that binds it, or a sub-component's
+    #: constructor that binds it. Every parameter is listed, whatever its
+    #: type; the caller filters.
+    unbound_params: Tuple[str, ...] = dc.field(
+        default=(), compare=False, hash=False)
 
     @property
     def unbound(self) -> Tuple[str, ...]:
@@ -104,6 +117,7 @@ def bindings(comps, ctor_names=None, tm=None) -> Dict[int, Binding]:
                     if sub is not None and id(sub) in bound:
                         bound[id(sub)].add(path[1])
     out = {}
+    walks = {}
     for c in comps:
         groups = tuple(group_fields(c))
         b = frozenset(g for g in bound[id(c)] if g in groups)
@@ -113,11 +127,44 @@ def bindings(comps, ctor_names=None, tm=None) -> Dict[int, Binding]:
             arg = _first_addr_arg(ctor, tm)
             if arg is not None:
                 implicit = (groups[0], arg)
-        params = _ctor_params(c, ctor)
+        params, conflicts, sub_calls = _ctor_params(c, ctor, ctor_names)
         if implicit is not None:
             params[(implicit[0],)] = implicit[1]
+        walks[id(c)] = (c, ctor, sub_calls)
         out[id(c)] = Binding(groups, b, implicit, params=params, init_fn=ctor,
-                             pure_bindings=_pure(c, ctor, ctor_names))
+                             pure_bindings=not conflicts
+                             and _pure(c, ctor, ctor_names),
+                             conflicts=conflicts)
+    used: Dict[int, set] = {}
+
+    def binding_params(cid, active):
+        if cid in used:
+            return used[cid]
+        if cid in active or cid not in walks:
+            return set()
+        c, ctor, sub_calls = walks[cid]
+        b = out[cid]
+        got = {p for p in b.params.values() if p is not None}
+        for ps in b.conflicts.values():
+            got.update(ps)
+        subs = {s.name: s.dtype for s in sub_components(c)}
+        for name, args in sub_calls:
+            sub = _resolve(subs[name], tm, by_name) if name in subs else None
+            if sub is None:
+                continue
+            sub_used = binding_params(id(sub), active | {cid})
+            sctor = walks[id(sub)][1] if id(sub) in walks else None
+            for a, p in zip(_args(sctor), args):
+                if p is not None and a.arg in sub_used:
+                    got.add(p)
+        used[cid] = got
+        return got
+
+    for c in comps:
+        got = binding_params(id(c), frozenset())
+        ctor = walks[id(c)][1]
+        out[id(c)] = dc.replace(out[id(c)], unbound_params=tuple(
+            a.arg for a in _args(ctor) if a.arg not in got))
     return out
 
 
@@ -215,12 +262,19 @@ def _self_callee(comp, call):
     return None
 
 
-def _ctor_params(comp, ctor) -> Dict[Tuple[str, ...], Optional[str]]:
-    """Binding.params: what each `set_handle` in the constructor binds,
-    followed through the constructor's own calls (`super.initialize(...)`).
-    A group bound outside the constructor, or bound twice to different
-    parameters, maps to None."""
+def _ctor_params(comp, ctor, ctor_names=None):
+    """`(params, conflicts, sub_calls)`. Binding.params: what each
+    `set_handle` in the constructor binds, followed through the
+    constructor's own calls (`super.initialize(...)`). A group bound outside
+    the constructor, or bound twice to different parameters, maps to None.
+    Binding.conflicts: the second case, with the parameters. *sub_calls*:
+    `(sub, [constructor parameter or None per argument])` for every
+    sub-component constructor call."""
+    from .progseq_model import current_ctor_names
+    names = set(ctor_names or current_ctor_names())
     out: Dict[Tuple[str, ...], Optional[str]] = {}
+    seen_params: Dict[Tuple[str, ...], List[str]] = {}
+    sub_calls: List[Tuple[str, List[Optional[str]]]] = []
     reached: set = set()
 
     def walk(fn, env, seen):
@@ -238,11 +292,23 @@ def _ctor_params(comp, ctor) -> Dict[Tuple[str, ...], Optional[str]]:
                     continue
                 p = _bare(call.args[0], fn) if call.args else None
                 p = env.get(p) if p is not None else None
+                if p is not None and p not in seen_params.setdefault(path, []):
+                    seen_params[path].append(p)
                 if path in out and out[path] != p:
                     out[path] = None
                 else:
                     out[path] = p
                 continue
+            if _dt_name(func) == "ExprAttribute" and func.attr in names \
+                    and _dt_name(func.value) != "TypeExprRefSelf":
+                sub = _path(func.value)
+                if sub is not None and len(sub) == 1:
+                    args = []
+                    for a in call.args:
+                        q = _bare(a, fn)
+                        args.append(env.get(q) if q is not None else None)
+                    sub_calls.append((sub[0], args))
+                    continue
             callee = _self_callee(comp, call)
             if callee is not None:
                 sub_env = {}
@@ -259,7 +325,8 @@ def _ctor_params(comp, ctor) -> Dict[Tuple[str, ...], Optional[str]]:
         if id(fn) not in reached:
             for path in _set_handle_paths(fn):
                 out[path] = None
-    return out
+    conflicts = {k: tuple(v) for k, v in seen_params.items() if len(v) > 1}
+    return out, conflicts, sub_calls
 
 
 def _pure(comp, ctor, ctor_names, seen=None) -> bool:

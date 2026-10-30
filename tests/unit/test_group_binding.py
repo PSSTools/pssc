@@ -262,3 +262,106 @@ def test_the_c_driver_compiles(tmp_path):
                             "-o", str(c.with_suffix(".o"))],
                            cwd=str(out), capture_output=True, text=True)
         assert r.returncode == 0, r.stderr
+
+
+# --- PC-16: conflicts and parameters that bind nothing -----------------------
+
+def test_a_group_bound_to_two_parameters_is_a_conflict(tmp_path):
+    m = _model(tmp_path, """
+    component top_c {
+        r_pkg::g_c a;
+        solve function void initialize(addr_handle_t p, addr_handle_t q) {
+            a.set_handle(p);
+            a.set_handle(q);
+        }
+    }""", "top_c")
+    b = _binding(m, "top_c")
+    assert dict(b.conflicts) == {("a",): ("p", "q")}
+    assert dict(b.params) == {("a",): None}
+    assert not b.pure_bindings
+    assert b.unbound_params == ()
+
+
+def test_binding_one_parameter_twice_is_no_conflict(tmp_path):
+    m = _model(tmp_path, """
+    component top_c {
+        r_pkg::g_c a;
+        solve function void initialize(addr_handle_t p) {
+            a.set_handle(p);
+            a.set_handle(p);
+        }
+    }""", "top_c")
+    b = _binding(m, "top_c")
+    assert dict(b.conflicts) == {}
+    assert b.pure_bindings
+
+
+def test_a_conflict_through_super_initialize(tmp_path):
+    m = _model(tmp_path, """
+    component base_c {
+        r_pkg::g_c regs;
+        solve function void initialize(addr_handle_t at, addr_handle_t o) {
+            regs.set_handle(at);
+        }
+    }
+    component der_c : base_c {
+        solve function void initialize(addr_handle_t q, addr_handle_t w) {
+            super.initialize(q, w);
+            regs.set_handle(w);
+        }
+    }
+    component top_c {
+        der_c d;
+        solve function void initialize(addr_handle_t z) { d.initialize(z, z); }
+    }""", "top_c")
+    b = _binding(m, "der_c")
+    assert dict(b.conflicts) == {("regs",): ("q", "w")}
+    assert not b.pure_bindings
+
+
+def test_unbound_params(tmp_path):
+    m = _model(tmp_path, """
+    component top_c {
+        r_pkg::g_c a;
+        solve function void initialize(addr_handle_t pa, addr_handle_t spare,
+                                       bit on) {
+            a.set_handle(pa);
+        }
+    }""", "top_c")
+    assert _binding(m, "top_c").unbound_params == ("spare", "on")
+
+
+def test_the_implicit_parameter_is_bound(tmp_path):
+    m = _model(tmp_path, """
+    component top_c {
+        r_pkg::g_c regs;
+        solve function void initialize(addr_handle_t base) { }
+    }""", "top_c")
+    assert _binding(m, "top_c").unbound_params == ()
+
+
+def test_unbound_params_through_sub_and_super_constructors(tmp_path):
+    m = _model(tmp_path, """
+    component leaf_c {
+        r_pkg::g_c regs;
+        solve function void initialize(addr_handle_t at, addr_handle_t unused) {
+            regs.set_handle(at);
+        }
+    }
+    component mid_c : leaf_c {
+        solve function void initialize(addr_handle_t q, addr_handle_t z) {
+            super.initialize(q, z);
+        }
+    }
+    component top_c {
+        mid_c m;
+        leaf_c lf;
+        solve function void initialize(addr_handle_t x, addr_handle_t y) {
+            m.initialize(x, y);
+            lf.initialize(x, x);
+        }
+    }""", "top_c")
+    assert _binding(m, "leaf_c").unbound_params == ("unused",)
+    assert _binding(m, "mid_c").unbound_params == ("z",)
+    assert _binding(m, "top_c").unbound_params == ("y",)
+    assert m.handle_params() == {("m", "regs"): "x", ("lf", "regs"): "x"}
