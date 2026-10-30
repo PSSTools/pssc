@@ -26,7 +26,7 @@ from pssc.targets.call_legality import (COMMON, Ctx, Disposition, Entry,
                                         LegalityError, Outcome, TIER0,
                                         classify, entries_for, extensions_for,
                                         register_extension, registered_targets,
-                                        renderable)
+                                        renderable, subset_of_common)
 from .sv_text import sv_package_text
 
 _STDLIB = os.path.normpath(os.path.join(
@@ -36,9 +36,10 @@ _STDLIB = os.path.normpath(os.path.join(
 # --- the tier contract ------------------------------------------------------
 
 def test_every_target_renders_the_common_set():
-    """A target may EXTEND the common set. It may never shrink it."""
+    """A target may EXTEND the common set. It shrinks it only as a declared
+    subset target (`register_extension(..., subset=True)`)."""
     for target in registered_targets():
-        missing = set(COMMON) - renderable(target)
+        missing = set(COMMON) - renderable(target) - subset_of_common(target)
         assert not missing, (
             f"{target} does not render common calls: {sorted(missing)}")
 
@@ -49,7 +50,7 @@ def test_extensions_do_not_contradict_common():
     for target in registered_targets():
         ext = extensions_for(target)
         for name, entry in ext.items():
-            if name in COMMON:
+            if name in COMMON and name not in subset_of_common(target):
                 assert not entry.unsupported, (
                     f"{target} marks common call '{name}' unsupported")
 
@@ -406,9 +407,12 @@ def legality_sandbox():
     """Register extensions under throwaway names and take them back out."""
     import pssc.targets.call_legality as cl
     saved = {k: dict(v) for k, v in cl._EXTENSIONS.items()}
+    saved_subsets = dict(cl._SUBSETS)
     yield cl
     cl._EXTENSIONS.clear()
     cl._EXTENSIONS.update(saved)
+    cl._SUBSETS.clear()
+    cl._SUBSETS.update(saved_subsets)
 
 
 def test_extension_cannot_shrink_common(legality_sandbox):
@@ -420,8 +424,58 @@ def test_extension_cannot_shrink_common(legality_sandbox):
         ])
     msg = str(exc.value)
     assert common_name in msg and "my target is special" in msg
-    assert "never shrink" in msg
+    assert "subset=True" in msg
     assert "x-shrinker" not in registered_targets(), "and nothing registered"
+
+
+# --- subset targets (PC-18b) ------------------------------------------------
+
+def _narrow(name="message", reason="no console on this HAL"):
+    return Entry(name, Disposition.UTILITY, frozenset({Ctx.TARGET}),
+                 unsupported=reason)
+
+
+def test_a_subset_target_may_narrow_common(legality_sandbox):
+    register_extension("x-subset", [_narrow()], subset=True)
+    assert subset_of_common("x-subset") == frozenset({"message"})
+    assert "message" not in renderable("x-subset")
+    r = classify("message", context=Ctx.TARGET, target="x-subset")
+    assert r.outcome is Outcome.UNSUPPORTED_HERE
+    assert "no console on this HAL" in r.message
+
+
+def test_a_subset_needs_a_reason(legality_sandbox):
+    with pytest.raises(LegalityError, match="blank reason"):
+        register_extension("x-subset", [_narrow(reason="   ")], subset=True)
+    assert "x-subset" not in registered_targets()
+
+
+def test_a_conforming_target_has_no_subset(legality_sandbox):
+    register_extension("x-adder", [], subset=True)
+    assert subset_of_common("x-adder") == frozenset()
+    assert subset_of_common("op-model-c") == frozenset()
+
+
+def test_inheriting_a_subset_carries_its_narrowing(legality_sandbox):
+    register_extension("x-subset", [_narrow()], subset=True)
+    register_extension("x-derived", [], inherit="x-subset")
+    assert subset_of_common("x-derived") == frozenset({"message"})
+    # supporting the name again lifts it
+    register_extension("x-derived", [
+        Entry("message", Disposition.UTILITY, frozenset({Ctx.TARGET}))],
+        inherit="x-subset", replace=True)
+    assert subset_of_common("x-derived") == frozenset()
+    # a further narrowing still needs subset=True
+    other = next(n for n in sorted(COMMON) if n != "message")
+    with pytest.raises(LegalityError):
+        register_extension("x-derived2", [_narrow(other)],
+                           inherit="x-subset")
+
+
+def test_assert_common_tier_accepts_a_declared_subset(legality_sandbox):
+    from pssc.testing import assert_common_tier
+    register_extension("x-subset", [_narrow()], subset=True)
+    assert_common_tier("x-subset")
 
 
 def test_an_extension_may_add_to_common(legality_sandbox):

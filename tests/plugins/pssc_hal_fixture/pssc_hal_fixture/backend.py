@@ -5,7 +5,8 @@ The model says what the API is, in three annotations (`model/dev.pss`):
 `hal_fx_pkg::bases_s` on its constructor the C type of a base, and
 `hal_fx_pkg::extern_s` marks a type the platform declares.
 
-The platform supplies `dev_access.h`: `DEV_READ32(base, REG, i)`,
+The platform supplies `dev_access.h`: `DEV_READ32_INTO(base, REG, i, out)`,
+a statement (so the target asks for `reg_read_form = "statement"`),
 `DEV_WRITE32(base, REG, i, v)`, `DEV_FIELD_SET(REG, F, x, v)` and
 `DEV_FIELD_GET(REG, F, v)`, over the `<REG>_OFF`, `<REG>_STRIDE`,
 `<REG>_<F>_LSB` and `<REG>_<F>_MASK` this target writes to `<prefix>_map.h`.
@@ -72,21 +73,26 @@ class HalEmitter(CBodyEmitter):
 
     def reg_access(self, ra, lw):
         if ra.method in ("read", "read_val"):
+            # Never printed: every read is a statement (`reg_read_into`).
+            # pssc still asks for this spelling to find the read in a
+            # conversion, so it must be unique to this read.
             return f"DEV_READ32({self._where(ra, lw)})"
         if ra.method == "write_val":
             return f"DEV_WRITE32({self._where(ra, lw)}, {lw.args[0]})"
         raise Refusal(f"'{ra.method}' has no spelling in this API")
 
+    def reg_read_into(self, ra, lw, local):
+        return f"DEV_READ32_INTO({self._where(ra, lw)}, {local})"
+
     def reg_masked_write_inline(self, ra, lw):
         return None         # read, set each field, write: pssc's shape
+
+    partial_field_writes = False    # a part of a field: pssc merges the mask
 
     def reg_value_local(self, ra, lw):
         return "uint32_t", "data"
 
     def reg_value_field_set(self, local, fs, value, ra, lw, mask):
-        if mask != fs.mask:
-            raise Refusal(f"a part of field '{fs.name}' is written, which "
-                          f"DEV_FIELD_SET cannot say")
         return f"DEV_FIELD_SET({reg_name(ra.accessor)}, {fs.name}, " \
                f"({value}), {local})"
 
@@ -166,4 +172,5 @@ class HalFixtureTarget(CProgSeqTarget):
     description = "a stateless C API over platform register macros " \
                   "(pssc-hal-fixture)"
     derives_from = "op-model-c"
+    reg_read_form = "statement"
     backend_cls = HalBackend

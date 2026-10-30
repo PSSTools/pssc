@@ -122,13 +122,6 @@ and does not do it.
 
 ## HAL-plugin follow-ups (`hal-plugin-requests-plan.md`)
 
-- **Register-value struct locals in a HAL.** `ctl_s v = regs.ctl.read();
-  v.en = 1; regs.ctl.write(v);` still declares `v` as the value union and
-  reads and writes its members. `reg_value_local`/`reg_value_field_get/set`
-  reach only a composed masked write's local and a field of a whole
-  `read()`. Retyping a struct local (the plan's `struct_locals` extension)
-  needs the read, the write, a field read/write and passing it to a function
-  to agree on the local's type.
 - **External types beyond C.** `StylePolicy.is_extern_type` is asked only by
   op-model-c: C++, SV and Python have no style policy. Give them one (or a
   backend hook) when a plugin for one of them needs it. An external type

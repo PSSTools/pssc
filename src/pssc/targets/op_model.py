@@ -34,8 +34,8 @@ import shutil
 import stat
 import tempfile
 from pathlib import Path
-from typing import (Any, Dict, FrozenSet, List, Mapping, Optional, Sequence,
-                    Tuple)
+from typing import (Any, Collection, Dict, FrozenSet, List, Mapping, Optional,
+                    Sequence, Tuple)
 
 from . import progseq_model as pm
 from .base import Target
@@ -231,6 +231,12 @@ class OpModel:
     #: order. Each is a function of the completed root.
     exports: Tuple[Any, ...] = ()
 
+    #: How register reads reach the backend (`OpModelTarget.reg_read_form`):
+    #: "expression", as the model wrote them, or "statement", each one the
+    #: whole value of a declaration, a local assignment or an expression
+    #: statement (`effect_seq`).
+    reg_read_form: str = "expression"
+
     @property
     def base_classes(self) -> List[Any]:
         """`classes` that are not in the tree: bases nothing instantiates."""
@@ -309,6 +315,14 @@ class OpModel:
             if any(f is fn for f in getattr(c, "functions", None) or []):
                 return c
         return None
+
+    def reachable(self, roots, follow=None) -> List[Any]:
+        """The functions reachable from *roots*, callee-first, each once;
+        recursion is a located `Refusal` naming the cycle. *follow* filters
+        edges (`state_uses.Call`: ``kind``, ``owner``, ``path``)
+        (`state_uses.reachable`). Provisional (see `extension-stability.md`)."""
+        from .state_uses import reachable
+        return reachable(roots, self.owner_of, self.ctx, follow)
 
     def state_uses(self, fn):
         """What ``fn`` touches, transitively (`state_uses.StateUses`):
@@ -669,6 +683,28 @@ class OpModelTarget(Target):
     #: a model whose executor overrides one (`executors.check`).
     supports_executor_delegation: bool = False
 
+    #: Where this backend's register reads may stand. "expression" (the
+    #: default): anywhere the model put them. "statement": `build_model`
+    #: sequences every rendered body first (`effect_seq.sequence` with
+    #: `effect_seq.reg_reads`), so a read is only ever the whole value of
+    #: `T x = read`, `x = read` or `read;` -- what a backend whose read is a
+    #: statement (a HAL macro writing an out-parameter) needs. The pass runs
+    #: before `check`, so every check sees the bodies the emitter renders.
+    reg_read_form: str = "expression"
+
+    #: IR kinds this target refuses, ``{kind: reason}`` (a `Stmt*`/`Expr*`
+    #: class name, as `body_kinds` names them): `check_body_kinds` refuses
+    #: each such node of a rendered body at its location, with the reason,
+    #: though the body emitter renders it. A derived subset target says
+    #: what it leaves out here instead of filtering bodies itself.
+    unsupported_kinds: Mapping[str, str] = {}
+
+    #: Local types this target refuses, ``{DataType class name: reason}``
+    #: (``"DataTypeStruct"``, ``"DataTypeArray"``, ...): each declaration
+    #: of a local of such a type is refused at its location, with the
+    #: reason (`check_body_kinds`).
+    unsupported_local_types: Mapping[str, str] = {}
+
     # -- derivation ---------------------------------------------------------
 
     #: The target this one derives from, BY NAME -- "everything op-model-c
@@ -690,6 +726,24 @@ class OpModelTarget(Target):
     #: happens once, at construction, in step with the target's own lifecycle.
     legality_entries: Sequence[Any] = ()
 
+    #: True if :attr:`legality_entries` may mark COMMON (Tier 1) calls
+    #: unsupported -- a subset target. Each such entry needs its reason; see
+    #: `call_legality.register_extension(subset=)`.
+    legality_subset: bool = False
+
+    #: Inherited options this target sets itself, by ``dest``:
+    #: ``{"c_reg_style": "bitfields"}``. The run sees these values whatever the
+    #: command line says, and a user who sets one to anything else is refused.
+    fixed_options: Mapping[str, Any] = {}
+
+    #: Inherited options (by ``dest``) the user may still set. ``None`` -- the
+    #: default -- leaves every inherited option open, as before. Any other
+    #: value, or a non-empty :attr:`fixed_options`, turns the policy on: an
+    #: inherited option in neither is refused when set, including one the
+    #: ancestor adds later. Accepting is opt-in; ``"progseq_root"`` (``--root``)
+    #: is usually wanted.
+    accepted_options: Optional[Collection[str]] = None
+
     def __init__(self) -> None:
         if self.derives_from:
             self.inherit_legality()
@@ -703,7 +757,8 @@ class OpModelTarget(Target):
         """
         from .call_legality import register_extension
         register_extension(self.name, self.legality_entries,
-                           inherit=self.derives_from, replace=True)
+                           inherit=self.derives_from, replace=True,
+                           subset=self.legality_subset)
 
     def ancestor(self) -> Optional["OpModelTarget"]:
         """The target named by :attr:`derives_from`, or ``None``.
@@ -721,6 +776,54 @@ class OpModelTarget(Target):
             raise ValueError(
                 f"target '{self.name}' derives from '{self.derives_from}', "
                 f"which is not registered: {e}") from None
+
+    def inherited_options(self) -> Dict[str, Tuple[Tuple[str, ...], Any]]:
+        """``dest -> (option strings, default)`` for each ancestor option.
+
+        Asked of the ancestor's `add_args`, so an option it gains later is
+        here without this target naming it.
+        """
+        anc = self.ancestor()
+        if anc is None:
+            return {}
+        probe = argparse.ArgumentParser(add_help=False)
+        anc.add_args(probe)
+        return {a.dest: (tuple(a.option_strings), a.default)
+                for a in probe._actions if a.option_strings}
+
+    def resolve_options(self, opts: argparse.Namespace) -> argparse.Namespace:
+        """Apply :attr:`fixed_options` and refuse inherited options not taken.
+
+        Every refused option the user set is named in the one message. The
+        caller's namespace is not changed; the fixed values go on a copy.
+        """
+        if self.accepted_options is None and not self.fixed_options:
+            return opts
+        inherited = self.inherited_options()
+        accepted = set(self.accepted_options or ())
+        unknown = sorted((set(self.fixed_options) | accepted) - set(inherited))
+        if unknown:
+            raise ValueError(
+                f"target '{self.name}' fixes or accepts {', '.join(unknown)}, "
+                f"which '{self.derives_from}' does not declare")
+        refused = []
+        for dest, (strings, default) in inherited.items():
+            value = getattr(opts, dest, default)
+            if dest in accepted or value == default:
+                continue
+            if dest in self.fixed_options and value == self.fixed_options[dest]:
+                continue
+            refused.append(strings[-1])
+        if refused:
+            fixed = ", ".join(f"{d}={v!r}" for d, v in self.fixed_options.items())
+            raise ValueError(
+                f"target '{self.name}' does not take {', '.join(refused)} "
+                f"(inherited from '{self.derives_from}')"
+                + (f"; it fixes {fixed}" if fixed else ""))
+        out = argparse.Namespace(**vars(opts))
+        for dest, value in self.fixed_options.items():
+            setattr(out, dest, value)
+        return out
 
     def resolved_target_cfg(self) -> Optional[Dict[str, bool]]:
         """The capabilities published to the model -- the ancestor's, with this
@@ -941,9 +1044,39 @@ class OpModelTarget(Target):
             # Without --root, the tree is the one the first entry runs in.
             root = (self.resolve_root(ctx, root_name) if root_name
                     else entries[0].comp)
-            return self.elaborate(ctx, root, opts,
-                                  ctor_names=self.ctor_names_for(opts),
-                                  entries=entries)
+            model = self.elaborate(ctx, root, opts,
+                                   ctor_names=self.ctor_names_for(opts),
+                                   entries=entries)
+            return self.sequence_reads(model)
+
+    def sequence_reads(self, model: OpModel) -> OpModel:
+        """*model* with its bodies in :attr:`reg_read_form`. For
+        "statement", each rendered body of a component is replaced by
+        `effect_seq.sequence`'s (the IR is this run's own); a read that
+        cannot be sequenced is a located `Refusal`."""
+        form = self.reg_read_form
+        if form == "expression":
+            return model
+        if form != "statement":
+            raise ValueError(f"{self.name}: reg_read_form must be "
+                             f"'expression' or 'statement', not {form!r}")
+        from .effect_seq import reg_reads, sequence
+        from .validate_calls import rendered_bodies
+        tm = getattr(model.ctx, "type_map", None)
+        seen = set()
+        for comp, fn, _c, _sb in rendered_bodies(
+                model.root, model.ctx, ctor_names=model.ctor_names,
+                entries=[(e.comp, f) for e in model.entries
+                         for f in e.functions],
+                pkg_functions=self.supports_package_functions,
+                init_blocks=self.supports_init_blocks,
+                extra_components=model.base_classes,
+                native=self.native_inheritance):
+            if comp is None or id(fn) in seen or not getattr(fn, "body", None):
+                continue
+            seen.add(id(fn))
+            fn.body = sequence(fn.body, reg_reads(comp, tm))
+        return dc.replace(model, reg_read_form="statement")
 
     def sections(self, model: OpModel,
                  opts: argparse.Namespace) -> Dict[str, str]:
@@ -1014,7 +1147,8 @@ class OpModelTarget(Target):
         body emitter has no rendering for (`body_kinds`): before, the
         emitter raised an internal error from the middle of emission."""
         cls = self.body_emitter_class()
-        if cls is None:
+        if cls is None and not self.unsupported_kinds \
+                and not self.unsupported_local_types:
             return
         from ..driver import CompileError
         from . import body_kinds
@@ -1028,8 +1162,9 @@ class OpModelTarget(Target):
             extra_components=model.base_classes,
             native=self.native_inheritance)
         language = self.language or self.name
-        bad = body_kinds.refusals(bodies, body_kinds.emitter_kinds(cls),
-                                  language)
+        bad = body_kinds.refusals(
+            bodies, None if cls is None else body_kinds.emitter_kinds(cls),
+            language, self.unsupported_kinds, self.unsupported_local_types)
         if bad:
             raise CompileError(
                 f"{len(bad)} construct(s) cannot be lowered to {language}",

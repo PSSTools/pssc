@@ -44,6 +44,13 @@ class Target(abc.ABC):
     #: One-line description shown by ``pssc targets``.
     description: str = ""
 
+    #: The pssc releases this target works with, e.g. ``">=0.3"`` or
+    #: ``">=0.3, <0.5"``; empty means any. Checked when the target registers,
+    #: so a plugin needing an API a newer pssc added is refused by name rather
+    #: than probing for it with ``hasattr``. :attr:`PSSC_TARGET_API` is the
+    #: contract's major; this is the floor of the members added since.
+    requires_pssc: str = ""
+
     #: Capabilities published to the model as ``target_cfg_pkg``, injected
     #: ahead of the user's sources -- or ``None`` to inject nothing, which
     #: leaves the model to take its own defaults.
@@ -94,6 +101,15 @@ class Target(abc.ABC):
         Optional; the default contributes nothing. Option names must be unique
         across targets (they are all registered on the one ``compile`` parser).
         """
+
+    def resolve_options(self, opts: argparse.Namespace) -> argparse.Namespace:
+        """The options this target runs with, given the command line's.
+
+        Called by the driver before anything is parsed; a ``ValueError`` is
+        reported as the compile error. The default is the command line as
+        given. `OpModelTarget` uses it to fix and refuse inherited options.
+        """
+        return opts
 
     # -- `-X NAME=VALUE` options --------------------------------------------
 

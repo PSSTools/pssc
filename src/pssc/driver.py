@@ -170,6 +170,17 @@ def compile(
             raise CompileError(msg) from None
         return CompileResult(target=target, errors=[msg])
 
+    # Before any source is read: an option the target refuses is the user's
+    # mistake, and saying so should not wait for a parse.
+    resolve = getattr(tgt, "resolve_options", None)
+    if callable(resolve):
+        try:
+            opts = resolve(opts)
+        except ValueError as e:
+            if raise_on_error:
+                raise CompileError(str(e)) from None
+            return CompileResult(target=target, errors=[str(e)])
+
     # The target speaks first. Its prelude (typically `target_cfg_pkg`) must be
     # processed ahead of the user's sources -- see `translate`.
     try:

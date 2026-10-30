@@ -49,7 +49,11 @@ act deliberate.
 Snapshots prove *sameness*, not correctness: a wrong address frozen into a
 golden file stays green forever. Changes touching address computation or
 register access must also run the behavioural tests
-(`test_op_model_behaviour_c.py`, `test_build_wb_dma_c.py`).
+(`test_op_model_behaviour_c.py`, `test_build_wb_dma_c.py`). Changes to how
+reads are sequenced (`effect_seq`, `ir_walk`, `reg_read_form="statement"`,
+`reg_read_into`) also run `tests/unit/test_effect_seq.py`,
+`test_reg_read_form.py` and `test_hal_fixture.py`: no golden uses the
+statement form, and the HAL fixture's bus trace is what checks read order.
 
 ## The C memory seam
 

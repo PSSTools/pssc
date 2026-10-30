@@ -107,6 +107,7 @@ def test_the_archived_notes_say_they_are_archived():
                "future-projects.md",
                "large-offset-match-report.md",
                "if-chain-plan.md",
+               "effect-sequencing.md",
                "activity-p1-plan.md",
                "bc-procedural-gaps-plan.md",
                "nvme-bench-plan.md",

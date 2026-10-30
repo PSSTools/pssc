@@ -52,6 +52,9 @@ class FieldSlice:
     name: str
     lsb: int
     width: int
+    #: The value struct's field declaration, for annotations on it
+    #: (``annotations.of(slice.decl, q)``). Not part of the slice's identity.
+    decl: object = dc.field(default=None, compare=False, repr=False)
 
     @property
     def mask(self) -> int:
@@ -149,10 +152,10 @@ def _place(fields, big: bool) -> List[FieldSlice]:
     bit = 0
     for f, w in zip(fields, widths):
         if w is None:
-            out.append(FieldSlice(name=f.name, lsb=bit, width=0))
+            out.append(FieldSlice(name=f.name, lsb=bit, width=0, decl=f))
             continue
         lsb = top - bit - w if big else bit
-        out.append(FieldSlice(name=f.name, lsb=lsb, width=w))
+        out.append(FieldSlice(name=f.name, lsb=lsb, width=w, decl=f))
         bit += w
     return out
 

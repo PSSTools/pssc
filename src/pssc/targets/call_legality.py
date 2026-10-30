@@ -15,7 +15,9 @@ flat per-target list has no contract to hold them together:
            function" -- two different bugs, and a flat whitelist reports them
            identically.
   Tier 1   COMMON: what EVERY backend must render. A target may extend this;
-           it may never shrink it. `test_call_legality.py` enforces that.
+           it may shrink it only by declaring itself a subset
+           (`register_extension(..., subset=True)`), with a reason per name.
+           `test_call_legality.py` enforces that.
   Tier 2   per-target extensions, declared through `register_extension` --
            by a built-in here, or by a plugin from its own package.
 
@@ -316,8 +318,14 @@ class LegalityError(Exception):
     """A Tier-2 extension violates the tier contract."""
 
 
+#: Target -> the COMMON names it declared unsupported as a subset target.
+#: PRIVATE, like `_EXTENSIONS`; read through `subset_of_common`.
+_SUBSETS: Dict[str, FrozenSet[str]] = {}
+
+
 def register_extension(target: str, entries, inherit: Optional[str] = None,
-                       replace: bool = False) -> Dict[str, Entry]:
+                       replace: bool = False,
+                       subset: bool = False) -> Dict[str, Entry]:
     """Declare what ``target`` renders beyond :data:`COMMON`.
 
     ``entries`` is an iterable of :class:`Entry` (or a name->Entry mapping).
@@ -328,11 +336,19 @@ def register_extension(target: str, entries, inherit: Optional[str] = None,
     which is exactly the failure a `dict()` copy of the C entry would have
     produced for C++.
 
-    Raises :class:`LegalityError` if an entry marks a Tier-1 name unsupported.
-    That is the one thing a target may not do, because every backend downstream
-    of the model -- and the model author -- relies on COMMON being renderable
-    everywhere; a target that cannot render it is not a conforming target, and
-    finding out at generation time gives a diagnostic that blames the model.
+    Raises :class:`LegalityError` if an entry marks a Tier-1 name unsupported,
+    unless ``subset=True``. Every backend downstream of the model -- and the
+    model author -- relies on COMMON being renderable everywhere, so a
+    conforming target may not shrink it. A SUBSET target (one that knowingly
+    renders less, such as a restricted HAL dialect) says so with
+    ``subset=True``; each narrowed COMMON entry must then carry a non-empty
+    reason, which is what :func:`classify` reports. The narrowed names are
+    recorded and read back through :func:`subset_of_common`.
+
+    Inheriting from a subset carries its narrowing (the entries are copied, so
+    the derived target refuses the same calls) without the derived target
+    having to pass ``subset=True``; an entry of its own that supports the name
+    again lifts it. Narrowing a further COMMON name still needs ``subset=True``.
     """
     if target in _EXTENSIONS and not replace:
         raise LegalityError(
@@ -350,16 +366,36 @@ def register_extension(target: str, entries, inherit: Optional[str] = None,
 
     items = (entries.values() if isinstance(entries, dict) else entries)
     for entry in items:
-        if entry.name in COMMON and entry.unsupported:
+        if entry.name in COMMON and entry.unsupported and not subset:
             raise LegalityError(
                 f"target '{target}' declares the Tier 1 (COMMON) call "
                 f"'{entry.name}' unsupported ({entry.unsupported}). A target "
-                f"may extend the common set; it may never shrink it -- every "
-                f"model is written assuming COMMON renders everywhere")
+                f"may extend the common set; it shrinks it only by declaring "
+                f"itself a subset (register_extension(..., subset=True)) -- "
+                f"every model is written assuming COMMON renders everywhere")
+        if entry.name in COMMON and entry.unsupported and not entry.unsupported.strip():
+            raise LegalityError(
+                f"target '{target}' narrows the COMMON call '{entry.name}' "
+                f"with a blank reason; the reason is what the model author "
+                f"is shown when the call is refused")
         merged[entry.name] = entry
 
     _EXTENSIONS[target] = merged
+    narrowed = frozenset(n for n, e in merged.items()
+                         if n in COMMON and e.unsupported)
+    if narrowed:
+        _SUBSETS[target] = narrowed
+    else:
+        _SUBSETS.pop(target, None)
     return merged
+
+
+def subset_of_common(target: str) -> FrozenSet[str]:
+    """The COMMON names ``target`` declared unsupported as a subset target.
+
+    Empty for a conforming target. ``target`` may be an alias.
+    """
+    return _SUBSETS.get(_canonical(target), frozenset())
 
 
 def extensions_for(target: str) -> Dict[str, Entry]:

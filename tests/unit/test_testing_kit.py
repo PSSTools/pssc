@@ -101,7 +101,7 @@ def test_assert_common_tier_fails_for_a_target_that_shrinks_common(monkeypatch):
         with pytest.raises(AssertionError) as exc:
             testing.assert_common_tier("x-shrunk")
         assert common_name in str(exc.value)
-        assert "never shrink" in str(exc.value)
+        assert "declared subset" in str(exc.value)
     finally:
         cl._EXTENSIONS.clear()
         cl._EXTENSIONS.update(saved)
@@ -204,6 +204,7 @@ def registered():
     from pssc.targets import call_legality as cl
     added = []
     saved_legality = {k: dict(v) for k, v in cl._EXTENSIONS.items()}
+    saved_subsets = dict(cl._SUBSETS)
 
     def add(target):
         targets.register(target)
@@ -215,6 +216,8 @@ def registered():
         targets._REGISTRY.pop(name, None)
     cl._EXTENSIONS.clear()
     cl._EXTENSIONS.update(saved_legality)
+    cl._SUBSETS.clear()
+    cl._SUBSETS.update(saved_subsets)
 
 
 # -- the differential test (P6b.T5) -----------------------------------------
@@ -308,3 +311,87 @@ def test_differential_refuses_two_targets_of_different_granularity():
     nothing."""
     with pytest.raises(ValueError, match="not comparable"):
         testing.diff_from_baseline("op-model-c", "op-model-cpp")
+
+
+def _planned(**hooks):
+    from pssc.targets.c.backend import COpModelBackend
+    from pssc.targets.c_progseq_tgt import CProgSeqTarget
+    backend = type("_Backend", (COpModelBackend,), hooks)
+    return type("_T", (CProgSeqTarget,), dict(
+        name="x-planned", derives_from="op-model-c",
+        backend_cls=backend))()
+
+
+def test_plan_runs_before_any_signature_and_can_rename_from_the_default(
+        registered):
+    """`plan` computes each operation's contract from the default one; the
+    `signature` override only looks it up (PC-15)."""
+    from pssc.targets.c.backend import COpModelBackend
+    order = []
+
+    def plan(self, model, s):
+        order.append("plan")
+        self.contracts = {}
+        for comp, fn in self.operations(model):
+            ret, name, params = COpModelBackend.signature(
+                self, fn, self.op_ctx(comp))
+            self.contracts[id(fn)] = (ret, "acme_" + name, params)
+
+    def signature(self, fn, ctx):
+        order.append("signature")
+        return self.contracts[id(fn)]
+
+    registered(_planned(plan=plan, signature=signature))
+    secs = testing.generated_sections("x-planned")
+    assert order[0] == "plan" and order.count("plan") == 1
+    assert "signature" in order
+    assert "acme_" in "".join(secs.values())
+
+
+def test_plan_may_refuse_before_anything_is_written(registered):
+    from pssc.driver import CompileError
+
+    def plan(self, model, s):
+        raise CompileError("acme: no operations allowed")
+
+    registered(_planned(plan=plan))
+    with pytest.raises(CompileError, match="acme: no operations"):
+        testing.generated_sections("x-planned")
+
+
+def _narrowed(**attrs):
+    from pssc.targets.c_progseq_tgt import CProgSeqTarget
+    return type("_T", (CProgSeqTarget,), dict(
+        name="x-narrow", derives_from="op-model-c", **attrs))()
+
+
+def _refused(registered, target):
+    from pssc.driver import CompileError
+    registered(target)
+    with pytest.raises(CompileError) as ei:
+        testing.compile_op_model("x-narrow").cleanup()
+    e = ei.value
+    return "\n".join([str(e)] + list(e.errors))
+
+
+def test_unsupported_kinds_refuse_a_rendered_kind_with_location_and_reason(
+        registered):
+    """A derived subset target narrows the statements it takes (PC-18)."""
+    text = _refused(registered, _narrowed(
+        unsupported_kinds={"StmtRepeatWhile": "the HAL does not poll"}))
+    assert "the HAL does not poll" in text
+    assert "dma_engine.pss:64" in text
+
+
+def test_unsupported_local_types_refuse_a_local_declaration(registered):
+    text = _refused(registered, _narrowed(
+        unsupported_local_types={"DataTypeStruct": "no struct locals"}))
+    assert "local 'csr' of type dma_regs_pkg::dma_ch_csr_s is not lowered " \
+        "to C: no struct locals" in text
+    assert "dma_engine.pss:" in text
+
+
+def test_no_narrowing_changes_nothing(registered):
+    registered(_narrowed())
+    assert testing.generated_sections("x-narrow") == \
+        testing.generated_sections("op-model-c")
