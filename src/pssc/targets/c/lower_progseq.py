@@ -1887,10 +1887,22 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
     @overridable(since='0.3', stability='provisional')
     def reg_value_local(self, ra, lw: "LoweredRegAccess") -> Tuple[str, str]:
         """``(C type, name)`` of the local a composed masked write reads the
-        register into. Declared once, at the top of the function; two
-        composed writes asking for one name share the local when the types
-        agree. The default is the register's transaction width."""
+        register into. Declared where `reg_value_local_scope` says: by
+        default once, at the top of the function, where two composed writes
+        asking for one name share the local when the types agree. The
+        default is the register's transaction width."""
         return f"uint{lw.acc.prim}_t", "_pss_reg"
+
+    @overridable(since='0.3', stability='provisional')
+    def reg_value_local_scope(self, ra, lw: "LoweredRegAccess") -> str:
+        """Where a composed masked write declares its locals (the
+        `reg_value_local` word and the `_pss_fv<i>` field-value temps):
+        ``"function"``, once at the top of the function (the default), or
+        ``"block"``, in a ``{ }`` block of its own around the write's
+        statements, so each write's locals end with it. A block's locals
+        shadow any of the function's of the same name, which a field value
+        of the write must then not name."""
+        return "function"
 
     @overridable(since='0.3', stability='provisional')
     def reg_read_into(self, ra, lw: "LoweredRegAccess", local: str) -> str:
@@ -2022,8 +2034,20 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
                 for nm, ct in self.__dict__.get("_fn_locals", {}).items()]
 
     def _composed_masked_write(self, ra, lw, ind: int) -> List[str]:
+        scope = self.reg_value_local_scope(ra, lw)
+        if scope not in ("function", "block"):
+            raise ValueError(f"reg_value_local_scope gave '{scope}', not "
+                             f"'function' or 'block'")
+        decls = []                      # the block's, in declaration order
+
+        def local(ctype: str, nm: str) -> str:
+            if scope == "function":
+                return self.function_local(ctype, nm)
+            decls.append(f"{ctype} {nm}")
+            return nm
+
         ct, name = self.reg_value_local(ra, lw)
-        t = self.function_local(ct, name)
+        t = local(ct, name)
         # A field value with a call runs before the register is read, in
         # source order, as the model's one write would have run it: each is
         # first a temp at the field's width (the width it is written at).
@@ -2033,8 +2057,7 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
                 vals.append(self.expr(fw.value))
                 continue
             ft = PssType("int", fw.slice.width, False)
-            v = self.function_local(f"uint{_prim_bits(fw.slice.width)}_t",
-                                    f"_pss_fv{i}")
+            v = local(f"uint{_prim_bits(fw.slice.width)}_t", f"_pss_fv{i}")
             out.append(f"{v} = {self.convert_to(fw.value, ft)}")
             vals.append(v)
         out.append(self.reg_read_into(ra, lw, t))
@@ -2046,7 +2069,11 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             out.append(self.reg_value_merge(t, lw.args[0], lw.args[1], ra, lw))
         out.append(self.reg_write_from(ra, lw, t))
         pad = self.pad(ind)
-        return [f"{pad}{x};" for x in out]
+        if scope == "function":
+            return [f"{pad}{x};" for x in out]
+        inner = self.pad(ind + 1)
+        return [f"{pad}{{"] + [f"{inner}{x};" for x in decls + out] + \
+            [f"{pad}}}"]
 
     def _reg_path(self, chain, base_expr: Optional[str] = None,
                  base_is_ptr: bool = True) -> str:

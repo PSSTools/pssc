@@ -202,6 +202,44 @@ def test_a_composed_masked_write_is_one_step_per_field(tmp_path, monkeypatch):
         c, "uint32_t top_get_mode(top_c *_self)")
 
 
+class _HalBlock(_Hal):
+    def reg_value_local_scope(self, ra, lw):
+        return "block"
+
+
+class _HalBlockBackend(COpModelBackend):
+    body_emitter_cls = _HalBlock
+
+
+def test_block_scoped_locals_are_the_writes_own(tmp_path, monkeypatch):
+    out, c = _gen(tmp_path, monkeypatch, _HalBlockBackend)
+    body = _body(c, "void top_set(top_c *_self, uint32_t m)")
+    lines = [ln.strip() for ln in body.splitlines()]
+    # No function-top local: the word is declared in the write's block.
+    assert lines == ["(void)_self;", "{", "uint32_t data;",
+                     "DEV_READ32(regs, R_CTL, data);",
+                     "DEV_FIELD_SET(R_CTL, en, (1), data);",
+                     "DEV_FIELD_SET(R_CTL, mode, (m), data);",
+                     "DEV_WRITE32(regs, R_CTL, data);", "}"]
+    # The block's statements are one level in.
+    blk = body.splitlines()
+    i = next(n for n, ln in enumerate(blk) if ln.strip() == "{")
+    assert len(blk[i + 1]) - len(blk[i + 1].lstrip()) > \
+        len(blk[i]) - len(blk[i].lstrip())
+
+
+def test_an_unknown_local_scope_is_an_error(tmp_path, monkeypatch):
+    class _Bad(_Hal):
+        def reg_value_local_scope(self, ra, lw):
+            return "file"
+
+    class _BadBackend(COpModelBackend):
+        body_emitter_cls = _Bad
+
+    with pytest.raises(Exception, match="reg_value_local_scope gave 'file'"):
+        _gen(tmp_path, monkeypatch, _BadBackend)
+
+
 class _Composed(CBodyEmitter):
     """pssc's own primitives, composed."""
 
@@ -237,19 +275,36 @@ def test_the_default_is_one_call(tmp_path, monkeypatch):
 _CC = available_c_compilers()
 
 
+class _ComposedBlock(_Composed):
+    def reg_value_local_scope(self, ra, lw):
+        return "block"
+
+
+class _ComposedBlockBackend(COpModelBackend):
+    body_emitter_cls = _ComposedBlock
+
+
 @pytest.mark.c_toolchain
 @pytest.mark.skipif(not _CC, reason="no C compiler")
-def test_the_composed_form_passes_the_wb_dma_trace_gate(tmp_path, monkeypatch):
+@pytest.mark.parametrize("backend", [_ComposedBackend, _ComposedBlockBackend],
+                         ids=["function", "block"])
+def test_the_composed_form_passes_the_wb_dma_trace_gate(tmp_path, monkeypatch,
+                                                        backend):
     """The WB DMA tree's trace gate (`test_op_model_behaviour_c.py`) checks
     every register access its masked writes make; it must pass unchanged
-    when each one is composed from pssc's default primitives."""
+    when each one is composed from pssc's default primitives, with its
+    locals at the top of the function or in a block of its own."""
     from .test_op_model_behaviour_c import _build_and_run, _generate
 
     tgt = targets.get("op-model-c")
-    monkeypatch.setattr(type(tgt), "backend_cls", _ComposedBackend)
+    monkeypatch.setattr(type(tgt), "backend_cls", backend)
     out = _generate(tmp_path, c_lifecycle="static")
     text = (tmp_path / "wb_dma.c").read_text()
     assert "_pss_reg = wb_dma_" in text, "nothing was composed"
+    if backend is _ComposedBlockBackend:
+        lines = [ln.strip() for ln in text.splitlines()]
+        assert any(a == "{" and b.endswith(" _pss_reg;")
+                   for a, b in zip(lines, lines[1:])), "no block-scoped local"
     assert "_write_masked(" not in text.split("/* ----- Component", 1)[1]
     res = _build_and_run(out, _CC[0])
     assert res.returncode == 0, res.stdout + res.stderr

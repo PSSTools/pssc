@@ -381,3 +381,44 @@ def test_a_field_value_with_a_call_runs_before_the_read(hal, tmp_path):
     out = _compile(TARGET, tmp_path / "out", src=tmp_path / "m.pss")
     c = "".join(p.read_text() for p in sorted(out.glob("*.c")))
     assert SET_LVL in c
+
+
+SET_LVL_BLOCK = """\
+void dev_set_lvl(uintptr_t ctl_base) {
+    {
+        uint32_t data;
+        uint8_t _pss_fv0;
+        uint16_t _pss_fv2;
+        _pss_fv0 = dev_lvl(2) & 0x1;
+        _pss_fv2 = dev_lvl(3);
+        DEV_READ32_INTO(ctl_base, CTL_MODE, 0, data);
+        DEV_FIELD_SET(CTL_MODE, en, (_pss_fv0), data);
+        DEV_FIELD_SET(CTL_MODE, mode, (2), data);
+        DEV_FIELD_SET(CTL_MODE, level, (_pss_fv2), data);
+        DEV_WRITE32(ctl_base, CTL_MODE, 0, data);
+    }
+}
+"""
+
+
+def test_block_scoped_temps_are_declared_in_the_writes_block(
+        hal, tmp_path, monkeypatch):
+    """`reg_value_local_scope` = "block": the word and the field-value
+    temps are declared in a `{ }` of the write's own, not at the top of
+    the function (PC-12)."""
+    import pssc_hal_fixture.backend as be
+    monkeypatch.setattr(be.HalEmitter, "reg_value_local_scope",
+                        lambda self, ra, lw: "block", raising=False)
+    src = MODEL.read_text().replace(
+        "    export target function set_mode;",
+        "    function bit[12] lvl(bit[12] v) { return v; }\n"
+        "    target function void set_lvl() {\n"
+        "        ctl.mode.write_fields({\"en\", \"mode\", \"level\"},\n"
+        "                              {lvl(2), 2, lvl(3)});\n"
+        "    }\n"
+        "    export target function set_lvl;\n"
+        "    export target function set_mode;")
+    (tmp_path / "m.pss").write_text(src)
+    out = _compile(TARGET, tmp_path / "out", src=tmp_path / "m.pss")
+    c = "".join(p.read_text() for p in sorted(out.glob("*.c")))
+    assert SET_LVL_BLOCK in c

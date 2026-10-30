@@ -235,6 +235,10 @@
         "since": "0.3",
         "stability": "provisional"
       },
+      "reg_value_local_scope": {
+        "since": "0.3",
+        "stability": "provisional"
+      },
       "reg_value_merge": {
         "since": "0.3",
         "stability": "provisional"
