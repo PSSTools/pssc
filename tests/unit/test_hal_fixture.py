@@ -450,3 +450,30 @@ def test_a_part_of_a_field_is_merged_from_the_mask(hal, tmp_path):
     out = _compile(TARGET, tmp_path / "out", src=tmp_path / "m.pss")
     c = "".join(p.read_text() for p in sorted(out.glob("*.c")))
     assert SET_LOW in c
+
+
+@pytest.mark.parametrize("target", [TARGET, "op-model-c", "op-model-sv"])
+def test_a_call_in_a_field_the_mask_leaves_out_is_refused(hal, tmp_path, target):
+    """`level` is in the value literal but not the mask: it is never written,
+    and whether `lvl(3)` still ran was each target's choice (the fixture's
+    field-wise write dropped it, op-model-c and SV packed and called it).
+    `reg_rmw` decides once, for every target: refused, at the call (PC-12)."""
+    from pssc import driver
+
+    write = "        ctl.mode.write_masked({.en=1}, {.en=1, .level=lvl(3)});"
+    src = MODEL.read_text().replace(
+        "    export target function set_mode;",
+        "    function bit[12] lvl(bit[12] v) { return v; }\n"
+        "    target function void set_om() {\n"
+        f"{write}\n"
+        "    }\n"
+        "    export target function set_om;\n"
+        "    export target function set_mode;")
+    (tmp_path / "m.pss").write_text(src)
+    with pytest.raises(driver.CompileError) as ei:
+        _compile(target, tmp_path / "out", src=tmp_path / "m.pss")
+    errs = "\n".join(map(str, ei.value.errors))
+    assert "field 'level' calls a function but the mask literal leaves it out" \
+        in errs
+    line = src.splitlines().index(write) + 1
+    assert f"m.pss:{line}:" in errs

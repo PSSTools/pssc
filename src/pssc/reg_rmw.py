@@ -364,9 +364,46 @@ def _mask_and_val(reg, call, ctx) -> Optional[Tuple[ir.Expr, ir.Expr]]:
         val = _pack_struct(reg, call.args[1], ctx, call, "value")
         if mask is None or val is None:
             return None
+        if not _check_unmasked_calls(call, ctx):
+            return None
         return mask, val, _masked_fields(reg, call.args[0], call.args[1], ctx)
 
     return None
+
+
+def _has_call(e) -> bool:
+    if isinstance(e, ir.ExprCall):
+        return True
+    found = []
+    _walk_exprs(e, lambda p, a, x: found.append(x)
+                if isinstance(x, ir.ExprCall) else None)
+    return bool(found)
+
+
+def _check_unmasked_calls(call, ctx) -> bool:
+    """Refuse a `write_masked` value literal field that the mask literal
+    leaves out and whose value calls a function.
+
+    The mask selects none of its bits, so the value is never written; whether
+    the call still runs would be each target's choice (a field-wise write
+    names only the mask's fields and drops it, a packed word evaluates it).
+    One answer here, for every target: the model says what it means instead.
+    """
+    mask_e, val_e = call.args
+    if _dt_name(mask_e) != "ExprStructLiteral" \
+            or _dt_name(val_e) != "ExprStructLiteral":
+        return True
+    masked = {sf.name for sf in mask_e.fields}
+    for sf in val_e.fields:
+        if sf.name not in masked and _has_call(sf.value):
+            _fail(ctx, call,
+                  f"write_masked: the value literal's field '{sf.name}' calls "
+                  "a function but the mask literal leaves it out, so it is "
+                  "never written; whether the call would still run is not "
+                  "defined -- call it in a statement of its own, or add "
+                  f"'{sf.name}' to the mask")
+            return False
+    return True
 
 
 def _masked_fields(reg, mask_e, val_e, ctx) -> Optional[Tuple[RegFieldWrite, ...]]:
