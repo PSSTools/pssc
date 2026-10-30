@@ -75,6 +75,8 @@ class RegWriteProvenance(ir.Provenance):
     operations -- one read, then one write. ``fields`` is ``None`` when the
     source named no field: a ``write_val_masked`` written out, or a
     ``write_masked`` given a whole struct value rather than a literal.
+    A value-literal field the mask literal leaves out has no entry; one whose
+    value calls a function is refused, so leaving it out drops no call.
     """
     fields: Optional[Tuple[RegFieldWrite, ...]] = None
 

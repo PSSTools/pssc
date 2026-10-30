@@ -424,6 +424,12 @@ local back. The read and the write are `reg_read_into`/`reg_write_from`; the
 write's default goes through your `reg_access`. You spell the steps; you
 cannot drop the read or reorder the bus operations.
 
+A field value that calls a function runs before the read, into a
+`_pss_fv<i>` temp at the field's width; `reg_value_local_scope` returning
+`"block"` puts these locals in a `{ }` of the write's own. A write of part of
+a field cannot be said with `DEV_FIELD_SET`, so `partial_field_writes = False`
+has pssc spell such a write with `reg_value_merge` from its mask and value.
+
 **A read that is a statement.** The platform's read is
 `DEV_READ32_INTO(base, REG, i, out)`, which has no value, so the target class
 sets `reg_read_form = "statement"`. pssc then reads every register into a
