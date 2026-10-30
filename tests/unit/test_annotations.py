@@ -244,3 +244,27 @@ def test_an_exported_actions_entry_carries_the_actions_annotations():
     """)
     ep = entry_point(ctx, "pss_top::A")
     assert _texts(ep.functions[0]) == ["action", "body"]
+
+
+def test_register_accessors_and_field_slices_reach_their_declarations():
+    # A backend that names registers or fields from annotations reads them
+    # off `RegAccessor.decl` (the instance) and `FieldSlice.decl` (the value
+    # struct's field). The HAL fixture's model, with one of each annotated.
+    from pathlib import Path
+    from pssc.reg_field_resolve import field_layout
+    from pssc.targets.reg_layout import collect_accessors
+    q = "hal_fx_pkg::bases_s"
+    src = (Path(__file__).resolve().parents[1] / "plugins" / "pssc_hal_fixture"
+           / "model" / "dev.pss").read_text()
+    src = src.replace("bit[1] en;", '@%s {.c_type = "EN"} bit[1] en;' % q)
+    src = src.replace("        mode_r mode;",
+                      '        @%s {.c_type = "MODE"} mode_r mode;' % q)
+    ctx = _translate(src)
+    accs = {a.name: a for a in collect_accessors(ctx.type_map["dev_c"])}
+    assert annotations.of(accs["mode"].decl, q) == {"c_type": "MODE"}
+    assert annotations.of(accs["go"].decl, q) is None
+    assert all(a.decl is not None for a in accs.values())
+    slices = {s.name: s for s in field_layout(accs["mode"].dtype,
+                                              resolve=ctx.type_map.get)}
+    assert annotations.of(slices["en"].decl, q) == {"c_type": "EN"}
+    assert annotations.of(slices["mode"].decl, q) is None

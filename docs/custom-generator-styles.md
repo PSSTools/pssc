@@ -666,6 +666,12 @@ for acc in collect_accessors(comp_dtype):
     ...   # acc.path, acc.const_off, acc.strides, acc.access, acc.prim_bits
 ```
 
+To name a register or a field from the model's own annotations, read them off
+the declarations: `acc.decl` is the register instance's field, and each of
+`acc.fields` has a `decl`, the value struct's field, so
+`annotations.of(acc.decl, "my_pkg::sym_s")` works on either. Whose spelling is
+authoritative is the backend's choice; pssc does not decide it.
+
 An address is the one thing in a generated programming API that a golden
 snapshot cannot check — it looks equally plausible either way — so two backends
 computing offsets two ways is the worst kind of duplication available here.
