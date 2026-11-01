@@ -28,6 +28,7 @@ from __future__ import annotations
 import dataclasses as dc
 import inspect
 import os
+import re
 from collections.abc import Iterable
 from typing import Any, Dict, List, Sequence, Tuple
 
@@ -126,6 +127,8 @@ def register(target: Target, aliases: Sequence[str] = (),
                 f"({type(held).__module__}.{type(held).__name__}). Pass "
                 f"replaces=('{name}',) to override it deliberately")
 
+    _check_requires(target)
+
     # Before the name is claimed: a target that cannot be registered must not
     # be half-registered. `check_overrides` raises when a subclass has taken
     # one half of a paired override -- see `targets.overridable.check_pairs`.
@@ -135,6 +138,44 @@ def register(target: Target, aliases: Sequence[str] = (),
 
     for name in claimed:
         _REGISTRY[name] = target
+
+
+_REQ_CLAUSE = re.compile(r"^\s*(>=|<=|==|!=|>|<)\s*(\d+(?:\.\d+)*)\s*$")
+
+
+def _release(text: str) -> Tuple[int, ...]:
+    """``"0.3.1"`` -> ``(0, 3, 1)``; a suffix after the numbers is ignored."""
+    m = re.match(r"\d+(?:\.\d+)*", text)
+    return tuple(int(p) for p in m.group(0).split(".")) if m else ()
+
+
+def _check_requires(target: Target) -> None:
+    """Refuse a target whose :attr:`~Target.requires_pssc` this pssc misses.
+
+    Comma-separated clauses, each an operator and a release (``>=0.3``);
+    releases compare numerically, padded with zeros (``0.3 == 0.3.0``).
+    """
+    spec = getattr(target, "requires_pssc", "") or ""
+    if not spec.strip():
+        return
+    from ..__version__ import version as _version
+    have = _release(_version)
+    for clause in spec.split(","):
+        m = _REQ_CLAUSE.match(clause)
+        if m is None:
+            raise TargetError(
+                f"{type(target).__name__} declares requires_pssc={spec!r}; "
+                f"{clause.strip()!r} is not an operator and a release, "
+                f"such as '>=0.3'")
+        op, want = m.group(1), _release(m.group(2))
+        n = max(len(have), len(want))
+        a, b = have + (0,) * (n - len(have)), want + (0,) * (n - len(want))
+        ok = {">=": a >= b, "<=": a <= b, "==": a == b, "!=": a != b,
+              ">": a > b, "<": a < b}[op]
+        if not ok:
+            raise TargetError(
+                f"{type(target).__name__} ('{target.name}') requires pssc "
+                f"{spec.strip()}; this is pssc {_version}")
 
 
 def get(name: str) -> Target:

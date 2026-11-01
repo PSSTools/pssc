@@ -39,9 +39,11 @@ def written_fields(call):
 def whole_fields(call) -> Optional[List[FieldSlice]]:
     """The fields of :func:`written_fields`, LSB first, when each is written
     WHOLE (its mask is all of its bits); otherwise ``None``. A partial mask
-    is not that field, and naming it as though it were would be a lie."""
-    fields = written_fields(call)
-    if not fields or any(w.mask != w.slice.mask for w in fields):
+    is not that field, and naming it as though it were would be a lie
+    (`reg_rmw.field_writes` with ``partial_field_writes=False``)."""
+    from ..reg_rmw import field_writes
+    fields = field_writes(written_fields(call), partial_field_writes=False)
+    if fields is None:
         return None
     return sorted((w.slice for w in fields), key=lambda fs: fs.lsb)
 

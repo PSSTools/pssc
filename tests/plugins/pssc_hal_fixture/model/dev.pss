@@ -111,8 +111,32 @@ component dev_c {
         return wait_idle(tries);
     }
 
+    /** The status count: a read in a return. */
+    target function bit[32] stat_count() {
+        return sts.stat.read().count;
+    }
+
+    /** 2 if busy past `lim`, 1 if idle and empty, else 0: reads under
+     *  `&&` and in a later test of an if-chain. */
+    target function bit[32] classify(bit[32] lim) {
+        if (sts.stat.read().busy == 1 && sts.stat.read().count > lim) {
+            return 2;
+        } else if (sts.stat.read().count == 0) {
+            return 1;
+        }
+        return 0;
+    }
+
+    /** Copy channel 0's length to channel `ch`: a read as an argument. */
+    target function void copy_len(int ch) {
+        set_len(ch, ctl.len[0].read_val());
+    }
+
     export target function set_mode;
     export target function set_len;
     export target function wait_idle;
     export target function start;
+    export target function stat_count;
+    export target function classify;
+    export target function copy_len;
 }

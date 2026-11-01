@@ -168,13 +168,18 @@ def assert_common_tier(target: str) -> None:
     call. A target that cannot render COMMON is not a conforming target: every
     model is written assuming those calls work everywhere, so the failure lands
     on the model author as a bogus "unsupported call" in code that is correct.
+
+    A declared subset target (``register_extension(..., subset=True)``) is held
+    to COMMON less the names it narrowed, each with its reason.
     """
-    from ..targets.call_legality import COMMON, renderable
-    missing = sorted(set(COMMON) - renderable(target))
+    from ..targets.call_legality import COMMON, renderable, subset_of_common
+    missing = sorted(set(COMMON) - renderable(target)
+                     - subset_of_common(target))
     assert not missing, (
         f"target '{target}' does not render the common tier: {missing}. "
         f"Declare them with pssc.targets.call_legality.register_extension, or "
-        f"implement them -- a target may extend COMMON but never shrink it")
+        f"implement them -- a target may extend COMMON, and shrinks it only as a "
+        f"declared subset (register_extension(..., subset=True))")
 
 
 def assert_deterministic(target: str, *, runs: int = 2, **opts: Any) -> None:

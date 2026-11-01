@@ -226,6 +226,24 @@ separately so that two of them cannot quietly fail together:
 Note that `derives_from` names a target **by name, not by class**: the ancestor
 may live in another distribution, and deriving must not require importing it.
 
+A derived target that is not a general-purpose C backend usually fixes some of
+the inherited options and has no use for others. Say so, and pssc enforces it:
+
+```python
+class AcmeTarget(CProgSeqTarget):
+    derives_from = "op-model-c"
+    fixed_options = {"c_link_style": "direct", "c_reg_style": "bitfields"}
+    accepted_options = ("progseq_root", "c_prefix")
+    requires_pssc = ">=0.2"
+```
+
+Keys are option `dest`s. The run sees the fixed values; an inherited option in
+neither list that the user sets is refused, every such option named in one
+message, before any source is read. Accepting is opt-in, so an option
+`op-model-c` adds later is refused rather than passed through. Leaving both
+unset keeps every inherited option open. `requires_pssc` is checked when the
+target registers.
+
 ### What you may override
 
 Only methods marked `@overridable` are contract. Ask:
@@ -246,6 +264,20 @@ Some members are two halves of one decision — `emit_guard_open` and
 inheriting the other is refused **at target registration**, naming both, rather
 than producing a header that is subtly wrong somewhere the override does not
 appear.
+
+**Names you introduce.** A hook that needs a local of its own asks
+`self.fresh_local(stem, ctype)` for its name: `stem`, suffixed past every
+name the body can see (the model's locals, the parameters as your
+`signature` names them, the handle, operations, imports, and locals already
+handed out). With the default `scope="block"` you declare it where you use
+it; `scope="function"` declares it at the top of the function. A name you
+spell yourself -- a renamed parameter, a macro argument -- can be checked
+with `c_names.check_identifier(name, node)`, which refuses a C keyword, a
+reserved spelling (`__x`, `_X`) or one of pssc's own names, located at
+`node`. Parameters a `signature` renames are checked for you before any file
+is written: one that C refuses, that two parameters share, that a local of
+the body declares, or that is a type's name is a compile error naming the
+operation.
 
 If you find yourself reaching for a private name, that is evidence the surface
 has a hole in it. Report it — that is a finding, not a style violation.
@@ -289,7 +321,7 @@ and one of its functions comes out as:
 /* Enable the device in `mode`. */
 status_e dev_set_mode(uintptr_t ctl_base, uint8_t mode) {
     uint32_t data;
-    data = DEV_READ32(ctl_base, CTL_MODE, 0);
+    DEV_READ32_INTO(ctl_base, CTL_MODE, 0, data);
     DEV_FIELD_SET(CTL_MODE, en, (1), data);
     DEV_FIELD_SET(CTL_MODE, mode, (mode), data);
     DEV_WRITE32(ctl_base, CTL_MODE, 0, data);
@@ -370,6 +402,16 @@ is what such an API takes instead: the register groups `fn` uses, directly
 or through what it calls, each with the root-constructor parameter that binds
 it. `linkage` returning `"static"` keeps an operation out of the header.
 
+A signature that needs more than one function at a time (a contract
+derived from every operation's default signature, say) is computed in
+`plan(model, s)`: `prepare` calls it once its derived state is set and
+before anything asks `signature`, `handle_param` or `linkage`.
+`self.operations(model)` lists each `(component, function)`;
+`super().signature(fn, self.op_ctx(comp))` is the default to start from.
+Record the result on `self` for `signature` to look up, or raise
+`driver.CompileError` to refuse the model before any file is written. Do
+not build a second backend to ask it.
+
 **A call passes what the callee's signature now asks for.** `model_call` on
 the body emitter renders every call to an operation:
 
@@ -390,21 +432,26 @@ method, and for a masked write the fields the source named) and its C side
 # tests/plugins/pssc_hal_fixture/pssc_hal_fixture/backend.py
     def reg_access(self, ra, lw):
         if ra.method in ("read", "read_val"):
+            # Never printed: every read is a statement (`reg_read_into`).
+            # pssc still asks for this spelling to find the read in a
+            # conversion, so it must be unique to this read.
             return f"DEV_READ32({self._where(ra, lw)})"
         if ra.method == "write_val":
             return f"DEV_WRITE32({self._where(ra, lw)}, {lw.args[0]})"
         raise Refusal(f"'{ra.method}' has no spelling in this API")
 
+    def reg_read_into(self, ra, lw, local):
+        return f"DEV_READ32_INTO({self._where(ra, lw)}, {local})"
+
     def reg_masked_write_inline(self, ra, lw):
         return None         # read, set each field, write: pssc's shape
+
+    partial_field_writes = False    # a part of a field: pssc merges the mask
 
     def reg_value_local(self, ra, lw):
         return "uint32_t", "data"
 
     def reg_value_field_set(self, local, fs, value, ra, lw, mask):
-        if mask != fs.mask:
-            raise Refusal(f"a part of field '{fs.name}' is written, which "
-                          f"DEV_FIELD_SET cannot say")
         return f"DEV_FIELD_SET({reg_name(ra.accessor)}, {fs.name}, " \
                f"({value}), {local})"
 
@@ -415,12 +462,59 @@ method, and for a masked write the fields the source named) and its C side
 The masked write's shape is pssc's: returning `None` from
 `reg_masked_write_inline` composes it as read into a function-top local
 (`reg_value_local`), set each named field (`reg_value_field_set`), write the
-local back. The read and the write are `reg_read_into`/`reg_write_from`, whose
-defaults go through your `reg_access`. You spell the steps; you cannot drop
-the read or reorder the bus operations.
+local back. The read and the write are `reg_read_into`/`reg_write_from`; the
+write's default goes through your `reg_access`. You spell the steps; you
+cannot drop the read or reorder the bus operations.
 
-**Leaving the object out** is the lifecycle pair, returned empty, and three
-sections removed by name (`sections.remove` raises on a name that does not
+A field value that calls a function runs before the read, into a
+`_pss_fv<i>` temp at the field's width; `reg_value_local_scope` returning
+`"block"` puts these locals in a `{ }` of the write's own. A write of part of
+a field cannot be said with `DEV_FIELD_SET`, so `partial_field_writes = False`
+has pssc spell such a write with `reg_value_merge` from its mask and value.
+
+**A read that is a statement.** The platform's read is
+`DEV_READ32_INTO(base, REG, i, out)`, which has no value, so the target class
+sets `reg_read_form = "statement"`. pssc then reads every register into a
+local before the statement that uses it, in C's evaluation order: a read
+under `&&` only when the left side holds, a loop test's read on every pass,
+an else-if's read only when the tests before it failed
+(`docs/design/effect-sequencing.md`). Each of those reads is `reg_read_into`,
+and a field of one is `reg_value_field_get` of its local:
+
+```c
+    while (1) {
+        uint32_t _pss_rd0;
+        DEV_READ32_INTO(sts_base, STS_STAT, 0, _pss_rd0);
+        if (!(DEV_FIELD_GET(STS_STAT, busy, _pss_rd0) == 1)) {
+            break;
+        }
+```
+
+`reg_access` must still spell a read: pssc uses it to find the read inside a
+conversion, and never prints it.
+
+**A value-struct local.** When `reg_access` gives `read()` and `read_val()`
+one spelling, the target has no value struct in C, so a local of one
+(`dev_pkg::mode_s v = ctl.mode.read();`) is held as the register's word:
+declared as `reg_value_local`'s type, read by `reg_read_into`, a field read
+by `reg_value_field_get` and set (also `v.f += x`) by `reg_value_field_set`,
+copied plain (`w = v;`), and `ctl.mode.write(v)` is `reg_write_from`:
+
+```c
+    uint32_t v;
+    DEV_READ32_INTO(ctl_base, CTL_MODE, 0, v);
+    DEV_FIELD_SET(CTL_MODE, en, (1), v);
+    DEV_WRITE32(ctl_base, CTL_MODE, 0, v);
+```
+
+The hooks get the register the local was first read from or written to
+(`pssc.targets.reg_value_locals.bind`); only its layout may be relied on.
+A local bound to two layouts, never read or written, or used whole anywhere
+else (an argument, a return value) is refused at its line.
+
+**Leaving the object out** -- operations only, `static` ones declared in
+the `.c` alone -- needs no `emit_impl` override. It is `linkage`, above, the
+lifecycle pair, returned empty, and three sections removed by name (`sections.remove` raises on a name that does not
 exist, so an upstream rename cannot silently undo it):
 
 ```python
@@ -463,8 +557,8 @@ declares is used and never defined, and its enum items keep their PSS names:
 The proof is differential, as above, and also DRIVEN: `tests/unit/test_hal_fixture.py`
 runs every exported function through `op-model-c`'s output and through the
 fixture's against one tracing memory, and requires the same bus trace. A
-wrong offset, a lost field or an extra access fails there, and a snapshot
-can see none of them. The check is run on broken output too, so it is known
+wrong offset, a lost field, an extra access or a read moved out of its
+place fails there, and a snapshot can see none of them. The check is run on broken output too, so it is known
 to fail when it should:
 
 ```python
@@ -472,7 +566,23 @@ to fail when it should:
 @pytest.mark.parametrize("mutate", [
     _edit("dev_map.h", "#define CTL_LEN_STRIDE 0x8u", "#define CTL_LEN_STRIDE 0x4u"),
     _edit("dev.c", "    DEV_FIELD_SET(CTL_MODE, en, (1), data);\n", ""),
-], ids=["wrong-stride", "lost-field"])
+    # A loop test read once, before the loop, instead of on each pass.
+    _edit("dev.c", "    while (1) {\n"
+                   "        uint32_t _pss_rd0;\n"
+                   "        DEV_READ32_INTO(sts_base, STS_STAT, 0, _pss_rd0);\n",
+          "    uint32_t _pss_rd0;\n"
+          "    DEV_READ32_INTO(sts_base, STS_STAT, 0, _pss_rd0);\n"
+          "    while (1) {\n"),
+    # `a && b` with b read whether or not a holds.
+    _edit("dev.c", "    if (_pss_and1) {\n        uint32_t _pss_rd2;",
+          "    if (1) {\n        uint32_t _pss_rd2;"),
+    # The else-if testing the first read's value instead of reading again.
+    _edit("dev.c", "        uint32_t _pss_rd3;\n"
+                   "        DEV_READ32_INTO(sts_base, STS_STAT, 0, _pss_rd3);\n"
+                   "        if (DEV_FIELD_GET(STS_STAT, count, _pss_rd3) == 0)",
+          "        if (DEV_FIELD_GET(STS_STAT, count, _pss_rd0) == 0)"),
+], ids=["wrong-stride", "lost-field", "loop-read-once", "and-not-short",
+        "else-if-no-read"])
 def test_the_trace_sees_what_a_snapshot_cannot(hal, tmp_path, mutate):
     """The check above, run on broken output: it must fail, or it is not
     checking."""
@@ -555,6 +665,12 @@ from pssc.targets.reg_layout import collect_accessors
 for acc in collect_accessors(comp_dtype):
     ...   # acc.path, acc.const_off, acc.strides, acc.access, acc.prim_bits
 ```
+
+To name a register or a field from the model's own annotations, read them off
+the declarations: `acc.decl` is the register instance's field, and each of
+`acc.fields` has a `decl`, the value struct's field, so
+`annotations.of(acc.decl, "my_pkg::sym_s")` works on either. Whose spelling is
+authoritative is the backend's choice; pssc does not decide it.
 
 An address is the one thing in a generated programming API that a golden
 snapshot cannot check — it looks equally plausible either way — so two backends
@@ -725,6 +841,25 @@ rule.
 
 ---
 
+## Declaring what statements and locals you refuse
+
+A derived target that takes a subset of what its ancestor renders says so
+on the class, `{name: reason}`, rather than filtering bodies itself. Each
+node of a rendered body of such a kind (an IR class name: `"StmtMatch"`,
+`"StmtRepeatWhile"`, ...), and each local declared with a type of such a
+kind (`"DataTypeStruct"`, ...), is refused at its PSS line with the reason,
+before any file is written:
+
+```python
+    unsupported_kinds = {"StmtRepeatWhile": "the HAL does not poll"}
+    unsupported_local_types = {"DataTypeStruct": "locals are words"}
+```
+
+It is the `body_kinds` pre-screen (`check_body_kinds`), so the refusal
+reads like every other "is not lowered to C" diagnostic.
+
+---
+
 ## Declaring what calls you can lower
 
 If your target can lower something beyond the common set — or explicitly cannot
@@ -742,9 +877,16 @@ Register from the target's `__init__` rather than at module scope: import
 happens once per process, construction happens once per registration, and it is
 the second that must stay in step with what the target can render.
 
-You may **add** to the common tier; you may never shrink it. A target that
-cannot render a common-tier call is not a style — it is a different backend, and
-`assert_common_tier` will say so. To declare a call unsupported, give the reason
+You may **add** to the common tier; you shrink it only by declaring a **subset
+target**. A target that cannot render a common-tier call is not a style — it is
+a different backend, and `register_extension` refuses the entry and
+`assert_common_tier` fails, unless the target says so: pass `subset=True` to
+`register_extension` (or set `legality_subset = True` on an `OpModelTarget` with
+`derives_from`), and give each narrowed common call a non-blank reason.
+`classify` then refuses the call with that reason, `subset_of_common(target)`
+lists the narrowed names, and `assert_common_tier` holds the target to the rest.
+A target inheriting from a subset carries its narrowing; an entry of its own
+that supports the call lifts it. To declare a call unsupported, give the reason
 in the entry; it is printed to the model author, so make it a sentence they can
 act on. `pssc.targets.call_legality` is where the tiers and the dispositions
 are declared.

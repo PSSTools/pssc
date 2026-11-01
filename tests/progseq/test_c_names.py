@@ -184,3 +184,56 @@ def test_a_style_whose_enumerators_clash_is_refused(tmp_path):
         _check(tmp_path, _Verbatim())
     assert ("'A' is both item 'A' of enum 'dir_e' and item 'A' of enum "
             "'op_e'") in diagnostic_text(ei)
+
+
+# -- signature parameters --------------------------------------------------------
+#
+# A backend's `signature` may rename an operation's parameters. A name it
+# gives that C refuses, that two parameters share, or that hides a local or a
+# type of the body is refused before any file is written.
+
+_PARAMS = """
+struct cfg_s { bit[8] v; }
+component pss_top {
+  target function bit[32] f(bit[32] a, bit[32] b) {
+    bit[32] t = a;
+    return t + b;
+  }
+  target function void run() { }
+}"""
+
+
+def _param_check(tmp_path, rename):
+    class Renaming(COpModelBackend):
+        def signature(self, fn, ctx):
+            ret, name, params = super().signature(fn, ctx)
+            return ret, name, [(ty, rename.get(p, p)) for ty, p in params]
+
+    p = tmp_path / "m.pss"
+    p.write_text(th._PRELUDE + _PARAMS)
+    tgt = targets.get("op-model-c")
+    ctx = driver.translate([str(p)], prelude=tgt.prelude(argparse.Namespace()))
+    model = om.elaborate(ctx, ctx.type_map["pss_top"], tmp_path / "out")
+    s = CSettings(prefix="pss_top", seam_include="pssc_mem_vtable.h")
+    be = Renaming()
+    be.prepare(model, s)
+    c_names.check(be, model, s)
+    return c_names.parameter_clashes(be, model, s)
+
+
+def test_the_default_signature_has_no_parameter_clash(tmp_path):
+    assert _param_check(tmp_path, {}) == []
+
+
+@pytest.mark.parametrize("rename,says", [
+    ({"a": "t"}, "parameter 't' of operation 'pss_top.f' is also a local"),
+    ({"a": "b"}, "operation 'pss_top.f' has two parameters named 'b'"),
+    ({"a": "while"}, "is a C keyword"),
+    ({"a": "__a"}, "reserved by C"),
+    ({"a": "pss_top"}, "hides component type"),
+])
+def test_a_signature_parameter_that_clashes_is_refused(tmp_path, rename, says):
+    with pytest.raises(CompileError) as ei:
+        _param_check(tmp_path, rename)
+    assert "parameter name(s)" in str(ei.value)
+    assert says in diagnostic_text(ei)

@@ -2,6 +2,7 @@
 package:
   name: pssc
   version: 0.0.1
+  default-dep-set: dev
 
   dep-sets:
   - name: use

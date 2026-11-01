@@ -58,6 +58,19 @@ def _lower_pss_call(ctx, func_attr: str, args) -> str:
 _DECL = "\x00decl:"
 
 
+def _reg_read_call(ctx, value):
+    """Return the lowered `<path>.read`/`<path>.read_val` callee when *value*
+    is an argument-less register read in a model using pssc_reg_pkg, else None."""
+    if not getattr(ctx, "uses_reg_model", False):
+        return None
+    if not isinstance(value, ir.ExprCall) or value.args:
+        return None
+    func = value.func
+    if not isinstance(func, ir.ExprAttribute) or func.attr not in ("read", "read_val"):
+        return None
+    return f"{lower_expr(ctx, func.value)}.{func.attr}"
+
+
 def lower_stmts(ctx: LoweringContext, stmts: List[ir.Stmt]) -> List[str]:
     """Lower a list of IR statements -- one block -- to SV statement strings.
 
@@ -164,6 +177,12 @@ def _lower_stmt(ctx: LoweringContext, stmt: ir.Stmt) -> List[str]:
         return lines
 
     if isinstance(stmt, ir.StmtAssign):
+        reg_read = _reg_read_call(ctx, stmt.value)
+        if reg_read is not None:
+            # reg_c read()/read_val() are tasks with an output argument (a
+            # front-door access consumes time): `x = r.read_val();` ->
+            # `r.read_val(x);`. Name-matched, as in lower_progseq.
+            return [f"{reg_read}({lower_expr(ctx, t)});" for t in stmt.targets]
         val = lower_expr(ctx, stmt.value)
         targets = [lower_expr(ctx, t) for t in stmt.targets]
         return _lower_assign(ctx, targets, val)

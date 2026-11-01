@@ -611,6 +611,48 @@ cover (condition_expr);
 
 ---
 
+## Register Models (`addr_reg_pkg`)
+
+`sv-native` lowers `reg_c<R, ACC, SZ>` / `reg_group_c` using the shared runtime
+`pssc_reg_pkg.sv` (also used by `sv-progseq`).
+
+- **Types.** Each register is a `reg_c #(R, ACC, SZ)` (user subtypes extend it);
+  each register group becomes a class built with `new(pss_mem_if bus, base)`.
+  Struct-typed `R` is packed/unpacked LSB-first (first field at bit 0).
+- **Access.** `r.write_val(v)`, `r.write(s)`, `x = r.read_val()` and `s = r.read()`
+  lower to `reg_c` tasks (`write_val(bit[SZ-1:0])`, `write(R)`,
+  `read_val(output bit[SZ-1:0])`, `read(output R)`).
+- **Addresses.** `regs.set_handle(addr)` in a component `exec init_down` sets the
+  group base. Offsets come from `get_offset_of_instance()` /
+  `get_offset_of_instance_array()` and are resolved at compile time; nested groups
+  and several instances of one group type are supported.
+- **Bus hooks.** When a model uses registers, `import_api_if` gains:
+
+  ```systemverilog
+  pure virtual task reg_write(bit [63:0] addr, bit [63:0] data, int size);
+  pure virtual task reg_read(bit [63:0] addr, output bit [63:0] data, int size);
+  ```
+
+  `size` is in bytes; `data` is always 64 bits wide (low `size*8` bits used).
+  A generated `pss_reg_bus_adapter` (implements `pss_mem_if`) forwards every
+  register access to these hooks; `create(imp_if)` binds it to `imp_if`.
+  `import_api_base` stubs them with `$fatal`, so override both.
+- **Access modes.** A write to a `READONLY` register or a read of a `WRITEONLY`
+  register reports `$error` at run time and skips the bus access. (No
+  compile-time diagnostic yet.)
+
+Known gaps:
+
+- A register read must be the whole right-hand side of an assignment; a read
+  inside a larger expression, or a discarded `r.read_val();`, is not lowered.
+- Register groups in a nested sub-component get an adapter that is not bound to
+  `imp_if` (access fails with `$fatal`); put groups on the root component.
+- The legacy (non-OO API) projection does not emit `pss_reg_bus_adapter`.
+- Other statements in component `exec init_down` (besides `set_handle`) are dropped.
+- Icarus 12 cannot compile the generated `zsp_rt_pkg.sv` (`semaphore`); use Verilator.
+
+---
+
 ## Constraint Solving Strategy
 
 The backend uses a three-tier strategy, applied per action based on what types of fields and constraints are present:

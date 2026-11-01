@@ -61,6 +61,50 @@ class ExportAction:
 
 # Names of the generated interface classes / factory / impl (fixed).
 IMPORT_API_IF = "import_api_if"
+REG_BUS_ADAPTER = "pss_reg_bus_adapter"
+REG_BUS_FIELD = "reg_bus"
+
+
+def _reg_bus_hooks():
+    """``(name, args)`` of the register-bus hooks added to import_api_if when
+    the model uses registers (``addr_reg_pkg``).  Data is always 64 bits;
+    ``size`` is the access width in bytes."""
+    return [
+        ("reg_write", [SVArg(name="addr", dtype="bit [63:0]"),
+                       SVArg(name="data", dtype="bit [63:0]"),
+                       SVArg(name="size", dtype="int")]),
+        ("reg_read", [SVArg(name="addr", dtype="bit [63:0]"),
+                      SVArg(name="data", dtype="bit [63:0]", direction="output"),
+                      SVArg(name="size", dtype="int")]),
+    ]
+
+
+def _uses_regs(ctx) -> bool:
+    return bool(getattr(ctx, "uses_reg_model", False))
+
+
+def _lower_reg_bus_adapter() -> SVClass:
+    """``pss_reg_bus_adapter``: the ``pss_mem_if`` the reg_c runtime talks to,
+    forwarding every access to ``import_api_if.reg_write/reg_read``.  A
+    component holding register groups creates one in its constructor; the
+    export-API impl binds ``m_imp`` once the import handle is known."""
+    cls = SVClass(name=REG_BUS_ADAPTER, implements=["pss_mem_if"])
+    cls.fields.append(SVClassField(name="m_imp", dtype=IMPORT_API_IF))
+    chk = f'if (m_imp == null) $fatal(1, "{REG_BUS_ADAPTER}: no import_api_if bound");'
+    for w in (8, 16, 32, 64):
+        cls.tasks.append(SVTaskDecl(
+            name=f"write{w}", is_virtual=True,
+            args=[SVArg(name="addr", dtype="addr_handle_t"),
+                  SVArg(name="data", dtype=f"bit [{w-1}:0]")],
+            body_lines=[chk, f"m_imp.reg_write(addr, 64'(data), {w // 8});"]))
+        cls.tasks.append(SVTaskDecl(
+            name=f"read{w}", is_virtual=True,
+            args=[SVArg(name="addr", dtype="addr_handle_t"),
+                  SVArg(name="data", dtype=f"bit [{w-1}:0]", direction="output")],
+            body_lines=["bit [63:0] d;", chk,
+                        f"m_imp.reg_read(addr, d, {w // 8});",
+                        f"data = d[{w-1}:0];"]))
+    return cls
 IMPORT_API_BASE = "import_api_base"  # base impl with stubbed (fatal) methods
 EXPORT_API_IF = "export_api_if"
 FACTORY_IF = "factory_if"            # interface for the export-API factory
@@ -106,6 +150,8 @@ def _lower_import_api_if(ctx, import_funcs) -> SVInterfaceClass:
             tasks.append(SVTaskDecl(name=f.name, args=args))
         else:
             funcs.append(SVFunctionDecl(name=f.name, args=args, return_type=ret))
+    if _uses_regs(ctx):
+        tasks.extend(SVTaskDecl(name=n, args=a) for n, a in _reg_bus_hooks())
     return SVInterfaceClass(name=IMPORT_API_IF, tasks=tasks, functions=funcs)
 
 
@@ -131,6 +177,11 @@ def _lower_import_api_base(ctx, import_funcs) -> SVClass:
             cls.functions.append(SVFunctionDecl(
                 name=f.name, args=args, return_type=ret,
                 is_virtual=True, body_lines=body))
+    if _uses_regs(ctx):
+        for n, a in _reg_bus_hooks():
+            cls.tasks.append(SVTaskDecl(
+                name=n, args=a, is_virtual=True,
+                body_lines=[f'$fatal(1, "{n} not implemented");']))
     return cls
 
 
@@ -165,7 +216,8 @@ def _lower_factory_if() -> SVInterfaceClass:
 
 
 def _lower_export_api_impl(actions: List[ExportAction],
-                           has_imports: bool = False) -> SVClass:
+                           has_imports: bool = False,
+                           has_reg_bus: bool = False) -> SVClass:
     """Build ``export_api_impl`` implementing ``export_api_if``.
 
     The impl **is** the root component: it ``extends`` the root component class,
@@ -187,6 +239,8 @@ def _lower_export_api_impl(actions: List[ExportAction],
             # import_if is inherited from the root component class;
             # set_import_if hands it down the component tree.
             new_body.append("set_import_if(imp_if);")
+        if has_reg_bus:
+            new_body.append(f"{REG_BUS_FIELD}.m_imp = imp_if;")
         cls.functions.append(SVFunctionDecl(
             name="new",
             args=[SVArg(name="imp_if", dtype=IMPORT_API_IF)],
@@ -214,6 +268,8 @@ def _lower_export_api_impl(actions: List[ExportAction],
         body = [f'automatic {a.comp_sv} top = new("top", null);']
         if has_imports:
             body.append("top.set_import_if(m_imp);")
+        if has_reg_bus:
+            body.append(f"top.{REG_BUS_FIELD}.m_imp = m_imp;")
         body.extend(emit_root_action_lifecycle(a.action_sv, a.has_activity,
                                                 indent=""))
         cls.tasks.append(SVTaskDecl(name=a.task_name, body_lines=body))
@@ -343,6 +399,10 @@ def build_oo_api_nodes(
         ValueError: if a root component class is not found among *sv_nodes*.
     """
     if not actions:
+        if _uses_regs(ctx):
+            # components reference the adapter even with no export API
+            return [_lower_import_api_if(ctx, import_funcs),
+                    _lower_reg_bus_adapter()], []
         return [], []
 
     # Augment the root component class(es) referenced by the export actions.
@@ -357,12 +417,14 @@ def build_oo_api_nodes(
             f"OO projection: root component class(es) {sorted(missing)} not "
             f"found among generated SV nodes."
         )
-    has_imports = bool(import_funcs)
+    has_imports = bool(import_funcs) or _uses_regs(ctx)
+    has_reg_bus = False
     if has_imports and ctx is not None:
         _wire_import_if(sv_nodes, ctx)
     for n in sv_nodes:
         if isinstance(n, SVClass) and n.name in root_comp_names:
             _augment_root_factory(n)
+            has_reg_bus |= any(f.name == REG_BUS_FIELD for f in n.fields)
             # Give the root component a handle to the import API so action
             # exec bodies can reach it via comp.import_if.<fn>(...).
             if has_imports and not any(f.name == "import_if" for f in n.fields):
@@ -377,6 +439,8 @@ def build_oo_api_nodes(
                     body_lines=["import_if = imp;"]))
 
     prefix = [_lower_import_api_if(ctx, import_funcs)]
+    if _uses_regs(ctx):
+        prefix.append(_lower_reg_bus_adapter())
     if has_imports:
         # base impl with stubbed (fatal) methods for the testbench to extend
         prefix.append(_lower_import_api_base(ctx, import_funcs))
@@ -384,6 +448,7 @@ def build_oo_api_nodes(
         _lower_export_api_if(actions),
         _lower_factory_if(),
     ])
-    suffix = [_lower_export_api_impl(actions, has_imports=has_imports)]
+    suffix = [_lower_export_api_impl(actions, has_imports=has_imports,
+                                     has_reg_bus=has_reg_bus)]
     suffix.extend(_lower_action_runners(actions))
     return prefix, suffix

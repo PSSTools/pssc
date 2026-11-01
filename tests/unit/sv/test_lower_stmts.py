@@ -178,3 +178,28 @@ class TestMultipleStmts:
         assert len(lines) == 2
         assert "x = 0;" in lines[0]
         assert "y = 1;" in lines[1]
+
+
+def _reg_read_assign(attr):
+    reg = ir.ExprAttribute(
+        value=ir.ExprAttribute(value=ir.TypeExprRefSelf(), attr="regs"),
+        attr="r0")
+    return ir.StmtAssign(
+        targets=[ir.ExprAttribute(value=ir.TypeExprRefSelf(), attr="v")],
+        value=ir.ExprCall(func=ir.ExprAttribute(value=reg, attr=attr), args=[]))
+
+
+@pytest.mark.parametrize("attr", ["read", "read_val"])
+def test_reg_read_lowers_to_task_output_arg(attr):
+    """With a register model, `v = regs.r0.read_val();` becomes a task call
+    whose output argument is the assignment target (reg_c reads are tasks)."""
+    ctx = LoweringContext()
+    ctx.uses_reg_model = True
+    lines = lower_stmt(ctx, _reg_read_assign(attr))
+    assert lines == [f"regs.r0.{attr}(v);"]
+
+
+def test_read_without_reg_model_stays_assignment():
+    ctx = LoweringContext()
+    lines = lower_stmt(ctx, _reg_read_assign("read_val"))
+    assert " = " in lines[0]

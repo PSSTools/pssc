@@ -9,7 +9,7 @@ Level 2), and everything in it goes through the published surface:
 
   * `handle_param` -> None, and `signature` from `OpModel.unpacked_signature`;
   * `CBodyEmitter.model_call`, so a call passes the callee's bases;
-  * the register hooks, for `DEV_READ32` / `DEV_FIELD_SET` / `DEV_WRITE32`;
+  * the register hooks, for `DEV_READ32_INTO` / `DEV_FIELD_SET` / `DEV_WRITE32`;
   * `linkage`, `static` for an operation the model does not export;
   * the lifecycle pair, left out: there is no object to construct;
   * `is_extern_type` and `seam_includes` on its style;

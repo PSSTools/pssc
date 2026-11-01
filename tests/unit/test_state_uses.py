@@ -226,3 +226,39 @@ component pss_top {
     assert m.state_uses(g).mem_accessed
     assert m.state_uses(g).executor_delegated
     assert not m.state_uses(_fn(m, "pss_top", "pure_math")).executor_delegated
+
+
+# --- PC-17: reachable functions, callee-first ---------------------------------
+
+def test_reachable_is_callee_first(model):
+    got = model.reachable([_fn(model, "top_c", "via_self"),
+                           _fn(model, "top_c", "counts")])
+    assert [f.name for f in got] == ["poll", "via_self", "bump", "counts"]
+
+
+def test_reachable_follows_sub_components_and_package_functions(model):
+    got = model.reachable([_fn(model, "top_c", "leaf_stat"),
+                           _fn(model, "top_c", "peeks"),
+                           _fn(model, "top_c", "waits")])
+    assert [f.name for f in got] == ["stat", "leaf_stat", "pkg_peek", "peeks",
+                                     "plat_delay", "waits"]
+
+
+def test_reachable_lists_a_shared_callee_once(model):
+    poll = _fn(model, "top_c", "poll")
+    got = model.reachable([poll, _fn(model, "top_c", "via_self"), poll])
+    assert [f.name for f in got] == ["poll", "via_self"]
+
+
+def test_reachable_filters_edges(model):
+    got = model.reachable([_fn(model, "top_c", "counts"),
+                           _fn(model, "top_c", "waits")],
+                          follow=lambda c: c.kind == "member" and c.path == ())
+    assert [f.name for f in got] == ["counts", "waits"]
+
+
+def test_recursion_is_refused_naming_the_cycle(model):
+    with pytest.raises(Refusal) as e:
+        model.reachable([_fn(model, "top_c", "ping")])
+    assert "`ping` -> `pong` -> `ping`" in str(e.value)
+    assert "m.pss:" in e.value.located()

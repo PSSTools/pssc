@@ -37,7 +37,7 @@ from ..progseq_model import (
 )
 from .lower_reg_model import (accessor_base, c_struct_name, _prim_bits,
                              map_type_name)
-from .c_names import BUS, HANDLE, RESERVED
+from .c_names import BUS, C_KEYWORDS as _C_KEYWORDS, HANDLE, RESERVED
 from .mem_access import DEFAULT as DEFAULT_MEM, MemAccess
 from .style import coerce as _style
 from ...diag import Refusal
@@ -55,6 +55,7 @@ from .. import group_binding
 from ..overridable import overridable
 from ..reg_layout import collect_accessors, resolve_access
 from ...reg_field_resolve import field_map
+from ...reg_rmw import field_writes
 from ..group_binding import group_fields
 from ..comments import BLOCK, blank_line, comment_lines, doc_block
 
@@ -69,15 +70,6 @@ _DT_CHANNEL = "DataTypeChannel"
 #: The C type every depth-1 channel lowers to, and its operations. One type for
 #: every element type -- see share/c/pssc_chan.h for why the payload is 64 bits.
 _CHAN_T = "pssc_chan1_t"
-
-# C reserved words that could collide with PSS identifiers (small, extend as needed).
-_C_KEYWORDS = frozenset({
-    "auto", "break", "case", "char", "const", "continue", "default", "do",
-    "double", "else", "enum", "extern", "float", "for", "goto", "if", "inline",
-    "int", "long", "register", "restrict", "return", "short", "signed", "sizeof",
-    "static", "struct", "switch", "typedef", "union", "unsigned", "void",
-    "volatile", "while", "bool",
-})
 
 
 def mangle(name: str) -> str:
@@ -262,6 +254,11 @@ def _c_unbracket(text: str) -> str:
             if depth == 0:
                 return text[1:-1] if i == len(text) - 1 else text
     return text
+
+
+def _same_struct(a, b) -> bool:
+    """Whether two `DataTypeStruct`s are one type (by qualified name)."""
+    return a is b or getattr(a, "name", None) == getattr(b, "name", 0)
 
 
 def _has_call(e) -> bool:
@@ -1517,6 +1514,29 @@ class CIntSemantics(IntSemantics):
         return IntSemantics.convert_to(self, e, target)
 
 
+class _LazyArgs:
+    """`LoweredRegAccess.args`: a tuple, or a no-argument callable that
+    renders it, run on the first read and kept. A composed masked write that
+    sets `RegAccess.fields` never reads the packed value and mask, so they
+    are never rendered (and cannot refuse)."""
+
+    def __set_name__(self, owner, name):
+        self.slot = "_" + name + "_v"
+
+    def __get__(self, obj, owner=None):
+        if obj is None:
+            # No class-level default: the dataclass field stays required.
+            raise AttributeError(self.slot)
+        v = obj.__dict__[self.slot]
+        if callable(v):
+            v = tuple(v())
+            object.__setattr__(obj, self.slot, v)
+        return v
+
+    def __set__(self, obj, v):
+        object.__setattr__(obj, self.slot, v)
+
+
 @dc.dataclass(frozen=True)
 class LoweredRegAccess:
     """A `reg_layout.RegAccess` in C: what `CBodyEmitter.reg_access` and the
@@ -1527,7 +1547,8 @@ class LoweredRegAccess:
     #: Each of the access's ``index_exprs``, rendered.
     indices: Tuple[str, ...]
     #: The arguments, rendered and converted to the register's width.
-    args: Tuple[str, ...]
+    #: Rendered on first read; `dc.replace(lw, args=(...))` sets them.
+    args: Tuple[str, ...] = _LazyArgs()
     #: The member path of the sub-components crossed (`sub[i].inner`), or
     #: None for a register of this component's own group.
     sub_path: Optional[str] = None
@@ -1558,6 +1579,18 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
 
     legality_target = "op-model-c"
     call_context = Ctx.TARGET
+
+    #: "statement" when the bodies were sequenced
+    #: (`OpModelTarget.reg_read_form`): a read that is a declaration's or a
+    #: local assignment's whole value is rendered by `reg_read_into`, never
+    #: as an initializer or a right-hand side. Set by the backend.
+    reg_read_form = "expression"
+
+    #: Whether a composed masked write may set a PART of a field through
+    #: `reg_value_field_set` (its ``mask`` then is not all of ``fs.mask``).
+    #: False: such a write is spelled by `reg_value_merge` from its mask and
+    #: value instead (`reg_rmw.field_writes`). The default hook masks.
+    partial_field_writes = True
 
     def __init__(self, fn, comp, prefix: str, reg_style: str = "bitfields",
                  yield_mode: str = "none", match_default: str = "message",
@@ -1876,12 +1909,11 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             # any argument to a `bit[N]` parameter; a value struct is passed
             # whole.
             val_t = PssType("int", acc.value_bits, False)
-            args = [self.convert_to(a, val_t) for a in call.args]
             want = _REG_ACCESSORS[func.attr]
-            if len(args) != want:
+            if len(call.args) != want:
                 raise ValueError(
                     f"register method '{func.attr}' takes {want} argument(s), "
-                    f"got {len(args)}")
+                    f"got {len(call.args)}")
             ra = resolve_access(self.comp, call,
                                 getattr(self.ctx, "type_map", None),
                                 accessors=self._accessors_of)
@@ -1891,7 +1923,9 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
                     f"register access to the C emitter and not to "
                     f"reg_layout.resolve_access")
             return ra, LoweredRegAccess(acc=acc, indices=indices,
-                                        args=tuple(args), sub_path=sub_path,
+                                        args=lambda: [self.convert_to(a, val_t)
+                                                      for a in call.args],
+                                        sub_path=sub_path,
                                         _chain=chain)
 
         raise ValueError(
@@ -1955,19 +1989,155 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
     @overridable(since='0.3', stability='provisional')
     def reg_value_local(self, ra, lw: "LoweredRegAccess") -> Tuple[str, str]:
         """``(C type, name)`` of the local a composed masked write reads the
-        register into. Declared once, at the top of the function; two
-        composed writes asking for one name share the local when the types
-        agree. The default is the register's transaction width."""
+        register into. Declared where `reg_value_local_scope` says: by
+        default once, at the top of the function, where two composed writes
+        asking for one name share the local when the types agree. Its C
+        type is also the declared type of a value-struct local held as the
+        word (`_value_local`; the name is then the local's). The default
+        is the register's transaction width."""
         return f"uint{lw.acc.prim}_t", "_pss_reg"
+
+    @overridable(since='0.3', stability='provisional')
+    def reg_value_local_scope(self, ra, lw: "LoweredRegAccess") -> str:
+        """Where a composed masked write declares its locals (the
+        `reg_value_local` word and the `_pss_fv<i>` field-value temps):
+        ``"function"``, once at the top of the function (the default), or
+        ``"block"``, in a ``{ }`` block of its own around the write's
+        statements, so each write's locals end with it. A block's locals
+        shadow any of the function's of the same name, which a field value
+        of the write must then not name."""
+        return "function"
 
     @overridable(since='0.3', stability='provisional')
     def reg_read_into(self, ra, lw: "LoweredRegAccess", local: str) -> str:
         """The statement (without its `;`) that reads the register into
-        ``local``: the first step of a composed masked write. It must read
-        (PSS 3.1 §21.14.1); the default is ``local = <read_val>``."""
-        rd = self.reg_access(dc.replace(ra, method="read_val", args=()),
-                             dc.replace(lw, args=()))
-        return f"{local} = {rd}"
+        ``local``: the first step of a composed masked write, and, under
+        ``reg_read_form = "statement"``, every read the model makes. It
+        must read (PSS 3.1 §21.14.1). ``ra.method`` is the read's (`read`,
+        `read_val`); for a composed write it is the write's, and the read
+        is a `read_val`. The default is ``local = <read>``."""
+        if ra.method not in ("read", "read_val"):
+            ra, lw = (dc.replace(ra, method="read_val", args=()),
+                      dc.replace(lw, args=()))
+        return f"{local} = {self.reg_access(ra, lw)}"
+
+    def _read_into(self, local: str, value, target, pad: str
+                   ) -> Optional[List[str]]:
+        """``local = value`` as `reg_read_into` when ``value`` is a whole
+        register read and the reads are statements; else None. A read the
+        target type converts is read into the register's own local first."""
+        if self.reg_read_form != "statement" or _dt_name(value) != "ExprCall":
+            return None
+        parts = self._reg_parts(value)
+        if parts is None or parts[0].method not in ("read", "read_val"):
+            return None
+        rd, conv = self.reg_access(*parts), self.convert_to(value, target)
+        if conv == rd:
+            return [f"{pad}{self.reg_read_into(*parts, local)};"]
+        if conv.count(rd) != 1:
+            raise ValueError(f"internal error: the conversion of '{rd}' "
+                             f"to '{local}' is '{conv}'")
+        t = self.function_local(*self.reg_value_local(*parts))
+        return [f"{pad}{self.reg_read_into(*parts, t)};",
+                f"{pad}{local} = {conv.replace(rd, t)};"]
+
+    def _read_word(self, s, name: str, pad: str) -> Optional[List[str]]:
+        """The sequencing pass's local for a value-struct `read()`
+        (`effect_seq.TEMP`) when the target spells that read as the
+        register's word (`reg_access` gives `read()` and `read_val()` one
+        spelling, so it has no value struct in C): held as the word,
+        declared as `reg_value_local`'s type and read by `reg_read_into`,
+        so a field of it is `reg_value_field_get` -- as it is of the read
+        in expression form. None for any other declaration, which is then
+        a local of the value struct."""
+        from ..effect_seq import TEMP
+        if self.reg_read_form != "statement" or \
+                not getattr(s, TEMP, False) or \
+                _dt_name(s.value) != "ExprCall":
+            return None
+        parts = self._reg_parts(s.value)
+        if parts is None or parts[0].method != "read" or \
+                parts[0].accessor.value_struct is None:
+            return None
+        rd = self.reg_access(*parts)
+        if rd != self.reg_access(dc.replace(parts[0], method="read_val"),
+                                 parts[1]):
+            return None
+        whole = self.convert_to(s.value, self.types.of_datatype(s.annotation))
+        if whole.count(rd) != 1:
+            raise ValueError(f"internal error: the conversion of '{rd}' "
+                             f"to '{name}' is '{whole}'")
+        self._words = getattr(self, "_words", {})
+        self._words[name] = (parts, whole.replace(rd, name))
+        return [f"{pad}{self.reg_value_local(*parts)[0]} {name};",
+                f"{pad}{self.reg_read_into(*parts, name)};"]
+
+    def _word(self, e):
+        """``(parts, whole)`` when ``e`` names a `_read_word` local or a
+        word-held value local (`_value_local`)."""
+        if _dt_name(e) != "ExprRefLocal":
+            return None
+        vl = self._value_local(e)
+        if vl is not None:
+            return vl, self.arg_rename.get(e.name) or mangle(e.name)
+        return getattr(self, "_words", {}).get(
+            self.arg_rename.get(e.name) or mangle(e.name))
+
+    def _word_spelled(self, parts) -> bool:
+        """Whether the target spells this register's `read()` as its word:
+        `reg_access` gives `read()` and `read_val()` one spelling."""
+        ra, lw = (dc.replace(parts[0], args=()), dc.replace(parts[1], args=()))
+        return ra.accessor.value_struct is not None and \
+            self.reg_access(dc.replace(ra, method="read"), lw) == \
+            self.reg_access(dc.replace(ra, method="read_val"), lw)
+
+    def _value_local(self, e):
+        """The binding access ``(RegAccess, LoweredRegAccess)`` when ``e``
+        names a local of a register's value struct that the target holds as
+        the register's word (`_word_spelled`), else None. Bound once per
+        function by `reg_value_locals.bind`, on first use (the indices
+        render through the emitter); only its accessor and layout may be
+        relied on."""
+        if _dt_name(e) != "ExprRefLocal":
+            return None
+        if "_value_locals" not in self.__dict__:
+            self._value_locals = self._bind_value_locals()
+        lb = self._value_locals.get(e.name)
+        return None if lb is None else lb.access
+
+    def _bind_value_locals(self):
+        if self.reg_read_form != "statement":
+            return {}
+        from ..effect_seq import TEMP
+        from ..ir_walk import walk
+        from ..reg_value_locals import bind
+
+        def access_of(call):
+            f = call.func
+            if _dt_name(f) != "ExprAttribute" or f.attr not in ("read",
+                                                                 "write"):
+                return None
+            parts = self._reg_parts(call)
+            return None if parts is None else (parts, f.attr)
+
+        # The value structs whose registers the body reads or writes and
+        # the target spells as words: a local of one is word-held.
+        words = []
+        for n in walk(self.fn.body):
+            if _dt_name(n) == "ExprCall":
+                acc = access_of(n)
+                if acc is not None and self._word_spelled(acc[0]):
+                    words.append(acc[0][0].accessor.value_struct)
+
+        def candidate(s) -> bool:
+            return not getattr(s, TEMP, False) and \
+                _dt_name(s.annotation) == _DT_STRUCT and \
+                any(_same_struct(s.annotation, w) for w in words)
+
+        def same_layout(a, b) -> bool:
+            return a[0].accessor.value_struct is b[0].accessor.value_struct \
+                and a[1].acc.prim == b[1].acc.prim
+        return bind(self.fn.body, access_of, candidate, same_layout)
 
     @overridable(since='0.3', stability='provisional')
     def reg_value_field_set(self, local: str, fs, value: str, ra,
@@ -1977,7 +2147,10 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         named (`ra.fields`), in source order. ``value`` is as the model
         wrote it, NOT narrowed to the field; ``mask`` is the register bits
         written for this field (all of ``fs.mask`` unless the source masked
-        it), and only those may change."""
+        it), and only those may change. Also a field set of a value-struct
+        local held as the word (`_value_local`): ``ra``/``lw`` are then the
+        register it was bound to, of which only the layout may be relied
+        on."""
         ct = self.reg_value_local(ra, lw)[0]
         bits = lw.acc.prim
         return (f"{local} = ({local} & ~{_c_word(mask, bits)}) | "
@@ -1994,7 +2167,8 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
     @overridable(since='0.3', stability='provisional')
     def reg_write_from(self, ra, lw: "LoweredRegAccess", local: str) -> str:
         """The statement (without its `;`) that writes ``local`` to the
-        register: the last step of a composed masked write. The default is
+        register: the last step of a composed masked write, and `r.write(v)`
+        of a value-struct local held as the word. The default is
         `reg_access` of a `write_val`."""
         return self.reg_access(dc.replace(ra, method="write_val", args=()),
                                dc.replace(lw, args=(local,)))
@@ -2004,7 +2178,8 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
                             lw: "LoweredRegAccess") -> str:
         """Field ``fs`` (a `FieldSlice`) of a register's value read whole
         (`regs.r.read().f`), as an expression. ``value`` is the read,
-        rendered by `reg_access`. The default names the value union's
+        rendered by `reg_access`, or the local holding it as the word (a
+        statement-form read's, or a value-struct local's). The default names the value union's
         member, `<value>.f`."""
         return f"{value}.{fs.name}"
 
@@ -2020,6 +2195,58 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         locs[name] = ctype
         return name
 
+    def fresh_local(self, stem: str, ctype: str, scope: str = "block") -> str:
+        """A new local's name: ``stem``, or ``stem`` and a number, which is
+        none of the names the function's body can see -- a local or loop
+        variable of the model's (as `mangle` spells it), a parameter (as
+        the backend's `signature` names it), the handle, an operation's or
+        an import's C name -- nor one `fresh_local` or `function_local`
+        already gave, and which `c_names.check_identifier` passes.
+
+        ``scope="block"``: the caller declares it, in the block it uses it
+        in. ``scope="function"``: it is declared at the top of the function
+        (`function_local_lines`), never shared with another request."""
+        from .c_names import check_identifier
+        if scope not in ("block", "function"):
+            raise ValueError(f"fresh_local scope '{scope}' is not 'block' "
+                             f"or 'function'")
+        taken = self._visible_names()
+        name, n = stem, 1
+        while name in taken:
+            name = f"{stem}_{n}"
+            n += 1
+        check_identifier(name)
+        self._fresh_taken.add(name)
+        if scope == "function":
+            self.__dict__.setdefault("_fn_locals", {})[name] = ctype
+        return name
+
+    def _visible_names(self) -> Set[str]:
+        """The names `fresh_local` must not take, gathered once per body
+        (each name it gives is added)."""
+        if "_fresh_taken" in self.__dict__:
+            return self._fresh_taken | set(self.__dict__.get("_fn_locals", ()))
+        from ..ir_walk import walk
+        taken = {HANDLE, BUS}
+        for n in walk(getattr(self.fn, "body", None) or []):
+            nm = getattr(n, "name", None)
+            if isinstance(nm, str) and type(n).__name__.startswith("ExprRef"):
+                taken.add(mangle(nm))
+            for f in ("target", "index_var", "iter_var"):
+                v = getattr(n, f, None)
+                nm = getattr(v, "name", None) or getattr(v, "id", None)
+                if isinstance(nm, str):
+                    taken.add(mangle(nm))
+        taken |= {mangle(a) for a in self.arg_names}
+        taken |= {mangle(i) for i in self.imports}
+        ctx = self.op_ctx
+        if ctx is not None:
+            api = ctx.op_api
+            taken |= {p for _, p in api.signature(self.fn, ctx)[2]}
+            taken |= {api.signature(f, ctx)[1] for f in self.comp.functions}
+        self._fresh_taken = taken
+        return taken | set(self.__dict__.get("_fn_locals", ()))
+
     def function_local_lines(self, ind: int) -> List[str]:
         """The declarations `function_local` gathered, for the top of the
         function body."""
@@ -2028,18 +2255,47 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
                 for nm, ct in self.__dict__.get("_fn_locals", {}).items()]
 
     def _composed_masked_write(self, ra, lw, ind: int) -> List[str]:
+        scope = self.reg_value_local_scope(ra, lw)
+        if scope not in ("function", "block"):
+            raise ValueError(f"reg_value_local_scope gave '{scope}', not "
+                             f"'function' or 'block'")
+        decls = []                      # the block's, in declaration order
+
+        def local(ctype: str, nm: str) -> str:
+            if scope == "function":
+                return self.function_local(ctype, nm)
+            decls.append(f"{ctype} {nm}")
+            return nm
+
         ct, name = self.reg_value_local(ra, lw)
-        t = self.function_local(ct, name)
-        out = [self.reg_read_into(ra, lw, t)]
-        if ra.fields:
-            for fw in ra.fields:
+        t = local(ct, name)
+        fields = field_writes(ra.fields, self.partial_field_writes)
+        # A field value with a call runs before the register is read, in
+        # source order, as the model's one write would have run it: each is
+        # first a temp at the field's width (the width it is written at).
+        out, vals = [], []
+        for i, fw in enumerate(fields or ()):
+            if not _has_call(fw.value):
+                vals.append(self.expr(fw.value))
+                continue
+            ft = PssType("int", fw.slice.width, False)
+            v = local(f"uint{_prim_bits(fw.slice.width)}_t", f"_pss_fv{i}")
+            out.append(f"{v} = {self.convert_to(fw.value, ft)}")
+            vals.append(v)
+        out.append(self.reg_read_into(ra, lw, t))
+        if fields:
+            for fw, val in zip(fields, vals):
                 out.append(self.reg_value_field_set(
-                    t, fw.slice, self.expr(fw.value), ra, lw, fw.mask))
+                    t, fw.slice, val, ra, lw, fw.mask))
         else:
             out.append(self.reg_value_merge(t, lw.args[0], lw.args[1], ra, lw))
         out.append(self.reg_write_from(ra, lw, t))
         pad = self.pad(ind)
-        return [f"{pad}{x};" for x in out]
+        if scope == "function":
+            return [f"{pad}{x};" for x in out]
+        inner = self.pad(ind + 1)
+        return [f"{pad}{{"] + [f"{inner}{x};" for x in decls + out] + \
+            [f"{pad}}}"]
 
     def _reg_path(self, chain, base_expr: Optional[str] = None,
                  base_is_ptr: bool = True) -> str:
@@ -2209,6 +2465,9 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
 
     def expr_ref_local(self, e) -> str:
         # A local is renamed as a parameter is: `int char;` does not compile.
+        word = self._word(e)
+        if word is not None:
+            return word[1]      # a register word, used whole
         return self.arg_rename.get(e.name) or mangle(e.name)
 
     def expr_attribute(self, e) -> str:
@@ -2237,6 +2496,15 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             if sf is not None:
                 ct, local, field = sf
                 return f"{ct}_{field}_get({local})"
+        word = self._word(base)
+        if word is not None:
+            parts = word[0]
+            tm = getattr(self.ctx, "type_map", None) or {}
+            fs = field_map(parts[0].accessor.dtype, tm.get).get(e.attr)
+            if fs is not None:
+                return self.reg_value_field_get(
+                    self.arg_rename.get(base.name) or mangle(base.name), fs,
+                    *parts)
         if _dt_name(base) == "ExprCall" and \
                 _dt_name(base.func) == "ExprAttribute" and \
                 base.func.attr == "read":
@@ -2777,7 +3045,26 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             # Each element its type's default (LRM 8.1); `{0}` zeroes all.
             init = _default_init(s.annotation, self.enums) or "{0}"
             return [f"{pad}{decl} = {init};"] + tail
+        vl = self._value_local(s.target)
+        if vl is not None:
+            if getattr(s, "value", None) is None and \
+                    _default_init(s.annotation, self.enums) is not None:
+                raise Refusal(
+                    f"local '{s.target.name}' is held as its register's "
+                    f"word, which has no spelling for the value struct's "
+                    f"non-zero defaults; initialize it from a read", s)
+            init = ([] if getattr(s, "value", None) is None
+                    else self._word_assign(name, s.value, pad))
+            return ([f"{pad}{self.reg_value_local(*vl)[0]} {name}"
+                     f"{'' if init else ' = 0'};"] + init + tail)
         if getattr(s, "value", None) is not None:
+            word = self._read_word(s, name, pad)
+            if word is not None:
+                return word
+            rd = self._read_into(name, s.value,
+                                 self.types.of_datatype(s.annotation), pad)
+            if rd is not None:
+                return [f"{pad}{ct} {name};"] + rd + tail
             value = self.convert_to(s.value,
                                     self.types.of_datatype(s.annotation))
             return [f"{pad}{ct} {name} = {value};"] + tail
@@ -2798,9 +3085,34 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             return [f"{pad}{ct} {name} = {init};"] + tail
         return [f"{pad}{ct} {name};"] + tail
 
+    def _word_assign(self, name: str, value, pad: str) -> List[str]:
+        """A word-held value local assigned whole: from a register's read
+        (`reg_read_into`, that read's own register) or from another such
+        local (`reg_value_locals.bind` allows nothing else)."""
+        if _dt_name(value) == "ExprCall":
+            return [f"{pad}{self.reg_read_into(*self._reg_parts(value), name)};"]
+        return [f"{pad}{name} = {self.expr(value)};"]
+
+    def _word_field(self, tgt):
+        """``(local, FieldSlice, parts)`` when ``tgt`` is a field of a
+        word-held value local, else None."""
+        if _dt_name(tgt) != "ExprAttribute":
+            return None
+        vl = self._value_local(tgt.value)
+        if vl is None:
+            return None
+        tm = getattr(self.ctx, "type_map", None) or {}
+        fs = field_map(vl[0].accessor.dtype, tm.get).get(tgt.attr)
+        if fs is None:
+            raise ValueError(f"internal error: '{tgt.attr}' is not a field "
+                             f"of register '{vl[0].accessor.name}'")
+        return self.expr(tgt.value), fs, vl
+
     def stmt_assign(self, s, ind: int) -> List[str]:
         pad = self.pad(ind)
         tgt = s.targets[0]
+        if self._value_local(tgt) is not None:
+            return self._word_assign(self.expr(tgt), s.value, pad)
         tt = self.types.type_of(tgt)
         if tt is not None and tt.kind == "array":
             return self._array_assign(self.expr(tgt), s.value, tt.dtype, pad,
@@ -2810,11 +3122,21 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             tgt, value = sel.base, self._select_assign_value(sel, s.value)
         else:
             value = self.convert_to(s.value, self.types.type_of(tgt))
+        wf = self._word_field(tgt)
+        if wf is not None:
+            local, fs, vl = wf
+            return [f"{pad}"
+                    f"{self.reg_value_field_set(local, fs, value, *vl, fs.mask)};"]
         if self.reg_style == "accessors":
             sf = self._struct_field(tgt)
             if sf is not None:
                 ct, local, field = sf
                 return [f"{pad}{ct}_{field}_set(&{local}, {value});"]
+        if sel is None:
+            rd = self._read_into(self.expr(tgt), s.value,
+                                 self.types.type_of(tgt), pad)
+            if rd is not None:
+                return rd
         return [f"{pad}{self.expr(tgt)} = {value};"]
 
     def _array_assign(self, dst: str, value, dtype, pad: str,
@@ -2875,8 +3197,10 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
                 f"unsupported augmented-assign op {s.op.name}")
         pad = self.pad(ind)
         whole = ir.ExprBin(lhs=s.target, op=s.op, rhs=s.value)
-        if bit_select(s.target, self.types) is not None:
-            # A select is written by read-modify-write (W17).
+        if bit_select(s.target, self.types) is not None or \
+                self._word_field(s.target) is not None:
+            # A select is written by read-modify-write (W17); a word-held
+            # local's field by `reg_value_field_set`.
             return self.stmt_assign(
                 ir.StmtAssign(targets=[s.target], value=whole), ind)
         target = self.types.type_of(s.target)
@@ -2912,6 +3236,13 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
                 _builtin_name(e.func) in ("read_struct", "write_struct"):
             return [f"{self.pad(ind)}{p};" for p in
                     self._struct_mem_parts(_builtin_name(e.func), e.args, e)]
+        if _dt_name(e) == "ExprCall" and \
+                _dt_name(e.func) == "ExprAttribute" and \
+                e.func.attr == "write" and len(e.args) == 1 and \
+                self._value_local(e.args[0]) is not None:
+            parts = self._reg_parts(e)
+            return [f"{self.pad(ind)}"
+                    f"{self.reg_write_from(*parts, self.expr(e.args[0]))};"]
         return [f"{self.pad(ind)}{self.expr(e)};"]
 
     def stmt_return(self, s, ind: int) -> List[str]:

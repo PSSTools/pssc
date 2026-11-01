@@ -145,6 +145,10 @@ class RegAccessor:
     #: one (it is then also the last of ``strides``); ``None`` for a scalar
     #: register, including one inside an array of groups.
     elem_stride: Optional[int] = None
+    #: The register instance's declaration (the field in its group), so a
+    #: backend can read annotations on it: ``annotations.of(acc.decl, q)``.
+    #: Not part of the accessor's identity.
+    decl: Any = dc.field(default=None, compare=False, repr=False)
 
     @property
     def strided(self) -> bool:
@@ -172,7 +176,7 @@ class RegAccessor:
     @property
     def fields(self) -> Tuple[Any, ...]:
         """Where each field of the value struct sits in the register word
-        (`reg_field_resolve.FieldSlice`: name, lsb, width, mask), in
+        (`reg_field_resolve.FieldSlice`: name, lsb, width, mask, decl), in
         declaration order; ``()`` for a scalar-valued register."""
         if self.value_struct is None:
             return ()
@@ -265,6 +269,7 @@ def _mk(segs, name, reg_dtype, const_off, strides, decl=None,
         const_off=const_off,
         strides=tuple(strides),
         elem_stride=elem_stride,
+        decl=decl,
     )
 
 
