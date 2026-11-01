@@ -390,6 +390,15 @@ package:
           links no allocator, for a target with no heap.
         type: str
         value: "malloc"
+      chan_wait:
+        doc: |
+          How a blocking channel get()/put() lowers (`--chan-wait`). `reject`
+          (default) refuses the model; `yield` lowers get() like a PSS `yield`
+          (a NOP unless the platform supplies yield_()); `poll` spins on the
+          channel's volatile flag, calling the platform's yield_() between
+          tries.
+        type: str
+        value: "reject"
       header_only:
         doc: Emit a header-only API
         type: bool

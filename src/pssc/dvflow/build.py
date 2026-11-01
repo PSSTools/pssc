@@ -92,6 +92,7 @@ def _c_progseq_overrides(p) -> Dict[str, Any]:
     ov["c_link_style"] = _get(p, "link_style", DEFAULT_LINK_STYLE)
     ov["c_reg_style"] = _get(p, "reg_style", "bitfields")
     ov["c_lifecycle"] = _get(p, "lifecycle", "malloc")
+    ov["c_chan_wait"] = _get(p, "chan_wait", "reject")
     if _get(p, "header_only", False):
         ov["c_header_only"] = True
     ov["progseq_core_copy"] = _get(p, "core_copy", True)

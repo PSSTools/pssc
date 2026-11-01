@@ -25,15 +25,14 @@ comparison is order-insensitive by construction (see :func:`_ir_signature`).
 """
 from __future__ import annotations
 
-import asyncio
-import logging
+import json
 import os
 import re
+import sys
+import traceback
 from typing import Any, Dict, List, Tuple
 
-from .common import gather_pss_sources
-
-_log = logging.getLogger("pssc.dvflow")
+from .common import gather_pss_sources, run_child
 
 #: Object identities in a serialized back-reference vary run to run.
 _REF_ID_RE = re.compile(r"^(\s*_ref: )[0-9]+$", re.M)
@@ -103,9 +102,89 @@ def _link(sources: List[str], prelude=()) -> Tuple[Any, List[str]]:
     return ctx.ir_context, list(ctx.errors)
 
 
+def evaluate(sources: List[str], target_cfg=None,
+             order_check: bool = False) -> Dict[str, Any]:
+    """The whole check: link ``sources`` (twice, with ``order_check``) and
+    judge the result. Runs in the child process (see :func:`main`).
+
+    Returns ``{"status": 0|1, "markers": [[severity, message], ...]}``, the
+    severities ``"error"`` and ``"info"``, which :func:`Check` replays onto
+    the task.
+    """
+    markers: List[List[str]] = []
+
+    def error(msg):
+        markers.append(["error", "pssc.Check: " + msg])
+
+    def done(status, info=None):
+        if info:
+            markers.append(["info", "pssc.Check: " + info])
+        return {"status": status, "markers": markers}
+
+    try:
+        prelude = _prelude(target_cfg)
+    except ValueError as e:
+        error(str(e))
+        return done(1)
+
+    try:
+        context, errors = _link(sources, prelude)
+    except Exception as e:  # noqa: BLE001 -- any front-end failure is a marker
+        traceback.print_exc()
+        error("%s: %s" % (type(e).__name__, e))
+        return done(1)
+
+    for msg in errors:
+        error(msg)
+    if errors:
+        return done(1)
+
+    if not order_check:
+        return done(0, "%d file(s) elaborated; %d type(s)"
+                    % (len(sources), len(getattr(context, "type_m", {}) or {})))
+
+    # --- the order-independence check -------------------------------------
+    try:
+        reversed_context, reversed_errors = _link(list(reversed(sources)),
+                                                  prelude)
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        error("reversed file order failed to elaborate (%s: %s); the model "
+              "is order-dependent" % (type(e).__name__, e))
+        return done(1)
+
+    for msg in reversed_errors:
+        error("reversed file order: " + msg)
+
+    forward_sig = _ir_signature(context)
+    reverse_sig = _ir_signature(reversed_context)
+    delta = _signature_delta(forward_sig, reverse_sig)
+
+    if not delta and _normalized_dump(context) == _normalized_dump(reversed_context):
+        if reversed_errors:
+            return done(1)
+        return done(0, "order-independent -- %d node(s), %d resolved "
+                    "reference(s) in both file orders"
+                    % (sum(v for k, v in forward_sig.items()
+                           if not k.startswith("_")),
+                       forward_sig.get("_refs", 0)))
+
+    error("the elaborated model DEPENDS ON FILE ORDER. Linking the same %d "
+          "file(s) forwards and reversed produced different IR, with both "
+          "runs reporting no errors. Differences (forward -> reversed): %s"
+          % (len(sources), "; ".join(delta) if delta
+             else "same counts, different content"))
+    return done(1)
+
+
 async def Check(ctxt, input):
     """``pssc.Check`` -- elaborate PSS source; optionally check file-order
-    independence."""
+    independence.
+
+    The check runs in a child process (``python -m pssc.dvflow.check``, its
+    output in the task's ``pssc_check.log``), never in the DFM process; see
+    :func:`pssc.dvflow.common.run_child`.
+    """
     from dv_flow.mgr import TaskDataResult
 
     sources = gather_pss_sources(input)
@@ -114,63 +193,38 @@ async def Check(ctxt, input):
                    "std.FileSet with type: pssSource)")
         return TaskDataResult(status=1, changed=True)
 
-    order_check = bool(getattr(input.params, "order_check", False))
+    out_dir = input.rundir
+    os.makedirs(out_dir, exist_ok=True)
+    target_cfg = getattr(input.params, "target_cfg", None)
+    rc, res = await run_child(
+        "pssc.dvflow.check",
+        {"sources": sources,
+         "target_cfg": list(target_cfg) if target_cfg else None,
+         "order_check": bool(getattr(input.params, "order_check", False))},
+        out_dir, "pssc_check")
 
-    try:
-        prelude = _prelude(getattr(input.params, "target_cfg", None))
-    except ValueError as e:
-        ctxt.error("pssc.Check: %s" % e)
+    for sev, msg in res.get("markers", []):
+        (ctxt.error if sev == "error" else ctxt.info)(msg)
+    if not res:
+        ctxt.error("pssc.Check: exited with status %d (see %s)"
+                   % (rc, os.path.join(out_dir, "pssc_check.log")))
         return TaskDataResult(status=1, changed=True)
+    return TaskDataResult(status=res.get("status", 1), changed=True)
 
-    try:
-        context, errors = await asyncio.to_thread(_link, sources, prelude)
-    except Exception as e:  # noqa: BLE001 -- any front-end failure is a marker
-        _log.exception("pssc.Check failed")
-        ctxt.error("pssc.Check: %s: %s" % (type(e).__name__, e))
-        return TaskDataResult(status=1, changed=True)
 
-    for msg in errors:
-        ctxt.error("pssc.Check: " + msg)
-    if errors:
-        return TaskDataResult(status=1, changed=True)
+def main(argv=None) -> int:
+    """``python -m pssc.dvflow.check REQUEST.json RESULT.json``: the child."""
+    argv = sys.argv[1:] if argv is None else argv
+    req_path, res_path = argv
+    with open(req_path) as f:
+        req = json.load(f)
+    res = evaluate(req["sources"], req.get("target_cfg"),
+                   req.get("order_check", False))
+    with open(res_path, "w") as f:
+        json.dump(res, f)
+    sys.stdout.flush()
+    return res["status"]
 
-    if not order_check:
-        ctxt.info("pssc.Check: %d file(s) elaborated; %d type(s)"
-                  % (len(sources), len(getattr(context, "type_m", {}) or {})))
-        return TaskDataResult(status=0, changed=True)
 
-    # --- the order-independence check -------------------------------------
-    try:
-        reversed_context, reversed_errors = await asyncio.to_thread(
-            _link, list(reversed(sources)), prelude)
-    except Exception as e:  # noqa: BLE001
-        _log.exception("pssc.Check: reversed-order link failed")
-        ctxt.error("pssc.Check: reversed file order failed to elaborate "
-                   "(%s: %s); the model is order-dependent"
-                   % (type(e).__name__, e))
-        return TaskDataResult(status=1, changed=True)
-
-    for msg in reversed_errors:
-        ctxt.error("pssc.Check: reversed file order: " + msg)
-
-    forward_sig = _ir_signature(context)
-    reverse_sig = _ir_signature(reversed_context)
-    delta = _signature_delta(forward_sig, reverse_sig)
-
-    if not delta and _normalized_dump(context) == _normalized_dump(reversed_context):
-        if reversed_errors:
-            return TaskDataResult(status=1, changed=True)
-        ctxt.info("pssc.Check: order-independent -- %d node(s), %d resolved "
-                  "reference(s) in both file orders"
-                  % (sum(v for k, v in forward_sig.items()
-                         if not k.startswith("_")),
-                     forward_sig.get("_refs", 0)))
-        return TaskDataResult(status=0, changed=True)
-
-    ctxt.error(
-        "pssc.Check: the elaborated model DEPENDS ON FILE ORDER. Linking the "
-        "same %d file(s) forwards and reversed produced different IR, with "
-        "both runs reporting no errors. Differences (forward -> reversed): %s"
-        % (len(sources), "; ".join(delta) if delta
-           else "same counts, different content"))
-    return TaskDataResult(status=1, changed=True)
+if __name__ == "__main__":
+    sys.exit(main())

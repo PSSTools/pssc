@@ -339,3 +339,47 @@ def test_the_style_param_is_declared_in_the_flow():
     block = re.search(r"name: OpModelC\b.*?(?=\n  - name: )", text, re.S)
     assert block and re.search(r"^\s+style:\s*$", block.group(0), re.M), \
         "OpModelC declares no `style:` param"
+
+
+# --- the compile runs in a child process --------------------------------------
+
+@requires_dfm
+def test_compile_runs_out_of_process(tmp_path, monkeypatch):
+    """pssc must not compile inside the DFM process: its stdout and its
+    backends' imports would be shared with every task running alongside it.
+    Breaking the in-process entry point proves the task doesn't use it."""
+    import pssc
+    import pssc.driver
+
+    def _boom(*a, **kw):
+        raise AssertionError("pssc.compile called in the DFM process")
+    monkeypatch.setattr(pssc, "compile", _boom)
+    monkeypatch.setattr(pssc.driver, "compile", _boom)
+    status, output, errors = run_task(
+        tmp_path, "pssc.OpModelC", pss_text=_MODEL, root="pss_top")
+    assert status == 0, errors
+    log = os.path.join(str(tmp_path), "rundir", "task", "pssc_compile.log")
+    assert os.path.exists(log)
+
+
+@requires_dfm
+def test_args_reach_pssc(tmp_path):
+    """`args` are pssc command-line options. They used to be hashed into the
+    memento and then dropped, so the compile ignored them."""
+    status, output, errors = run_task(
+        tmp_path, "pssc.OpModelC", pss_text=_MODEL, root="pss_top",
+        args=["--addr-bits", "32"])
+    assert status == 0, errors
+    hdr = [os.path.join(fs.basedir, f) for fs in output
+           for f in fs.files if f == "pss_top.h"]
+    assert hdr, output
+    assert "#define PSSC_ADDR_BITS 32" in open(hdr[0]).read()
+
+
+@requires_dfm
+def test_bad_args_fail_the_task(tmp_path):
+    status, output, errors = run_task(
+        tmp_path, "pssc.OpModelC", pss_text=_MODEL, root="pss_top",
+        args=["--no-such-option"])
+    assert status != 0
+    assert any("invalid pssc options" in e for e in errors), errors

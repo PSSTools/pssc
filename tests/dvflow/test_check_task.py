@@ -89,7 +89,6 @@ def test_order_check_passes_on_an_order_independent_model(tmp_path):
     assert status == 0, errors
 
 
-@requires_dfm
 def test_order_check_detects_dependence(tmp_path, monkeypatch):
     """A front end that drops references in one order is caught -- with the
     exit status held constant at "no errors" in both runs.
@@ -97,8 +96,9 @@ def test_order_check_detects_dependence(tmp_path, monkeypatch):
     The real defect (pssparser D3) is in a compiled dependency and cannot be
     switched on and off from a test, so the order-dependence is injected here:
     the second (reversed) link drops a type. What the test pins is that the
-    task's verdict comes from comparing the two IRs, not from either run's
-    error list -- both of which stay empty.
+    verdict comes from comparing the two IRs, not from either run's error
+    list -- both of which stay empty. The task runs `evaluate` in a child
+    process, out of the injection's reach, so this calls `evaluate` itself.
     """
     import pssc.dvflow.check as check
 
@@ -120,9 +120,9 @@ def test_order_check_detects_dependence(tmp_path, monkeypatch):
 
     monkeypatch.setattr(check, "_link", flaky_link)
 
-    status, _, errors = run_task(tmp_path, "pssc.Check",
-                                 pss_files=_two_files(tmp_path),
-                                 order_check=True)
+    res = check.evaluate(_two_files(tmp_path), order_check=True)
+    status = res["status"]
+    errors = [msg for sev, msg in res["markers"] if sev == "error"]
 
     assert calls["n"] == 2, "order_check must link the model twice"
     assert status != 0
@@ -131,7 +131,6 @@ def test_order_check_detects_dependence(tmp_path, monkeypatch):
         "the message must carry the size of the difference"
 
 
-@requires_dfm
 def test_order_check_off_by_default(tmp_path, monkeypatch):
     import pssc.dvflow.check as check
 
@@ -144,8 +143,26 @@ def test_order_check_off_by_default(tmp_path, monkeypatch):
 
     monkeypatch.setattr(check, "_link", counting_link)
 
+    res = check.evaluate(_two_files(tmp_path))
+
+    assert res["status"] == 0, res["markers"]
+    assert calls["n"] == 1
+
+
+@requires_dfm
+def test_check_runs_out_of_process(tmp_path, monkeypatch):
+    """The check links in a child process, never in the DFM one. Breaking the
+    in-process link proves the task doesn't use it."""
+    import pssc.dvflow.check as check
+
+    def _boom(*a, **kw):
+        raise AssertionError("pssc.Check linked in the DFM process")
+    monkeypatch.setattr(check, "_link", _boom)
+
     status, _, errors = run_task(tmp_path, "pssc.Check",
-                                 pss_files=_two_files(tmp_path))
+                                 pss_files=_two_files(tmp_path),
+                                 order_check=True)
 
     assert status == 0, errors
-    assert calls["n"] == 1
+    log = Path(tmp_path) / "rundir" / "task" / "pssc_check.log"
+    assert log.exists()

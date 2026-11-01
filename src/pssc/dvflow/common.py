@@ -13,10 +13,11 @@ importing this module never hard-requires DFM.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import hashlib
+import json
 import logging
 import os
+import sys
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Tuple
@@ -281,17 +282,47 @@ def _missing_cached_files(filesets) -> List[str]:
     return missing
 
 
+async def run_child(module: str, request: Dict[str, Any], out_dir: str,
+                    name: str) -> Tuple[int, Dict[str, Any]]:
+    """Run ``python -m MODULE REQUEST.json RESULT.json`` in ``out_dir``.
+
+    pssc's tasks do their work in a child process, never in the DFM one: what
+    pssc prints, and the generators it imports, must not reach a process other
+    tasks run in alongside it. The child's stdout and stderr go to
+    ``<out_dir>/<name>.log``; ``request`` is written as
+    ``<name>.request.json``. Returns the exit status and the child's RESULT
+    (``{}`` when it wrote none, e.g. on a crash).
+    """
+    req_path = os.path.join(out_dir, name + ".request.json")
+    res_path = os.path.join(out_dir, name + ".result.json")
+    log_path = os.path.join(out_dir, name + ".log")
+    with open(req_path, "w") as f:
+        json.dump(request, f, indent=2)
+    if os.path.exists(res_path):
+        os.remove(res_path)
+
+    with open(log_path, "w") as logf:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", module, req_path, res_path,
+            cwd=out_dir, stdout=logf, stderr=asyncio.subprocess.STDOUT)
+        rc = await proc.wait()
+
+    try:
+        with open(res_path) as f:
+            return rc, json.load(f)
+    except (OSError, ValueError):
+        return rc, {}
+
+
 async def run_build(ctxt, input, *, target: str,
                     overrides_from_params: Callable[[Any], Dict[str, Any]]):
     """Body shared by every ``pssc`` build task.
 
     Gathers PSS sources and options, optionally skips via the memento, runs
-    ``pssc.compile`` (off-thread), converts PSS errors into DFM markers, and
-    returns typed output filesets.
+    ``pssc.compile`` in a child process (:mod:`.compile_child`), converts PSS
+    errors into DFM markers, and returns typed output filesets.
     """
     from dv_flow.mgr import TaskDataResult
-    import pssc
-    from pssc.driver import CompileError
 
     sources = gather_pss_sources(input)
     if not sources:
@@ -339,26 +370,22 @@ async def run_build(ctxt, input, *, target: str,
     os.makedirs(out_dir, exist_ok=True)
     log_path = os.path.join(out_dir, "pssc_compile.log")
 
-    def _do_compile():
-        # Some targets print a report to stdout; capture it to a logfile.
-        with open(log_path, "w") as logf, contextlib.redirect_stdout(logf):
-            return pssc.compile(
-                sources, target=target, output_dir=out_dir,
-                export_actions=export_actions or None, **overrides)
-
-    try:
-        res = await asyncio.to_thread(_do_compile)
-    except CompileError as e:
-        errs = e.errors or [str(e)]
+    # The compile runs in a child process (compile_child). `args` are pssc
+    # command-line options, parsed there as `pssc compile` parses them.
+    rc, res = await run_child(
+        "pssc.dvflow.compile_child",
+        {"sources": sources, "target": target, "output_dir": out_dir,
+         "export_actions": export_actions, "args": extra_args,
+         "overrides": overrides},
+        out_dir, "pssc_compile")
+    if rc != 0:
+        errs = res.get("errors") or [
+            "pssc exited with status %d (see %s)" % (rc, log_path)]
         for msg in errs:
             ctxt.error("pssc.%s: %s" % (target, msg))
         return TaskDataResult(status=1, changed=True)
-    except Exception as e:  # noqa: BLE001 — surface any target failure as a marker
-        _log.exception("pssc.%s failed", target)
-        ctxt.error("pssc.%s: %s: %s" % (target, type(e).__name__, e))
-        return TaskDataResult(status=1, changed=True)
 
-    output = classify_outputs(res.outputs, input.name, out_dir)
+    output = classify_outputs(res["outputs"], input.name, out_dir)
     new_memento = {"hash": memento,
                    "output": [fs.model_dump() for fs in output]}
     return TaskDataResult(status=0, changed=True, output=output,
