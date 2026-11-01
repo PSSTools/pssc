@@ -112,6 +112,7 @@ def test_the_archived_notes_say_they_are_archived():
                "nvme-bench-plan.md",
                "op-model-field-defects-plan.md",
                "op-model-issues-plan.md",
+               "write-struct-plan.md",
                "op-model-output-defects.md",
                "status-2026-10-01.md",
                "sv-op-model-inheritance-plan.md",

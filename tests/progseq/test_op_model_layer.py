@@ -238,3 +238,82 @@ def test_the_model_is_frozen(model):
     import dataclasses as dc
     with pytest.raises(dc.FrozenInstanceError):
         model.root = None
+
+
+# --- the API (hierarchical, by visibility: op_api.py) -----------------------
+
+_HIER = """
+component leaf_c {
+    target function int peek() { return 1; }
+    private target function int hid() { return 2; }
+}
+component quiet_c {
+    private target function int nothing() { return 0; }
+}
+component mid_c {
+    leaf_c  lf;
+    quiet_c q;
+}
+component base_c {
+    target function int b() { return 2; }
+}
+component dma_c : base_c {
+    target function int go(int n) { return n; }
+protected:
+    target function int helper() { return 0; }
+}
+component soc_c {
+    dma_c   dma0, dma1;
+    leaf_c  pit[4];
+    mid_c   m;
+    quiet_c q;
+    private leaf_c hidden;
+    target function int top() { return 3; }
+    export target function top;
+}
+"""
+
+
+@pytest.fixture(scope="module")
+def hier_model(tmp_path_factory):
+    src = tmp_path_factory.mktemp("hier") / "m.pss"
+    src.write_text(_HIER)
+    c = driver.translate([str(src)])
+    return om.elaborate(c, c.type_map["soc_c"], tempfile.mkdtemp()), c
+
+
+def _api(m, c, name):
+    return m.api(c.type_map[name])
+
+
+def test_each_type_carries_its_public_functions(hier_model):
+    """A type's API is its public target functions, its bases' included;
+    private and protected ones (prefix or group) are not on it. `export` is
+    accepted and changes nothing."""
+    m, c = hier_model
+    assert [f.name for f in _api(m, c, "leaf_c").exports] == ["peek"]
+    assert sorted(f.name for f in _api(m, c, "dma_c").exports) == ["b", "go"]
+    assert [f.name for f in _api(m, c, "soc_c").exports] == ["top"]
+    assert [f.name for f in m.exports] == ["top"]
+
+
+def test_only_public_children_that_lead_to_an_api_get_an_accessor(hier_model):
+    """`mid_c` has no public function but holds `lf`, which does: it has an
+    API of accessors alone. `quiet_c` has only a private function and leads
+    nowhere; `hidden` is a private instance."""
+    m, c = hier_model
+    assert _api(m, c, "quiet_c") is None
+    mid = _api(m, c, "mid_c")
+    assert mid.exports == () and [s.name for s in mid.children] == ["lf"]
+    soc = _api(m, c, "soc_c")
+    assert [(s.name, s.size) for s in soc.children] == [
+        ("dma0", None), ("dma1", None), ("pit", 4), ("m", None)]
+    assert soc.children[0].dtype is c.type_map["dma_c"]
+
+
+def test_apis_come_children_first(hier_model):
+    m, _ = hier_model
+    names = [a.comp.name for a in m.apis]
+    assert names[-1].endswith("soc_c")
+    assert names.index(next(n for n in names if n.endswith("leaf_c"))) < \
+        names.index(next(n for n in names if n.endswith("mid_c")))

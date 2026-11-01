@@ -105,7 +105,7 @@ module top;
 
   initial begin
     plat_c plat = new();
-    {root}_ctxt_if dut = {root}_root #(plat_c)::create(plat);
+    {root}_exp_if dut = {root}_root #(plat_c)::create(plat);
     dut.{entry}();
     $finish;
   end

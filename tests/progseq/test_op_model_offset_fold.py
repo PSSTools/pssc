@@ -110,7 +110,7 @@ module elab_top;
   endclass
   initial begin
     imp                              i;
-    fold_top_c_ctxt_if               dut;
+    fold_top_c_exp_if               dut;
     bit [31:0]                       v;
     i   = new();
     dut = fold_top_c_root #(fold_top_c_imp_if)::create(i, 64'h0);

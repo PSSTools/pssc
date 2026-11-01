@@ -155,6 +155,18 @@ class CProgSeqTarget(OpModelTarget):
                  "(WFI, watchdog kick, delay)",
         )
         parser.add_argument(
+            "--chan-wait", dest="c_chan_wait",
+            choices=("reject", "poll", "yield"), default="reject",
+            help="op-model-c: how a BLOCKING channel get()/put() lowers. "
+                 "'reject' (default) refuses the model: there is no scheduler "
+                 "to suspend to. 'yield' lowers get() like a PSS `yield` -- a "
+                 "NOP under `--yield none` -- and takes any posted value; for "
+                 "a model whose waits are hints inside a re-check loop. 'poll' "
+                 "spins on the channel's volatile flag, calling the "
+                 "platform's yield_() between tries, so an ISR's post ends "
+                 "the wait",
+        )
+        parser.add_argument(
             "--match-default", dest="c_match_default",
             choices=("none", "message", "unreachable"), default="message",
             help="op-model-c: what an unmatched `match` subject does when the "
@@ -287,6 +299,7 @@ class CProgSeqTarget(OpModelTarget):
             # that wants one file says so.
             header_only=getattr(opts, "c_header_only", False),
             yield_mode=getattr(opts, "c_yield", "none"),
+            chan_wait=getattr(opts, "c_chan_wait", "reject"),
             match_default=getattr(opts, "c_match_default", "message"),
             message_style=getattr(opts, "c_message_style", "import"),
             prefix_map=getattr(opts, "c_prefix_map", None),
@@ -318,6 +331,35 @@ class CProgSeqTarget(OpModelTarget):
         describe a build that was not produced.
         """
         return dict(self.flags_for(opts), prefix=self.prefix_for(opts))
+
+    #: Each target name's Tier-2 legality as registered at import time, before
+    #: any run re-registered it for `--chan-wait`. See `_register_legality`.
+    _legality_base: Dict[str, dict] = {}
+
+    def _register_legality(self, chan_wait: str) -> None:
+        """Publish this run's Tier-2 set: `get`/`put` are refused under
+        `--chan-wait reject` and rendered under `poll` / `yield`.
+
+        PER RUN, as `op-model-py` does for `--py-await`: the model check
+        consults the registry, so two generations in one interpreter must each
+        re-register before their model is checked. Always from the import-time
+        base, so a `reject` run after a `poll` run refuses again.
+        """
+        import dataclasses
+        from .call_legality import extensions_for, register_extension
+        base = self._legality_base.setdefault(self.name,
+                                              extensions_for(self.name))
+        entries = dict(base)
+        if chan_wait != "reject":
+            for m in ("get", "put"):
+                if m in entries:
+                    entries[m] = dataclasses.replace(entries[m], unsupported="")
+        register_extension(self.name, entries, replace=True)
+
+    def run(self, ctx, opts: argparse.Namespace):
+        # BEFORE `super().run()`, which elaborates and then checks.
+        self._register_legality(getattr(opts, "c_chan_wait", "reject"))
+        return super().run(ctx, opts)
 
     def check_overrides(self) -> None:
         """Refuse a backend subclass that took one half of a paired override.

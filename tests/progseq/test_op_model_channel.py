@@ -292,11 +292,11 @@ def _gen_cpp(tmp_path, model, root="chan_c", ns="chan"):
     return tmp_path
 
 
-def _gen_c(tmp_path, model, root="chan_c"):
+def _gen_c(tmp_path, model, root="chan_c", **kw):
     src = tmp_path / "chan.pss"
     src.write_text(model)
     ns = argparse.Namespace(progseq_root=root, c_prefix="chan",
-                            output_dir=str(tmp_path))
+                            output_dir=str(tmp_path), **kw)
     return driver.compile([str(src)], target="c-progseq", opts=ns)
 
 
@@ -341,6 +341,61 @@ def test_c_refuses_a_blocking_channel_op_by_name(tmp_path):
     assert "suspend" in msg                    # why
     assert "try_get" in msg                    # and what to do instead
     assert not (tmp_path / "chan.h").exists()  # refused before writing
+
+
+_C_BLOCKING = _C_MODEL.replace("ok = wake.try_get(t);", "t = wake.get();")
+
+
+def _cc_syntax(tmp_path):
+    """Compile the generated .c, if a C compiler is on PATH."""
+    cc = shutil.which("cc") or shutil.which("gcc")
+    if cc is None:
+        return
+    subprocess.run([cc, "-std=c99", "-Wall", "-Werror", "-fsyntax-only",
+                    "-I", str(tmp_path), str(tmp_path / "chan.c")],
+                   check=True)
+
+
+def test_c_chan_wait_poll_spins_on_the_flag_and_yields(tmp_path):
+    """`--chan-wait poll`: a blocking get() waits for a real post, spinning on
+    the channel's volatile flag with the platform's yield_() between tries."""
+    _gen_c(tmp_path, _C_BLOCKING, c_chan_wait="poll")
+    h = (tmp_path / "chan.h").read_text()
+    c = (tmp_path / "chan.c").read_text()
+    assert "t = pssc_chan1_get_poll(&_self->wake, yield_);" in c
+    assert "void yield_(void);" in h          # the platform supplies it
+    assert "volatile uint8_t  full;" in (tmp_path / "pssc_chan.h").read_text()
+    _cc_syntax(tmp_path)
+
+
+def test_c_chan_wait_yield_is_a_nop_by_default(tmp_path):
+    """`--chan-wait yield` lowers get() like a PSS `yield`: under the default
+    `--yield none` nothing is waited for, and no yield_() is required."""
+    _gen_c(tmp_path, _C_BLOCKING, c_chan_wait="yield")
+    h = (tmp_path / "chan.h").read_text()
+    c = (tmp_path / "chan.c").read_text()
+    assert "t = pssc_chan1_get_yield(&_self->wake, 0);" in c
+    assert "yield_" not in h
+    _cc_syntax(tmp_path)
+
+
+def test_c_chan_wait_yield_calls_the_platform_under_yield_import(tmp_path):
+    _gen_c(tmp_path, _C_BLOCKING, c_chan_wait="yield", c_yield="import")
+    h = (tmp_path / "chan.h").read_text()
+    c = (tmp_path / "chan.c").read_text()
+    assert "t = pssc_chan1_get_yield(&_self->wake, yield_);" in c
+    assert "void yield_(void);" in h
+
+
+def test_c_chan_wait_reject_refuses_again_after_a_lowering_run(tmp_path):
+    """Legality is registered per run: a `poll` generation must not leave
+    `get` renderable for the next, default, one in the same interpreter."""
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    _gen_c(tmp_path / "a", _C_BLOCKING, c_chan_wait="poll")
+    with pytest.raises(Exception) as exc:
+        _gen_c(tmp_path / "b", _C_BLOCKING)
+    assert "'get'" in diagnostic_text(exc)
 
 
 def test_c_refuses_a_deeper_channel_by_depth(tmp_path):

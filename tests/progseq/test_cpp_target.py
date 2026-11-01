@@ -69,14 +69,14 @@ def test_value_unions_and_groups(gen):
 
 def test_apis_and_component(gen):
     h = _hpp(gen)
-    assert "struct dma_engine_c_if {" in h
+    assert "struct dma_engine_c_exp_if {" in h
     assert "virtual int mem_to_mem_copy(int channel," in h
     # The platform seam is named uniformly in every signature. This model
     # declares no imports, so the name IS pssc::mem_if -- see emit_import_api.
     assert "using wb_dma_import_if = pssc::mem_if;" in h
-    assert "class dma_engine_c : public dma_engine_c_if {" in h
+    assert "class dma_engine_c : public dma_engine_c_exp_if {" in h
     assert "wb_dma_import_if &imp_;" in h
-    assert "std::unique_ptr<dma_engine_c_if> create(wb_dma_import_if &_imp, " \
+    assert "std::unique_ptr<dma_engine_c_exp_if> create(wb_dma_import_if &_imp, " \
         "pssc::addr_t base)" in h
     # native member-call body + native do...while
     assert "this->regs.channels[channel].CSR.read();" in h

@@ -11,7 +11,11 @@ import enum
 import logging
 from typing import Dict, List, Optional, Any, Set, Tuple, TYPE_CHECKING
 import zuspec.ir.core as ir
+
 from zuspec.ir.core.base import Loc
+
+#: Where a member's access protection is recorded (`progseq_model.access`).
+ACCESS_KEY = "pss_access"
 
 if TYPE_CHECKING:
     import pssparser.ast as pss_ast
@@ -4366,6 +4370,12 @@ class AstToIrTranslator:
             loc=self._loc(field),
             annotations=self._annotations(ctx, field),
         )
+        # LRM 17.4 access protection, for the operation-model API: a private
+        # or protected component instance is not on it (`progseq_model.access`).
+        if attr & pss_ast.FieldAttr.Private:
+            ir_field.pragmas[ACCESS_KEY] = "private"
+        elif attr & pss_ast.FieldAttr.Protected:
+            ir_field.pragmas[ACCESS_KEY] = "protected"
 
         # A domain (`int in [0..3] x`, 7.3.1; `e_e in [A..B] e`, 7.5.1) is
         # a constraint on the field, emitted by the owning type (T-12).
@@ -4454,6 +4464,14 @@ class AstToIrTranslator:
             # `static function` (20.2): no instance, and a call to it is not
             # polymorphic -- a base's body calls the base's (W47).
             ir_func.metadata["static"] = True
+        # `private`/`protected` (a pssparser extension of LRM 17.4 to
+        # functions: a prefix, or a `private:` group before it): not on an
+        # operation model's API (`progseq_model.access`).
+        acc = int(getattr(prototype, 'getAccess', lambda: 0)())
+        if acc == int(pss_ast.FunctionAccess.FunctionAccess_Private):
+            ir_func.metadata[ACCESS_KEY] = "private"
+        elif acc == int(pss_ast.FunctionAccess.FunctionAccess_Protected):
+            ir_func.metadata[ACCESS_KEY] = "protected"
         return ir_func
 
     @staticmethod

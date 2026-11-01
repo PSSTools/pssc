@@ -424,7 +424,8 @@ class COpModelBackend:
         an implicit one (which C99 rejects, but only with -Werror).
         """
         from .lower_progseq import lower_imports
-        return self._block(lower_imports(self.imports, s.yield_mode))
+        return self._block(lower_imports(self.imports, s.yield_mode,
+                                         s.chan_wait))
 
     @overridable(since='0.1', stability='stable')
     def emit_decls(self, model, s: CSettings) -> List[str]:
@@ -519,7 +520,9 @@ class COpModelBackend:
     def linkage(self, fn, ctx) -> str:
         """``"extern"`` (the default) or ``"static"`` for operation ``fn``.
 
-        A `static` operation is not declared in the header: the `.c`
+        An operation that is not on the model's API (`op_api.py`) is
+        `static` whatever this says. A `static` operation is not declared in
+        the header: the `.c`
         declares it ahead of every definition, `static inline` so that one
         nothing calls does not fail `-Werror=unused-function`. Under
         `--header-only` every operation is already `static inline` and this
@@ -566,6 +569,7 @@ class COpModelBackend:
                           static_inline=s.header_only,
                           reg_style=s.reg_style,
                           yield_mode=s.yield_mode,
+                          chan_wait=s.chan_wait,
                           match_default=s.match_default,
                           message_style=s.message_style,
                           lifecycle=s.lifecycle,

@@ -338,7 +338,7 @@ module top;
 
   initial begin
     plat_c plat = new();
-    pss_top_ctxt_if dut;
+    pss_top_exp_if dut;
     @PRELOAD@
     dut = pss_top_root #(plat_c)::create(plat@ARGS@);
     dut.run();

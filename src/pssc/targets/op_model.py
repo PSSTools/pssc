@@ -226,10 +226,19 @@ class OpModel:
     #: `comp_dtypes` for a target that flattens (`comp_inherit`).
     classes: Tuple[Any, ...] = ()
 
-    #: The root component's exported functions (`export target function f;`
-    #: in its body, an extension -- see `export_function.py`), in declaration
-    #: order. Each is a function of the completed root.
+    #: The root's functions on the API (its public target functions, see
+    #: `op_api.py`), in declaration order. The root's entry in `apis`.
     exports: Tuple[Any, ...] = ()
+
+    #: The API: one `TypeApi` per component type a public instance path
+    #: reaches that has public functions or a public child leading to some,
+    #: children before parents; the root always. See `op_api.py`, `api`.
+    apis: Tuple["TypeApi", ...] = ()
+
+    def api(self, comp) -> Optional["TypeApi"]:
+        """``comp``'s type's `TypeApi`, or None if it has no API."""
+        dtype = getattr(comp, "dtype", comp)
+        return next((a for a in self.apis if a.comp is dtype), None)
 
     @property
     def base_classes(self) -> List[Any]:
@@ -446,6 +455,41 @@ class OpModel:
                 + len(self.entries))
 
 
+@dc.dataclass(frozen=True)
+class TypeApi:
+    """One component type's operation-model API (`op_api.py`).
+
+    An operation model has no executors or contexts: the environment holds
+    the root's API and reaches a sub-component's through an accessor on its
+    parent's -- one per child in ``children``, `dma0()` for an instance and
+    `pit(i)` with `pit_size()` for an array. Every public instance of a type
+    shares the type's API.
+    """
+    comp: Any                           # the component type
+    exports: Tuple[Any, ...]            # its public target functions
+    children: Tuple[pm.SubComp, ...]    # public sub-components that lead to
+                                        # an API, ``dtype`` resolved
+
+
+def _mark_on_api(components, apis) -> None:
+    """Record on each function of the tree whether it is on the API
+    (`progseq_model.ON_API`), for a backend that asks one function at a
+    time -- C's linkage. A function on any type's API is on it."""
+    on = {id(f) for a in apis for f in a.exports}
+    for n in components:
+        for fn in getattr(n.dtype, "functions", None) or []:
+            md = getattr(fn, "metadata", None)
+            if isinstance(md, dict):
+                md[pm.ON_API] = id(fn) in on
+
+
+def _apis(ctx, root, ctor_names) -> Tuple[TypeApi, ...]:
+    """`OpModel.apis` (`op_api.type_apis`)."""
+    from .op_api import type_apis
+    return tuple(TypeApi(comp=c, exports=f, children=ch)
+                 for c, f, ch in type_apis(root, resolver(ctx), ctor_names))
+
+
 def _classes(ctx, components, native: bool) -> Tuple[Any, ...]:
     """`OpModel.classes`: the tree's types, with their user bases first."""
     from .comp_inherit import declared
@@ -506,8 +550,9 @@ def elaborate(ctx, root, out_dir, *, ctor_names: Optional[FrozenSet[str]] = None
                 groups.append(g)
 
     entries = _entries_in_tree(tuple(entries), post)
-    from .export_function import root_exports
-    exports = root_exports(ctx, root, post, names)
+    apis = _apis(ctx, root, names)
+    exports = next(a.exports for a in apis if a.comp is root)
+    _mark_on_api(post, apis)
     classes = _classes(ctx, post, native_inheritance)
     have = {id(n.dtype) for n in post}
     extra = [c for c in classes if id(c) not in have]
@@ -534,6 +579,7 @@ def elaborate(ctx, root, out_dir, *, ctor_names: Optional[FrozenSet[str]] = None
         functions=functions,
         classes=classes,
         exports=exports,
+        apis=apis,
     )
 
 

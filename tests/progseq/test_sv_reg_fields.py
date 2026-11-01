@@ -185,10 +185,12 @@ def test_transfer_list_still_writes_twice(sv):
     """use_ed then ch_en, in that order, as two transactions. Coalescing them
     into one write_fields would be one bus operation where the device requires
     two -- so this is a behaviour assertion, not a formatting one."""
-    # The impl, not the interface's `pure virtual` declaration of the same name.
-    body = code_only(
-        sv.split("virtual task transfer_list_start(input addr_handle_t head);")[-1]
-          .split("endtask")[0])
+    # The impl: not the interface's `pure virtual` declaration of the same
+    # name, nor the API adapter's forwarding method.
+    sig = "virtual task transfer_list_start(input addr_handle_t head);"
+    body = code_only(next(
+        p.split("endtask")[0] for p in sv.split(sig)[1:]
+        if "write_field" in p.split("endtask")[0]))
     assert body.index("WB_DMA_CSR_use_ed") < body.index("WB_DMA_CSR_ch_en")
     assert body.count("write_field(") == 2
     assert "write_fields(" not in body

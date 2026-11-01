@@ -2,9 +2,10 @@
 // Included by wb_dma_c_pkg.sv; not a compilation unit.
 
   // ----- Factory and root context: wb_dma_c -----
-  class wb_dma_c_root #(type Timp = wb_dma_c_imp_if) implements wb_dma_c_imp_if, wb_dma_c_ctxt_if;
+  class wb_dma_c_root #(type Timp = wb_dma_c_imp_if) implements wb_dma_c_imp_if, wb_dma_c_exp_if;
     protected Timp pss_imp;
     protected wb_dma_c pss_root;
+    protected wb_dma_ch_c_exp_impl pss_sub_ch[4];
 
     // Only create() builds a model.
     protected function new(Timp imp);
@@ -12,37 +13,48 @@
       pss_root = new(this);
     endfunction
 
-    static function wb_dma_c_ctxt_if create(Timp pss_imp, addr_handle_t base);
+    static function wb_dma_c_exp_if create(Timp pss_imp, addr_handle_t base);
       wb_dma_c_root #(Timp) pss_model = new(pss_imp);
       pss_model.pss_root.initialize(base);
       pss_model.pss_root.pss_do_init();
+      foreach (pss_model.pss_sub_ch[i]) pss_model.pss_sub_ch[i] = new(pss_model.pss_root.ch[i]);
       return pss_model;
     endfunction
 
-    // Exported function `configure_interrupt_routing`, run on the root.
+    // `configure_interrupt_routing`, run on the root.
     virtual task configure_interrupt_routing(input wb_dma_int_bank_e bank, input bit [30:0] channel_mask);
       pss_root.configure_interrupt_routing(bank, channel_mask);
     endtask
 
-    // Exported function `notify_irq`, run on the root.
+    // `notify_irq`, run on the root.
     virtual task notify_irq();
       pss_root.notify_irq();
     endtask
 
-    // Exported function `pause_engine`, run on the root.
+    // `pause_engine`, run on the root.
     virtual task pause_engine(input bit pause);
       pss_root.pause_engine(pause);
     endtask
 
-    // Exported function `read_descriptor_residual`, run on the root.
+    // `read_descriptor_residual`, run on the root.
     virtual task read_descriptor_residual(output bit [11:0] status, input addr_handle_t desc_ptr);
       pss_root.read_descriptor_residual(status, desc_ptr);
     endtask
 
-    // Exported function `write_descriptor`, run on the root.
+    // `write_descriptor`, run on the root.
     virtual task write_descriptor(output addr_handle_t status, input addr_handle_t at, input addr_handle_t prev, ref wb_dma_desc_s desc);
       pss_root.write_descriptor(status, at, prev, desc);
     endtask
+
+    // Sub-component `ch`'s API.
+    virtual function wb_dma_ch_c_exp_if ch(int i);
+      return pss_sub_ch[i];
+    endfunction
+
+    // Sub-component `ch`'s API.
+    virtual function int ch_size();
+      return 4;
+    endfunction
 
     virtual task write8(addr_handle_t addr, bit [7:0] data); pss_imp.write8(addr, data); endtask
     virtual task read8(addr_handle_t addr, output bit [7:0] data); pss_imp.read8(addr, data); endtask

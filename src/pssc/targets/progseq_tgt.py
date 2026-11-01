@@ -56,15 +56,16 @@ class ProgSeqTarget(OpModelTarget):
 
     @staticmethod
     def assert_api_is_not_empty(model) -> None:
-        """The context API is the exported functions and the exported
-        actions, and nothing else (design D11): a model with neither has no
-        way in."""
-        if not (model.exports or model.entries):
+        """The context API is the public target functions of the public
+        instances (`op_api.py`) and the exported actions: a model with
+        neither has no way in."""
+        rapi = model.api(model.root)
+        if not (rapi.exports or rapi.children or model.entries):
             raise ValueError(
-                f"op-model-sv: '{model.root.name}' exports nothing, so the "
-                f"generated model would have no API. Export the root's "
-                f"operations (`export target function f;` in its body) or "
-                f"an action (--export-action)")
+                f"op-model-sv: '{model.root.name}' has no public target "
+                f"function, in itself or in a public sub-component, so the "
+                f"generated model would have no API. Make an operation "
+                f"public, or export an action (--export-action)")
 
     def add_args(self, parser: argparse.ArgumentParser) -> None:
         # `--root`, `--ctor-name` and `--no-core-copy` come from

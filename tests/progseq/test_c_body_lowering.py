@@ -435,3 +435,47 @@ def test_yield_import_is_declared_for_the_platform(tmp_path):
     hdr, _, out = _generate(tmp_path, _YIELD, c_yield="import")
     assert "void yield_(void);" in hdr
     compile_c(out, _CC[0])
+
+
+# --- `const` struct parameters ----------------------------------------------
+#
+# A `const` struct parameter (LRM 20.2.3) is a pointer to const: no copy, and
+# the compiler holds the callee to the promise. A plain struct parameter is a
+# pointer too (by handle, 20.3.2), without the `const`. A caller passes the
+# address of a variable, passes a pointer it already holds straight through,
+# and passes anything else -- a call's result -- as a compound literal.
+
+_CONST_PARAM = """
+struct cfg_s { bit[8] x; }
+component probe_c {
+    target function bit[8] peek(const cfg_s c) { return c.x; }
+    target function bit[8] fwd(const cfg_s c) { return peek(c); }
+    target function bit[8] from_handle(cfg_s c) { return peek(c); }
+    target function cfg_s mk() { cfg_s r; r.x = 1; return r; }
+    target function bit[8] local_and_value() {
+        cfg_s l;
+        l.x = 3;
+        return peek(l) + peek(mk());
+    }
+}
+"""
+
+
+def test_const_struct_param_is_a_pointer_to_const(tmp_path):
+    hdr, impl, _ = _generate(tmp_path, _CONST_PARAM)
+    assert_c(hdr,
+             has=["probe_peek(probe_c *_self, const cfg_s *c)",
+                  "probe_fwd(probe_c *_self, const cfg_s *c)",
+                  "probe_from_handle(probe_c *_self, cfg_s *c)"],
+             has_not=["const cfg_s c)", "probe_peek(probe_c *_self, cfg_s c)"])
+    assert_c(impl,
+             has=["c->x",
+                  "probe_peek(_self, c)",               # passed straight on
+                  "probe_peek(_self, &l)",              # a variable: its address
+                  "probe_peek(_self, (cfg_s[]){ probe_mk(_self) })"])
+
+
+@needs_cc
+def test_const_struct_param_compiles(tmp_path):
+    _, _, out = _generate(tmp_path, _CONST_PARAM)
+    compile_c(out, _CC[0])

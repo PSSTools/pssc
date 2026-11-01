@@ -57,6 +57,8 @@ class CSettings:
     # today; here because a settings object that holds only what the banner
     # prints is one every emitter has to be handed something else alongside.
     yield_mode: str = "none"
+    #: How a blocking channel get()/put() lowers: reject | poll | yield.
+    chan_wait: str = "reject"
     match_default: str = "message"
     message_style: str = "import"
     emit_stubs: bool = False

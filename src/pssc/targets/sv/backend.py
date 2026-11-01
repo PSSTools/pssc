@@ -38,10 +38,12 @@ from typing import Dict, List, Tuple
 from ..sections import Section
 from .constants import SvConstants
 from .lower_api_types import collect_api_types, lower_api_types
-from .lower_progseq import (_strip_pkg, component_base_name, ctxt_if_name,
-                            emit_component_base, emit_component_class,
-                            emit_context_api, emit_factory, emit_import_api,
-                            emit_package_functions, factory_name, imp_if_name)
+from .lower_progseq import (_strip_pkg, component_base_name, exp_if_name,
+                            emit_adapter, emit_component_base,
+                            emit_component_class, emit_context_api,
+                            emit_factory, emit_import_api,
+                            emit_package_functions, emit_type_api,
+                            factory_name, imp_if_name, exp_impl_name)
 from .lower_reg_model import lower_register_model
 from .reg_field_names import FieldNamer
 
@@ -90,12 +92,24 @@ class SvOpModelBackend(object):
             Section("api_types", self.emit_api_types),
             Section("functions", self.emit_functions),
             Section("import_api", self.emit_import_api),
-            Section("context_api", self.emit_context_api),
-            Section("component_base", self.emit_component_base),
+        ] + [Section(CLASS_SECTION + exp_if_name(a.comp),
+                     lambda m, a=a: self.emit_type_api(m, a))
+             for a in self._sub_apis(model)]
+          + [Section("context_api", self.emit_context_api),
+             Section("component_base", self.emit_component_base),
         ] + [Section(CLASS_SECTION + _strip_pkg(comp.name),
                      lambda m, c=comp: self.emit_component(m, c))
              for comp in model.classes]
+          + [Section(CLASS_SECTION + exp_impl_name(a.comp),
+                     lambda m, a=a: self.emit_adapter(m, a))
+             for a in self._sub_apis(model)]
           + [Section("factory", self.emit_factory)])
+
+    @staticmethod
+    def _sub_apis(model):
+        """The sub-component types on the API (`OpModel.apis`), children
+        first: each has an interface class and an adapter."""
+        return [a for a in model.apis if a.comp is not model.root]
 
     def wrapper_sections(self, model) -> List[Section]:
         """The package file, in order. `emit_package` joins exactly these."""
@@ -118,7 +132,7 @@ class SvOpModelBackend(object):
             "api_types": f"{root}_types",
             "functions": f"{root}_functions",
             "import_api": imp_if_name(model.root),
-            "context_api": ctxt_if_name(model.root),
+            "context_api": exp_if_name(model.root),
             "component_base": component_base_name(model.root),
             "factory": factory_name(model.root),
         }
@@ -297,10 +311,24 @@ class SvOpModelBackend(object):
                 ""]
 
     def emit_context_api(self, model) -> List[str]:
-        """What the platform can call: the root's exported functions and the
-        exported actions (design D9, D11, D12)."""
+        """What the platform holds: the root's API and the exported actions
+        (`op_api.py`, design D11 as revised, D12)."""
         return ["  // ----- Context API: what the platform calls -----",
-                emit_context_api(model.root, model.exports, model.entries),
+                emit_context_api(model),
+                ""]
+
+    def emit_type_api(self, model, api) -> List[str]:
+        """One sub-component type's API: what the platform reaches through
+        an accessor (`op_api.py`)."""
+        return [f"  // ----- API: {api.comp.name} -----",
+                emit_type_api(model, api),
+                ""]
+
+    def emit_adapter(self, model, api) -> List[str]:
+        """The class that implements one sub-component type's API on an
+        instance."""
+        return [f"  // ----- API adapter: {api.comp.name} -----",
+                emit_adapter(model, api),
                 ""]
 
     def emit_component_base(self, model) -> List[str]:

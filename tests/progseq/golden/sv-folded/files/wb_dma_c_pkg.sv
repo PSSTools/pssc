@@ -11,10 +11,12 @@ package wb_dma_c_pkg;
   `include "wb_dma_c_regs.svh"
   `include "wb_dma_c_types.svh"
   `include "wb_dma_c_imp_if.svh"
-  `include "wb_dma_c_ctxt_if.svh"
+  `include "wb_dma_ch_c_exp_if.svh"
+  `include "wb_dma_c_exp_if.svh"
   `include "wb_dma_c_component.svh"
   `include "wb_dma_ch_c.svh"
   `include "wb_dma_c.svh"
+  `include "wb_dma_ch_c_exp_impl.svh"
   `include "wb_dma_c_root.svh"
 
 endpackage

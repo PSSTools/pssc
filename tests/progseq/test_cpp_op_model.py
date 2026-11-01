@@ -84,8 +84,8 @@ def test_each_component_gets_an_interface_and_a_class(h):
     """The projection is of a component TREE. Before this, the backend emitted
     the root alone -- for WB DMA that is four engine-global operations and none
     of the thirteen per-channel ones."""
-    assert_cpp(h, has=["struct wb_dma_ch_c_if {", "class wb_dma_ch_c : public wb_dma_ch_c_if {",
-                       "struct wb_dma_c_if {", "class wb_dma_c : public wb_dma_c_if {"])
+    assert_cpp(h, has=["struct wb_dma_ch_c_exp_if {", "class wb_dma_ch_c : public wb_dma_ch_c_exp_if {",
+                       "struct wb_dma_c_exp_if {", "class wb_dma_c : public wb_dma_c_exp_if {"])
 
 
 def test_the_child_precedes_the_parent(h):
@@ -106,9 +106,9 @@ def test_sub_components_are_members_not_pointers(h):
 def test_sub_component_access_is_on_the_interface(h):
     """`create()` hands back the interface, so anything not reachable through
     it is not reachable at all."""
-    assert_cpp(h, has=["static constexpr std::size_t ch_count = 4;",
-                       "virtual wb_dma_ch_c_if &ch(std::size_t i) = 0;",
-                       "wb_dma_ch_c_if &ch(std::size_t i) override "
+    assert_cpp(h, has=["std::size_t ch_size() const { return 4; }",
+                       "virtual wb_dma_ch_c_exp_if &ch(std::size_t i) = 0;",
+                       "wb_dma_ch_c_exp_if &ch(std::size_t i) override "
                        "{ return ch_[i]; }"])
 
 
@@ -155,7 +155,7 @@ def test_register_groups_are_bound_once(h):
 
 
 def test_the_factory_returns_the_interface(h):
-    assert_cpp(h, has=["static std::unique_ptr<wb_dma_c_if> create("
+    assert_cpp(h, has=["static std::unique_ptr<wb_dma_c_exp_if> create("
                        "wb_dma_import_if &_imp, pssc::addr_t base) {",
                        "_self->initialize(base);"])
 

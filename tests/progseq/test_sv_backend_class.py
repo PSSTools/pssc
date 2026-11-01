@@ -56,9 +56,9 @@ def test_one_file_per_class(op_model):
     names = [n for n, _ in SvOpModelBackend("wb_dma_c_pkg").emit_files(op_model)]
     assert names == [
         "wb_dma_c_pkg.sv", "wb_dma_c_consts.svh", "wb_dma_c_regs.svh",
-        "wb_dma_c_types.svh", "wb_dma_c_imp_if.svh", "wb_dma_c_ctxt_if.svh",
-        "wb_dma_c_component.svh", "wb_dma_ch_c.svh", "wb_dma_c.svh",
-        "wb_dma_c_root.svh"]
+        "wb_dma_c_types.svh", "wb_dma_c_imp_if.svh", "wb_dma_ch_c_exp_if.svh",
+        "wb_dma_c_exp_if.svh", "wb_dma_c_component.svh", "wb_dma_ch_c.svh",
+        "wb_dma_c.svh", "wb_dma_ch_c_exp_impl.svh", "wb_dma_c_root.svh"]
     texts = dict(SvOpModelBackend("wb_dma_c_pkg").emit_files(op_model))
     for name, text in texts.items():
         classes = [l for l in text.splitlines()

@@ -113,7 +113,7 @@ module top;
     automatic addr_handle_t       base = 64'h4000_0000;
     automatic dma_mock_bus_c      bus  = new(base);
     automatic int                 errors = 0;
-    dma_engine_c_ctxt_if dma;
+    dma_engine_c_exp_if dma;
     int                 status;
 
     // Construct through the factory's create(): duck-typed import object

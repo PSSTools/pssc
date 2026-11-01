@@ -115,7 +115,7 @@ module top;
 
   initial begin
     plat_c plat = new();
-    pss_top_ctxt_if dut = pss_top_root#(plat_c)::create(plat, 64'h4000_0000);
+    pss_top_exp_if dut = pss_top_root#(plat_c)::create(plat, 64'h4000_0000);
     dut.run();
     $finish;
   end
@@ -316,3 +316,75 @@ def test_const_parameters_take_literals_and_others_are_handles(tmp_path):
     got = [ln for ln in stdout.splitlines()
            if ln and not ln.startswith(("-", " "))]
     assert got == ["configure mode=2 prio=3", "w=41", "mode=8"], stdout
+
+
+_HIER_MODEL = """
+import std_pkg::*;
+
+component leaf_c {
+  int id;
+  target function void peek() { message(NONE, "peek id=%d", id); }
+  export target function peek;
+}
+
+component quiet_c {
+  target function void nothing() { }
+}
+
+component mid_c {
+  leaf_c  lf;
+  quiet_c q;
+}
+
+component base_c {
+  int tag;
+  target function int b() { return tag; }
+  export target function b;
+}
+
+component dma_c : base_c {
+  target function void go(int n) { message(NONE, "go tag=%d n=%d", tag, n); }
+  export target function go;
+}
+
+component pss_top {
+  dma_c  dma0, dma1;
+  leaf_c pit[3];
+  mid_c  m;
+  exec init_down {
+    dma0.tag = 10;
+    dma1.tag = 11;
+    pit[0].id = 0;
+    pit[1].id = 1;
+    pit[2].id = 2;
+    m.lf.id = 99;
+  }
+  target function void run() { message(NONE, "run"); }
+}
+"""
+
+_HIER_TB = _NO_CTOR_TB.replace("""    dut.run();
+""", """    int v;
+    dut.run();
+    dut.dma0().go(1);
+    dut.dma1().go(2);
+    dut.dma1().b(v);
+    $display("b=%0d", v);
+    for (int i = 0; i < dut.pit_size(); i++) dut.pit(i).peek();
+    dut.m().lf().peek();
+    $display("same=%0d", dut.dma0() == dut.dma0() && dut.pit(1) == dut.pit(1));
+""")
+
+
+@pytest.mark.skipif(_VERILATOR is None, reason="verilator not on PATH")
+def test_sub_component_exports_are_reached_through_accessors(tmp_path):
+    """Exports of sub-component types are reached by path from the root's
+    API: `dma0()`, `pit(i)` with `pit_size()`, `m().lf()` through a type
+    that only leads to an export. Each instance answers with its own state,
+    and an accessor returns the same object every call."""
+    stdout = _build_and_run(tmp_path, _HIER_MODEL, _HIER_TB)
+    got = [" ".join(ln.split()) for ln in stdout.splitlines()
+           if ln and not ln.startswith(("-", " ", "TRACE"))]
+    assert got == ["run", "go tag=10 n=1", "go tag=11 n=2", "b=11",
+                   "peek id=0", "peek id=1", "peek id=2", "peek id=99",
+                   "same=1"], stdout

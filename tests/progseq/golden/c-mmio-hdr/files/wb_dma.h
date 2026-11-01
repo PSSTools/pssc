@@ -43,16 +43,20 @@ typedef enum {
     WB_DMA_MODE_WB_DMA_HW_HANDSHAKE = 1
 } wb_dma_mode_e;
 
-typedef struct {
-    uint16_t tot_sz;
-    uint8_t reserved0;
-    uint8_t dst_sel;
-    uint8_t src_sel;
-    uint8_t inc_dst;
-    uint8_t inc_src;
-    uint8_t eol;
-    uint16_t reserved1;
+typedef union {
+    uint32_t raw;
+    struct {
+        uint32_t tot_sz       : 12;   /* [11:0] */
+        uint32_t reserved0    :  4;   /* [15:12] */
+        uint32_t dst_sel      :  1;   /* [16] */
+        uint32_t src_sel      :  1;   /* [17] */
+        uint32_t inc_dst      :  1;   /* [18] */
+        uint32_t inc_src      :  1;   /* [19] */
+        uint32_t eol          :  1;   /* [20] */
+        uint32_t reserved1    : 11;   /* [31:21] */
+    };
 } wb_dma_desc_csr_s;
+PSSC_STATIC_ASSERT(sizeof(wb_dma_desc_csr_s) == 4, wb_dma_desc_csr_s_is_4_bytes);
 
 typedef struct {
     wb_dma_desc_csr_s csr;
@@ -184,6 +188,7 @@ PSSC_STATIC_ASSERT(offsetof(wb_dma_regs_c, int_src_b) == 0x10u, wb_dma_regs_c_in
 PSSC_STATIC_ASSERT(offsetof(wb_dma_regs_c, bank) == 0x20u, wb_dma_regs_c_bank_offset);
 
 /* ----- Component handles. ----- */
+/* The members of these structs are not API: reach a sub-component through its accessor below. */
 /*
  * The per-channel MMIO operation model (§3).
  *
@@ -294,8 +299,9 @@ typedef struct wb_dma_c {
 
 
 /* ----- Sub-component access. ----- */
-#define WB_DMA_CH_COUNT 4u
+#define WB_DMA_CH_SIZE 4u
 static inline wb_dma_ch_c *wb_dma_ch(wb_dma_c *_self, unsigned i) { return &_self->ch[i]; }
+static inline unsigned wb_dma_ch_size(wb_dma_c *_self) { (void)_self; return WB_DMA_CH_SIZE; }
 
 /* ----- Export API + lifecycle. ----- */
 static inline void wb_dma_init(wb_dma_c *_self, pssc_addr_t base);

@@ -400,21 +400,8 @@ component pss_top {""" + ONE + """
 }""", Refused([r"a list", r"ruling R4"]),
         covers=("FN-PARAM", "DT-STRUCT", "DT-LIST", "IP-100")),
 
-    # IP-51: `write_struct`/`read_struct` (21.13.1) of a packed struct with a
-    # bool and a based enum. No target lowers a generic struct parameter.
-    "write_struct of a packed struct": Case("""
-enum e_e : bit[2] { E0, E1, E2 }
-struct p_s : packed_s<> { bool b; e_e e; bit[5] v; }
-component pss_top {""" + ONE + """
-  addr_handle_t hb;
-  target function void run() {
-    p_s p;
-    p.b = true; p.e = E2; p.v = 3;
-    write_struct(make_handle_from_handle(hb, 0), p);
-  }
-}""", Refused([r"'write_struct' is a PSS core-library function",
-               r"generic struct parameters are not lowered"]),
-        covers=("LIB-MEM", "DT-PACK", "IP-51", "LIB-MEM.5")),
+    # IP-51 (`write_struct` of a packed struct) is lowered now: see
+    # test_m_packed_struct.py.
 
     # --- P5.3: legal PSS refused by ruling or not lowered yet -------------------
     # A model below uses a construct several times, and the refusal is
@@ -852,25 +839,6 @@ component pss_top {
 }""", Refused([each(RANDOMIZE, 5)]),
         covers=("ST-RAND.2", "ST-RAND.5", "ST-RAND.7", "ST-RAND.9",
                 "ST-RAND.12")),
-
-    # Exports (20.4.2) of static functions of a package and of a
-    # sub-component: only the root's are accepted yet.
-    "exports of a package and a sub-component function": Case("""
-package util_pkg {
-  function int k(int x) { return x + 1; }
-  export target function k;
-}
-component sub_c {
-  static function int g() { return 2; }
-  export target function g;
-}
-component pss_top {""" + ONE + """
-  sub_c s;
-  target function void run() { a.STS.write_val(util_pkg::k(1)); }
-}""", Refused([r"line \d+: export of package function 'util_pkg::k': not "
-               r"supported yet",
-               r"line \d+: export of 'sub_c::g': only the root component"]),
-        covers=("FN-EXPORT.1",)),
 
     # 20.4.3: an import class and one derived from it. The refusal must
     # name the declaration; today it is dropped (I16).

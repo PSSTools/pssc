@@ -27,7 +27,7 @@
    * * **bridge_access** -- the pass-through path is reachable only with a target
    *   on the far interface; omitted by review decision.
    */
-  interface class wb_dma_c_ctxt_if;
+  interface class wb_dma_c_exp_if;
 
     /**
      * Route a set of channels to one of the two aggregate interrupt outputs.
@@ -120,4 +120,8 @@
      * :param desc: the descriptor contents; the caller's copy is not modified
      */
     pure virtual task write_descriptor(output addr_handle_t status, input addr_handle_t at, input addr_handle_t prev, ref wb_dma_desc_s desc);
+
+    pure virtual function wb_dma_ch_c_exp_if ch(int i);
+
+    pure virtual function int ch_size();
   endclass

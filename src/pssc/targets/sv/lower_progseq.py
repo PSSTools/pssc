@@ -14,7 +14,7 @@ import API to the user object and exposes the static `create()`.
 from __future__ import annotations
 
 import dataclasses as dc
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import zuspec.ir.core as ir
 
@@ -422,7 +422,7 @@ class _BodyEmitter(BodyWalker):
         fn = call.func
         if fn.attr in _MEM_READS:
             return f"bit [{int(fn.attr[4:]) - 1}:0]"
-        recv = getattr(fn.value, "attr", None)
+        recv = _chan_name(fn.value)
         if fn.attr == "get" and recv in self.chan_elem_of:
             return self.chan_elem_of[recv]
         t = self.types.type_of(call)
@@ -1297,6 +1297,10 @@ class _BodyEmitter(BodyWalker):
 
     def stmt_expr(self, s, ind: int) -> List[str]:
         pad = self.pad(ind)
+        from ..packed_image import struct_call
+        name = struct_call(s.expr)
+        if name is not None:
+            return self._struct_mem(name, s.expr, pad)
         got = self._discarded_get(s.expr, pad)
         if got is not None:
             return got
@@ -1310,6 +1314,62 @@ class _BodyEmitter(BodyWalker):
                     + self._assign_from_call(_DISCARD, s.expr, pad + "  ")
                     + [f"{pad}end"])
         return [f"{pad}{self._discard_value(s.expr)};"]
+
+    def _struct_mem(self, name: str, call, pad: str) -> List[str]:
+        """`write_struct(h, s)` / `read_struct(h, s)` (21.12).
+
+        The image is a vector assembled -- or taken apart -- a field at a
+        time from the PSS layout (`packed_image.leaves`), not the SV struct
+        cast whole: an SV enum is a 32-bit int inside a `struct packed`, so
+        a struct with one is not its own image. The vector then moves in
+        the accesses `packed_image.access_plan` decides, each a slice at its
+        byte offset: the same accesses, in the same order, as every other
+        target makes. A read takes each slice through a temporary of the
+        access's width (the primitive's `output`).
+        """
+        from ..packed_image import access_plan, check_call, leaves, struct_bits
+        h_e, s_e = check_call(name, call.args, call)
+        t = self.types.type_of(s_e)
+        if t is None or t.kind != "struct":
+            raise Refusal(f"'{name}': the second argument is not a struct",
+                          call)
+        dt = self.types.resolve(t.dtype)
+        plan = access_plan(dt, where=(call,))
+        fields = leaves(dt, where=(call,))
+        nb = (struct_bits(dt) + 7) // 8 * 8
+        h, sv = self.expr(h_e), self.expr(s_e)
+        ip = pad + "  "
+        lines = [f"{pad}begin", f"{ip}bit [{nb - 1}:0] pssc_img;"]
+
+        def addr(a):
+            return h if a.offset == 0 else f"({h} + {a.offset})"
+
+        def member(lf):
+            return ".".join((sv,) + lf.path)
+
+        if name == "write_struct":
+            lines.append(f"{ip}pssc_img = '0;")
+            for lf in fields:
+                lines.append(f"{ip}pssc_img[{lf.lsb} +: {lf.width}] = "
+                             f"{member(lf)};")
+            for a in plan:
+                lines.append(f"{ip}{IMP_MEMBER}.write{a.width}({addr(a)}, "
+                             f"pssc_img[{8 * a.offset} +: {a.width}]);")
+        else:
+            for w in sorted({a.width for a in plan}):
+                lines.append(f"{ip}bit [{w - 1}:0] pssc_r{w};")
+            for a in plan:
+                lines += [f"{ip}{IMP_MEMBER}.read{a.width}({addr(a)}, "
+                          f"pssc_r{a.width});",
+                          f"{ip}pssc_img[{8 * a.offset} +: {a.width}] = "
+                          f"pssc_r{a.width};"]
+            for lf in fields:
+                v = f"pssc_img[{lf.lsb} +: {lf.width}]"
+                if _dt_name(lf.field.datatype) == "DataTypeEnum":
+                    # SV converts no integer to an enum implicitly (6.19.3).
+                    v = f"{sv_type(lf.field.datatype)}'({v})"
+                lines.append(f"{ip}{member(lf)} = {v};")
+        return lines + [f"{pad}end"]
 
     def stmt_return(self, s, ind: int) -> List[str]:
         pad = self.pad(ind)
@@ -1674,8 +1734,7 @@ class _BodyEmitter(BodyWalker):
         fn = v.func
         if _dt_name(fn) != "ExprAttribute" or fn.attr != "get":
             return None
-        recv = getattr(fn.value, "attr", None) or getattr(fn.value, "id", None)
-        elem = self.chan_elem_of.get(recv)
+        elem = self.chan_elem_of.get(_chan_name(fn.value))
         if elem is None:
             return None
         # A fresh block so the temp cannot collide with a model local, and so
@@ -1834,6 +1893,14 @@ def _is_path(e) -> bool:
     return False
 
 
+def _chan_name(e) -> Optional[str]:
+    """The field name a channel receiver names: ``wake`` for ``wake`` and for
+    an element of a channel array, ``wake[ch]``."""
+    while _dt_name(e) == "ExprSubscript":
+        e = e.value
+    return getattr(e, "attr", None) or getattr(e, "id", None)
+
+
 def _has_range(pattern) -> bool:
     cn = _dt_name(pattern)
     if cn == "PatternValue":
@@ -1910,6 +1977,11 @@ ROOT_MEMBER = "pss_root"
 
 #: The component-side task an exported action's body becomes (design D12).
 ACTION_PREFIX = "pss_action_"
+
+#: An adapter's handle to its component, and the prefix of the members that
+#: hold its children's adapters (`emit_adapters`).
+COMP_MEMBER = "pss_comp"
+SUB_PREFIX = "pss_sub_"
 
 
 def _members(comp) -> Dict[str, str]:
@@ -2044,9 +2116,16 @@ def imp_if_name(root) -> str:
     return f"{_root_name(root)}_imp_if"
 
 
-def ctxt_if_name(root) -> str:
-    """The export API the platform holds: the root's context (design D9)."""
-    return f"{_root_name(root)}_ctxt_if"
+def exp_if_name(comp) -> str:
+    """A component type's export API (`OpModel.apis`): ``<comp>_exp_if``.
+    The root's is what the platform holds."""
+    return f"{_strip_pkg(comp.name)}_exp_if"
+
+
+def exp_impl_name(comp) -> str:
+    """The class that implements `exp_if_name` on a component instance:
+    ``<comp>_exp_impl``."""
+    return f"{_strip_pkg(comp.name)}_exp_impl"
 
 
 def factory_name(root) -> str:
@@ -2096,23 +2175,118 @@ def emit_import_api(root, ctor_names=None, ctx=None) -> str:
 
 # --- export API --------------------------------------------------------------
 
-def emit_context_api(root, exports=(), entries=()) -> str:
-    """``interface class <root>_ctxt_if``: what the platform can call.
+def _api_if(model, comp) -> str:
+    """The export API's name for ``comp``'s type (`exp_if_name`)."""
+    return exp_if_name(comp)
 
-    The root's exported functions (`export target function f;`, an
-    extension -- `export_function.py`) and the exported actions, each under
-    its PSS name. Nothing else is on it: a target function nobody exported is
-    the model's own (design D11)."""
-    lines = doc_block(getattr(root, "doc", None), "  ") + [
-        f"  interface class {ctxt_if_name(root)};"]
-    for fn in exports:
+
+def _api_methods(model, api) -> List[Tuple[str, str, Any]]:
+    """``[(prototype, body)]`` of one type's export API: its exported
+    functions, then one accessor per child that leads to an export -- `x()`
+    for an instance, `x(int i)` and `x_size()` for an array. ``body`` is what
+    an adapter (``this`` holding the component in ``holder``) runs."""
+    return _api_methods_on(model, api, COMP_MEMBER)
+
+
+def _api_methods_on(model, api, holder) -> List[Tuple[str, str, Any]]:
+    out: List[Tuple[str, str, Any]] = []
+    for fn in api.exports:
+        ret = ["status"] if fn.returns is not None else []
+        call = ", ".join(ret + [mangle(a.arg) for a in fn.args.args])
+        out.append((f"task {mangle(fn.name)}({_signature(fn)})",
+                    f"{holder}.{mangle(fn.name)}({call});", fn))
+    for sub in api.children:
+        n = mangle(sub.name)
+        cif = _api_if(model, sub.dtype)
+        if sub.is_array:
+            out.append((f"function {cif} {n}(int i)",
+                        f"return {SUB_PREFIX}{n}[i];", sub))
+            out.append((f"function int {n}_size()",
+                        f"return {sub.size};", sub))
+        else:
+            out.append((f"function {cif} {n}()",
+                        f"return {SUB_PREFIX}{n};", sub))
+    return out
+
+
+def _end(proto: str) -> str:
+    return "endtask" if proto.startswith("task ") else "endfunction"
+
+
+def emit_type_api(model, api) -> str:
+    """``interface class <type>_exp_if``: one sub-component type's API
+    (`OpModel.apis`): its public target functions (`op_api.py`) under their
+    PSS names, and an accessor per public child that leads to an API.
+    Component classes implement none of these: an adapter does
+    (`emit_adapter`), since SV cannot have a member ``dma0`` and a method
+    ``dma0()`` in one class."""
+    lines = doc_block(getattr(api.comp, "doc", None), "  ") + [
+        f"  interface class {exp_if_name(api.comp)};"]
+    for proto, _, what in _api_methods(model, api):
         blank_line(lines)
-        lines += doc_block(getattr(fn, "doc", None), "    ")
-        lines.append(f"    pure virtual task {mangle(fn.name)}({_signature(fn)});")
-    for entry in entries:
+        lines += doc_block(getattr(what, "doc", None), "    ")
+        lines.append(f"    pure virtual {proto};")
+    lines.append("  endclass")
+    return "\n".join(lines)
+
+
+def emit_context_api(model) -> str:
+    """``interface class <root>_exp_if``: what the platform holds. The
+    root's API, as `emit_type_api` gives a sub-component's, and the exported
+    actions. A private or protected function is the model's own."""
+    root = model.root
+    lines = doc_block(getattr(root, "doc", None), "  ") + [
+        f"  interface class {exp_if_name(root)};"]
+    for proto, _, what in _api_methods(model, model.api(root)):
+        blank_line(lines)
+        lines += doc_block(getattr(what, "doc", None), "    ")
+        lines.append(f"    pure virtual {proto};")
+    for entry in model.entries:
         blank_line(lines)
         lines.append(f"    // Exported action `{entry.action}`.")
         lines.append(f"    pure virtual task {mangle(entry.name)}();")
+    lines.append("  endclass")
+    return "\n".join(lines)
+
+
+def _sub_members(api, owner: str, at: str = "") -> Tuple[List[str], List[str]]:
+    """``(declarations, construction)`` of the members holding ``api``'s
+    children's adapters, built from the component handle ``owner``; ``at``
+    is the object holding them, when not ``this``."""
+    decls: List[str] = []
+    build: List[str] = []
+    for sub in api.children:
+        n = mangle(sub.name)
+        cls = exp_impl_name(sub.dtype)
+        m = f"{at}{SUB_PREFIX}{n}"
+        if sub.is_array:
+            decls.append(f"    protected {cls} {SUB_PREFIX}{n}[{sub.size}];")
+            build.append(f"foreach ({m}[i]) {m}[i] = new({owner}.{n}[i]);")
+        else:
+            decls.append(f"    protected {cls} {SUB_PREFIX}{n};")
+            build.append(f"{m} = new({owner}.{n});")
+    return decls, build
+
+
+def emit_adapter(model, api) -> str:
+    """``<type>_exp_impl implements <type>_exp_if``, for one sub-component type on
+    the API: holds one component instance, forwards each function to it, and
+    returns its children's adapters, each built once, with it -- so the same
+    instance always answers with the same object."""
+    cls = _strip_pkg(api.comp.name)
+    decls, build = _sub_members(api, COMP_MEMBER)
+    lines = [f"  // The API of one `{cls}` instance.",
+             f"  class {exp_impl_name(api.comp)} implements "
+             f"{exp_if_name(api.comp)};",
+             f"    protected {cls} {COMP_MEMBER};"] + decls + [
+             "",
+             f"    function new({cls} comp);",
+             f"      {COMP_MEMBER} = comp;"] + [
+             f"      {b}" for b in build] + [
+             "    endfunction"]
+    for proto, body, _ in _api_methods(model, api):
+        lines += ["", f"    virtual {proto};", f"      {body}",
+                  f"    {_end(proto)}"]
     lines.append("  endclass")
     return "\n".join(lines)
 
@@ -2574,14 +2748,54 @@ def _check_context_names(model) -> None:
         taken[m] = f"the memory primitive '{m}'"
     for fn in _import_fns(model.ctx, model.ctor_names):
         taken[mangle(fn.name)] = f"the import function '{fn.name}'"
-    for what, name in ([("exported function", fn.name) for fn in model.exports]
-                       + [("exported action", e.name) for e in model.entries]):
+    rapi = model.api(model.root)
+    where = f"methods of {factory_name(model.root)}"
+    _claim(taken, _api_names(rapi) if rapi else [], where)
+    _claim(taken, [(e.name, f"the exported action '{e.name}'")
+                   for e in model.entries], where)
+    # Each sub-component type's adapter: its API, and `new`.
+    for api in model.apis:
+        if api.comp is not model.root:
+            _claim({"new": "the adapter's constructor"}, _api_names(api),
+                   f"methods of {exp_impl_name(api.comp)}")
+    # The generated class names, one package namespace.
+    classes: Dict[str, str] = {}
+    for c in model.classes:
+        classes[_strip_pkg(c.name)] = f"the component class '{c.name}'"
+    _claim(classes, [(component_base_name(model.root), "the component base"),
+                     (imp_if_name(model.root), "the import API"),
+                     (exp_if_name(model.root), "the root's export API"),
+                     (factory_name(model.root), "the factory")],
+           "classes of the package")
+    for api in model.apis:
+        if api.comp is not model.root:
+            _claim(classes, [
+                (exp_if_name(api.comp), f"the export API of '{api.comp.name}'"),
+                (exp_impl_name(api.comp), f"the adapter of '{api.comp.name}'")],
+                "classes of the package")
+
+
+def _api_names(api) -> List[Tuple[str, str]]:
+    """``[(PSS name, what)]`` of the methods ``api`` puts on its class."""
+    out = [(fn.name, f"the function '{fn.name}'")
+           for fn in api.exports]
+    for sub in api.children:
+        out.append((sub.name, f"the accessor of sub-component '{sub.name}'"))
+        if sub.is_array:
+            out.append((f"{sub.name}_size",
+                        f"the size of sub-component array '{sub.name}'"))
+    return out
+
+
+def _claim(taken: Dict[str, str], names, where: str) -> None:
+    """Add each ``(name, what)`` to ``taken``, refusing one already there."""
+    for name, what in names:
         other = taken.get(mangle(name))
         if other is not None:
             raise ValueError(
-                f"{what} '{name}' has the name of {other}: both are methods "
-                f"of {factory_name(model.root)}; rename one")
-        taken[mangle(name)] = f"the {what} '{name}'"
+                f"{what[4:] if what.startswith('the ') else what} has the "
+                f"name of {other}: both are {where}; rename one")
+        taken[mangle(name)] = what
 
 
 def emit_factory(model) -> str:
@@ -2604,7 +2818,7 @@ def emit_factory(model) -> str:
 
     lines = [
         f"  class {name} #(type Timp = {imp_if}) implements {imp_if}, "
-        f"{ctxt_if_name(root)};",
+        f"{exp_if_name(root)};",
         f"    protected Timp {IMP_MEMBER};",
         f"    protected {rcls} {ROOT_MEMBER};",
         "",
@@ -2616,27 +2830,33 @@ def emit_factory(model) -> str:
         "",
         # The factory's own names take the `pss_` prefix, like every other
         # generated name: a root constructor parameter `imp` was declared twice.
-        f"    static function {ctxt_if_name(root)} create(Timp {IMP_MEMBER}"
+        f"    static function {exp_if_name(root)} create(Timp {IMP_MEMBER}"
         f"{params});",
         f"      {name} #(Timp) pss_model = new({IMP_MEMBER});",
     ]
     if ctor is not None:
         lines.append(
             f"      pss_model.{ROOT_MEMBER}.{mangle(ctor.name)}({fwd});")
+    rapi = model.api(root)
+    decls, build = (_sub_members(rapi, f"pss_model.{ROOT_MEMBER}",
+                                 "pss_model.") if rapi else ([], []))
+    lines += [f"      pss_model.{ROOT_MEMBER}.pss_do_init();"]
+    lines += [f"      {b}" for b in build]
     lines += [
-        f"      pss_model.{ROOT_MEMBER}.pss_do_init();",
         "      return pss_model;",
         "    endfunction",
     ]
+    # The children's adapters, built once the tree is.
+    lines[3:3] = decls
 
-    for fn in model.exports:
-        out = ["status"] if fn.returns is not None else []
-        call = ", ".join(out + [mangle(a.arg) for a in fn.args.args])
-        lines += ["",
-                  f"    // Exported function `{fn.name}`, run on the root.",
-                  f"    virtual task {mangle(fn.name)}({_signature(fn)});",
-                  f"      {ROOT_MEMBER}.{mangle(fn.name)}({call});",
-                  "    endtask"]
+    for proto, body, what in (_api_methods_on(model, rapi, ROOT_MEMBER)
+                              if rapi else []):
+        if hasattr(what, "args"):
+            head = f"    // `{what.name}`, run on the root."
+        else:
+            head = f"    // Sub-component `{what.name}`'s API."
+        lines += ["", head, f"    virtual {proto};", f"      {body}",
+                  f"    {_end(proto)}"]
     for entry in model.entries:
         lines += ["",
                   f"    // Exported action `{entry.action}`.",

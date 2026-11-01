@@ -281,7 +281,8 @@ def test_a_shadowed_field_is_two_fields(tmp_path):
 def test_super_and_shadowing_generate_what_writing_them_out_does(tmp_path,
                                                                   target):
     """The base's `f` and `a` become private members of the derived
-    component; nothing else about it changes, on any op-model target."""
+    component -- `f`'s copy is `private`, off the API -- and nothing else
+    about it changes, on any op-model target."""
     # Each call's result goes to a local first, as op-model-sv once needed
     # (SV-2); kept, since it is the same model either way.
     derived = """
@@ -302,7 +303,7 @@ component pss_top : base_c {
 component pss_top {
   int _pss_super_base_c_a = 5;
   int a = 100;
-  target function int _pss_super_base_c_f(int x) {
+  private target function int _pss_super_base_c_f(int x) {
     int k = g(); return x + _pss_super_base_c_a + k;
   }
   target function int f(int x) {

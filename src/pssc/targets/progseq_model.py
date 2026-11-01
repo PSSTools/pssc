@@ -290,10 +290,41 @@ class SubComp:
     name: str                    # field name, e.g. "ch"
     dtype: object                # the sub-component's DataTypeComponent
     size: Optional[int] = None   # element count, or None for a scalar instance
+    access: str = "public"       # LRM 17.4: "public", "private", "protected"
 
     @property
     def is_array(self) -> bool:
         return self.size is not None
+
+
+#: Where a field's (``pragmas``) or a function's (``metadata``) access
+#: protection is recorded; absent means public.
+ACCESS_KEY = "pss_access"
+
+
+def access(node) -> str:
+    """``node``'s access protection: "public" (the default), "private" or
+    "protected". For a field, LRM 17.4; for a function, a pssc extension
+    (`private target function f();`, or a `private:` group before it)."""
+    for slot in ("pragmas", "metadata"):
+        d = getattr(node, slot, None)
+        if isinstance(d, dict) and ACCESS_KEY in d:
+            return d[ACCESS_KEY]
+    return "public"
+
+
+def is_public(node) -> bool:
+    return access(node) == "public"
+
+
+#: Set by `op_model.elaborate` on every function of the tree: is it on the
+#: operation model's API (`op_api.py`)?
+ON_API = "pss_on_api"
+
+
+def on_api(fn) -> bool:
+    """Is ``fn`` on the model's API? True if the model never said."""
+    return (getattr(fn, "metadata", None) or {}).get(ON_API, True)
 
 
 def sub_components(comp) -> List[SubComp]:
@@ -309,11 +340,12 @@ def sub_components(comp) -> List[SubComp]:
     for f in getattr(comp, "fields", []) or []:
         dt = f.datatype
         if _dt_name(dt) == "DataTypeComponent" and not is_reg_group(dt):
-            out.append(SubComp(name=f.name, dtype=dt))
+            out.append(SubComp(name=f.name, dtype=dt, access=access(f)))
         elif field_is_array(f):
             elem = array_element_type(f)
             if _dt_name(elem) == "DataTypeComponent" and not is_reg_group(elem):
-                out.append(SubComp(name=f.name, dtype=elem, size=int(dt.size)))
+                out.append(SubComp(name=f.name, dtype=elem, size=int(dt.size),
+                                   access=access(f)))
     return out
 
 

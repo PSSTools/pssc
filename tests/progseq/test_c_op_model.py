@@ -153,16 +153,16 @@ def test_component_data_members_are_present(h):
 # --- C1.2: sub-component accessors -----------------------------------------
 
 def test_sub_component_accessor_and_count(h):
-    assert_c(h, has=["#define WB_DMA_CH_COUNT 4u",
+    assert_c(h, has=["#define WB_DMA_CH_SIZE 4u",
                      "static inline wb_dma_ch_c *wb_dma_ch(wb_dma_c *_self, unsigned i) "
                      "{ return &_self->ch[i]; }"])
 
 
 def test_the_count_is_the_models_number(h):
     """4 is `wb_dma_types_pkg::WB_DMA_MAX_CH`, folded. A count that failed to
-    fold and came through as -1 would make `WB_DMA_CH_COUNT` a negative loop
+    fold and came through as -1 would make `WB_DMA_CH_SIZE` a negative loop
     bound -- which is why the array-size helper returns None rather than -1."""
-    assert "#define WB_DMA_CH_COUNT 4u" in h
+    assert "#define WB_DMA_CH_SIZE 4u" in h
     assert "wb_dma_ch_c ch[4];" in h
 
 
@@ -652,3 +652,92 @@ def test_the_mmio_driver_refuses_a_32_bit_target(tmp_path):
                        cwd=str(out), capture_output=True, text=True)
     assert r.returncode != 0, "the truncating mmio driver compiled for 32-bit"
     assert "use_addr_bits_32_or_vtable" in r.stderr, r.stderr
+
+
+# --- the hierarchical API (op_api.py) -------------------------------------------
+
+_HIER = """
+component leaf_c {
+  int id;
+  target function int peek() { return id; }
+  private target function int hidden() { return id + 1; }
+}
+component quiet_c { private target function int nothing() { return 0; } }
+component mid_c { leaf_c lf; quiet_c q; }
+component dma_c {
+  int tag;
+  target function int go(int n) { return tag + n + helper(); }
+private:
+  target function int helper() { return 1; }
+}
+component soc_c {
+  dma_c dma0, dma1;
+  leaf_c pit[3];
+  mid_c m;
+  quiet_c q;
+  solve function void initialize(int k) {
+    dma0.tag = 10 + k; dma1.tag = 20;
+    pit[0].id = 0; pit[1].id = 1; pit[2].id = 2;
+    m.lf.id = 99;
+  }
+}
+"""
+
+_HIER_MAIN = r"""
+#include <stdio.h>
+#include "soc.h"
+int main(void) {
+    soc_c soc;
+    unsigned i;
+    soc_init(&soc, 0);
+    printf("go %d %d\n", dma_go(soc_dma0(&soc), 1), dma_go(soc_dma1(&soc), 2));
+    for (i = 0; i < soc_pit_size(&soc); i++)
+        printf("peek %d\n", leaf_peek(soc_pit(&soc, i)));
+    printf("lf %d size %u\n", leaf_peek(mid_lf(soc_m(&soc))), SOC_PIT_SIZE);
+    return 0;
+}
+"""
+
+
+@pytest.fixture(scope="module")
+def hier(tmp_path_factory):
+    d = tmp_path_factory.mktemp("c_hier")
+    (d / "m.pss").write_text(_HIER)
+    ns = argparse.Namespace(progseq_root="soc_c", c_prefix="soc",
+                            c_link_style="mmio", c_lifecycle="static",
+                            output_dir=str(d / "gen"))
+    driver.compile([str(d / "m.pss")], target="op-model-c", opts=ns)
+    return d
+
+
+def test_the_header_declares_the_api(hier):
+    """Only the API's functions are declared; private ones are `static` in
+    the .c. Accessors lead only toward the API: `q` (twice) has none."""
+    h = (hier / "gen" / "soc.h").read_text()
+    assert_c(h, code=True,
+             has=["int dma_go(dma_c *_self, int n);",
+                  "int leaf_peek(leaf_c *_self);",
+                  "static inline dma_c *soc_dma0(soc_c *_self)",
+                  "static inline leaf_c *soc_pit(soc_c *_self, unsigned i)",
+                  "static inline unsigned soc_pit_size(soc_c *_self)",
+                  "#define SOC_PIT_SIZE 3u",
+                  "static inline leaf_c *mid_lf(mid_c *_self)"],
+             has_not=["dma_helper", "leaf_hidden", "quiet_nothing",
+                      "soc_q(", "mid_q("])
+    c = (hier / "gen" / "soc.c").read_text()
+    assert "static inline int dma_helper(dma_c *_self)" in c
+
+
+@needs_cc
+def test_the_api_reaches_each_instance(hier):
+    """Built with -Werror and run: each accessor reaches its own instance."""
+    (hier / "main.c").write_text(_HIER_MAIN)
+    exe = hier / "a.out"
+    build = subprocess.run(
+        [_CC[0], "-std=c99", "-Wall", "-Wextra", "-Werror",
+         f"-I{hier / 'gen'}", "-o", str(exe), str(hier / "main.c"),
+         str(hier / "gen" / "soc.c")], capture_output=True, text=True)
+    assert build.returncode == 0, build.stderr
+    run = subprocess.run([str(exe)], capture_output=True, text=True)
+    assert run.stdout.split("\n")[:5] == [
+        "go 12 23", "peek 0", "peek 1", "peek 2", "lf 99 size 3"], run.stdout

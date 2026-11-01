@@ -1,10 +1,10 @@
 """The operation model, generated end to end as a SystemVerilog package.
 
 This is the component-tree projection: one class per component type with its
-members under their PSS names, an `init` lowered into a method, the exports as
-the context API, and `yield` as a zero delay. The model is presented with the
-environment's exports (`op_model_sv_sources`): the device tree declares none,
-and op-model-sv takes its API from exports only. The flat model
+members under their PSS names, an `init` lowered into a method, the public
+target functions of the public instances as the API (`op_api.py`; the
+`export` declarations `op_model_sv_sources` adds are accepted and change
+nothing), and `yield` as a zero delay. The flat model
 in `src/pssc/testing/models` covers the same backend from the other
 direction, and both must keep working -- a change that fixes one and breaks the
 other is not progress.
@@ -80,19 +80,30 @@ def test_outputs_are_in_compilation_order(gen):
     assert order == ["pssc_reg_pkg.sv", "wb_dma_c_pkg.sv"]
 
 
-# --- export API ------------------------------------------------------------
+# --- the API ---------------------------------------------------------------
 
-def test_the_exports_are_the_context_api(sv):
-    """The count defect A destroyed, restated for an API taken from exports:
-    every export is on the context interface and forwarded by the factory,
-    and an operation nobody exported is on neither (design D11)."""
+def _iface(sv, name):
+    """The text of ``interface class <name>`` up to its `endclass`."""
+    start = sv.index(f"interface class {name};")
+    return sv[start:sv.index("endclass", start)]
+
+
+def test_the_public_functions_are_the_api(sv):
+    """The count defect A destroyed, restated for an API taken from
+    visibility (`op_api.py`): every public target function of the root is on
+    the context interface and forwarded by the factory; a channel's are on
+    the channel type's interface, reached through `ch(i)`."""
+    root = _iface(sv, "wb_dma_c_exp_if")
     for op in ("configure_interrupt_routing", "notify_irq", "pause_engine",
                "read_descriptor_residual", "write_descriptor"):
-        assert f"pure virtual task {op}(" in sv, op
+        assert f"pure virtual task {op}(" in root, op
         assert f"      pss_root.{op}(" in sv, op
-    for op in ("configure_channel", "transfer_single", "wait_completion"):
-        assert f"pure virtual task {op}(" not in sv, op
-        assert f"    virtual task {op}(" in sv, op
+    assert "pure virtual function wb_dma_ch_c_exp_if ch(int i);" in root
+    assert "pure virtual function int ch_size();" in root
+    ch = _iface(sv, "wb_dma_ch_c_exp_if")
+    for op in ("configure_channel", "transfer_single"):
+        assert f"pure virtual task {op}(" in ch, op
+        assert f"      pss_comp.{op}(" in sv, op
 
 
 def test_no_interface_class_is_empty(sv):
@@ -111,14 +122,15 @@ def test_no_interface_class_is_empty(sv):
 
 def test_members_keep_their_pss_names(sv):
     """A member is reached as PSS reaches it (`ch[i].wake`, `sub.a`): its PSS
-    name, public. No accessors -- an accessor `ch()` beside a member `ch`
-    would be two members of one name."""
+    name, public. No accessors on the component class -- an accessor `ch()`
+    beside a member `ch` would be two members of one name; they are on the
+    API's adapter classes instead."""
     assert_generated(sv, has=[
         "    wb_dma_regs_c regs;\n    wb_dma_ch_c ch[WB_DMA_MAX_CH];",
         "    wb_dma_ch_regs_c regs;",
         "    channel_c #(bit, 1) wake;",
     ], has_not=[" m_ch", " m_regs", "protected wb_dma_regs_c",
-                 "protected wb_dma_ch_c ", "_if ch(int index)"])
+                 "protected wb_dma_ch_c ch", "_if ch(int index)"])
 
 
 def test_no_component_class_is_parameterized(sv):
@@ -128,7 +140,7 @@ def test_no_component_class_is_parameterized(sv):
                      has=["class wb_dma_ch_c extends wb_dma_c_component;",
                           "class wb_dma_c extends wb_dma_c_component;",
                           "class wb_dma_c_root #(type Timp = wb_dma_c_imp_if) "
-                          "implements wb_dma_c_imp_if, wb_dma_c_ctxt_if;"],
+                          "implements wb_dma_c_imp_if, wb_dma_c_exp_if;"],
                      has_not=["class wb_dma_ch_c #(", "class wb_dma_c #("])
 
 
@@ -147,7 +159,7 @@ def test_construction_is_split_from_the_ctor(sv):
     """`new()` takes only the import API (design D2); the model's constructor
     is a method `create()` runs, then PSS construction (D3)."""
     assert_generated(sv, has=[
-        "static function wb_dma_c_ctxt_if create(Timp pss_imp, addr_handle_t base);",
+        "static function wb_dma_c_exp_if create(Timp pss_imp, addr_handle_t base);",
         "protected function new(Timp imp);",
         "function void initialize(addr_handle_t base);",
         "      pss_model.pss_root.initialize(base);\n"
@@ -307,7 +319,7 @@ def test_constants_are_spelled_by_name(sv):
         "num_ch = WB_DMA_MAX_CH;",
         "pss_imp.write32((at + WB_DMA_DESC_NEXT_OFF), d.next);",
         "status = (at + WB_DMA_DESC_BYTES);",
-    ], has_not=["ch[4];", "num_ch = 4;", "(at + 12)", "(at + 16)"])
+    ], has_not=[" ch[4];", "num_ch = 4;", "(at + 12)", "(at + 16)"])
 
 
 def test_constants_are_declared_with_their_pss_type(gen):
@@ -352,13 +364,87 @@ def test_generated_package_lints_clean(gen):
 def test_zero_operation_model_is_an_error(tmp_path):
     """A model that projects to nothing must fail the build. Every front-end
     defect in this generator's history produced exactly this output and exited
-    0. With the API taken from exports, a model that has operations and
-    exports none projects to nothing too."""
+    0. A model with no public target function projects to nothing too."""
     import argparse
     src = tmp_path / "empty.pss"
     src.write_text("component empty_c { int x;\n"
-                   "  target function void f() { int y = x; } }\n")
+                   "  solve function void f() { int y = x; } }\n")
     ns = argparse.Namespace(progseq_root="empty_c", progseq_package="empty_pkg",
                             output_dir=str(tmp_path))
-    with pytest.raises(ValueError, match="exports nothing"):
+    with pytest.raises(ValueError, match="no public target function"):
         driver.compile([str(src)], target="sv-progseq", opts=ns)
+
+
+# --- hierarchical APIs: names ---------------------------------------------------
+
+def _compile(tmp_path, text, root="top_c"):
+    import argparse
+    src = tmp_path / "m.pss"
+    src.write_text(text)
+    ns = argparse.Namespace(progseq_root=root, progseq_package=f"{root}_pkg",
+                            output_dir=str(tmp_path / "gen"))
+    return driver.compile([str(src)], target="op-model-sv", opts=ns)
+
+
+_LEAF = """
+component leaf_c {
+  target function void peek() { }
+}
+"""
+
+
+@pytest.mark.parametrize("body, what", [
+    # An array's `_size()` against a function of the same type.
+    ("leaf_c pit[2];\n target function void pit_size() { }",
+     r"size of sub-component array 'pit' has the name of the "
+     r"function 'pit_size'"),
+    # An accessor against the factory's own `create()`.
+    ("leaf_c create;", r"accessor of sub-component 'create' has the name of "
+     r"the factory's create\(\)"),
+])
+def test_accessor_names_are_checked(tmp_path, body, what):
+    """An accessor, an array's size and a function share one SV method
+    namespace on a type's API: a clash is refused, not emitted."""
+    with pytest.raises(ValueError, match=what):
+        _compile(tmp_path, _LEAF + "component top_c {\n " + body + "\n}\n")
+
+
+def test_only_public_children_that_lead_to_an_api_have_an_accessor(tmp_path):
+    """A child is on the API if it is public and leads to a public function.
+    `q`'s type has only a private one; `b` is a private instance. A model
+    whose only public functions are a sub-component's still has an API."""
+    res = _compile(tmp_path, _LEAF + """
+component quiet_c { private target function void f() { } }
+component top_c {
+  leaf_c a;
+  private leaf_c b;
+  quiet_c q;
+}
+""")
+    text = "".join(p.read_text() for p in res.outputs
+                   if str(p).endswith((".sv", ".svh")))
+    assert "pure virtual function leaf_c_exp_if a();" in text
+    assert "quiet_c_exp_if" not in text and " q()" not in text
+    assert " b()" not in text
+
+
+def test_a_bare_get_on_a_channel_array_element_discards_its_value(tmp_path):
+    """`wake[ch].get();` -- a blocking get whose token nobody reads -- lowers
+    like the scalar `wake.get();`: a temporary of the element type in a block
+    of its own. The receiver is a subscript, so it has no name of its own to
+    look the channel up by; the array's is used."""
+    res = _compile(tmp_path, """
+import sync_pkg::*;
+component top_c {
+  channel_c<bit, 1> wake[2];
+  channel_c<bit, 1> one;
+  target function void wait_on(int ch) {
+    wake[ch].get();
+    one.get();
+  }
+}
+""")
+    text = "".join(p.read_text() for p in res.outputs
+                   if str(p).endswith((".sv", ".svh")))
+    assert "wake[ch].get(pssc_discard);" in text
+    assert "one.get(pssc_discard);" in text

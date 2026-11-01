@@ -117,8 +117,9 @@ def declared_names(backend, model, s) -> List[Tuple[str, str]]:
                             f"a register accessor of '{acc.base}'"))
     for name in sorted(backend.imports or ()):
         out.append((mangle(name), f"import '{name}'"))
-    if s.yield_mode == "import":
-        out.append(("yield_", "the platform's yield (`--yield import`)"))
+    if s.yield_mode == "import" or s.chan_wait == "poll":
+        out.append(("yield_", "the platform's yield (`--yield import` or "
+                              "`--chan-wait poll`)"))
     return out
 
 

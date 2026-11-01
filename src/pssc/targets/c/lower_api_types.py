@@ -84,12 +84,15 @@ def emit_struct(struct_dtype) -> str:
     reversing; a C struct has no such convention and reversing would only make
     the generated type harder to read against the PSS beside it.
 
-    A `packed_s<>` base means the PSS type HAS a bit layout. That layout is not
-    reproduced by a C struct and is not attempted -- see `c_member_type`. Such
-    a type reaching here at all means it is used as a plain aggregate; the
-    register path is where its layout matters, and that path packs it.
+    A `packed_s<>` base means the PSS type HAS a bit layout. One of at most 64
+    bits is declared as that layout (`emit_packed_union`). A wider one stays a
+    plain struct -- see `c_member_type` -- and `read_struct`/`write_struct`
+    move it member by member, so its C layout never matters.
     """
     name = c_struct_name(struct_dtype)
+    union = emit_packed_union(struct_dtype, name)
+    if union is not None:
+        return union
     lines = [f"typedef struct {{"]
     for f in struct_dtype.fields:
         if _dt_name(f.datatype) == "DataTypeArray":
@@ -101,6 +104,43 @@ def emit_struct(struct_dtype) -> str:
             continue
         lines.append(f"    {c_member_type(f.datatype)} {f.name};")
     lines.append(f"}} {name};")
+    return "\n".join(lines)
+
+
+def emit_packed_union(struct_dtype, name: str):
+    """A `packed_s` struct of at most 64 bits as its packed image: a union of
+    the raw word and the fields as bitfields, or ``None`` for any other struct
+    (`packed_image.union_fields`).
+
+    This is the one place a C API struct DOES carry its PSS layout, because
+    `read_struct` / `write_struct` move it to memory as that layout
+    (docs/design/write-struct-plan.md): `raw` is the image, one access of its
+    own size. Fields are declared by position from the LSB, as the register
+    value unions are (`lower_reg_model.emit_value_union`), under the same
+    little-endian bitfield assumption the header states, and the size is
+    asserted so a compiler that breaks it fails to build rather than moving
+    the wrong bits. Field access, assignment and designated initialisers keep
+    their spelling: the struct is anonymous, so its members are the union's.
+    """
+    from ..packed_image import raw_bits, struct_bits, union_fields
+    fields = union_fields(struct_dtype)
+    if fields is None:
+        return None
+    rb = raw_bits(struct_bits(struct_dtype))
+    ut = f"uint{rb}_t"
+    lines = ["typedef union {", f"    {ut} raw;", "    struct {"]
+    pos = 0
+    for uf in sorted(fields, key=lambda u: u.lsb):
+        if uf.lsb > pos:
+            lines.append(f"        {ut} {'':12} : {uf.lsb - pos:2};")
+        bt = f"int{rb}_t" if uf.signed else ut
+        rng = (f"{uf.lsb}" if uf.width == 1
+               else f"{uf.lsb + uf.width - 1}:{uf.lsb}")
+        lines.append(f"        {bt} {uf.name:12} : {uf.width:2};   /* [{rng}] */")
+        pos = uf.lsb + uf.width
+    lines += ["    };", f"}} {name};",
+              f"PSSC_STATIC_ASSERT(sizeof({name}) == {rb // 8}, "
+              f"{name}_is_{rb // 8}_bytes);"]
     return "\n".join(lines)
 
 

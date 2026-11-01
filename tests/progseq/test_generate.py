@@ -77,7 +77,7 @@ def test_imports_core(gen):
 def test_export_api(gen):
     sv = _read(gen, "dma_regs_pkg.sv")
     # The context API: the model's exports.
-    assert "interface class dma_engine_c_ctxt_if;" in sv
+    assert "interface class dma_engine_c_exp_if;" in sv
     # int return -> output status; explicit input after output
     assert "pure virtual task mem_to_mem_copy(output int status, input int channel," in sv
     # SV keyword renamed
@@ -104,14 +104,14 @@ def test_component_one_class(gen):
     # redirect and the context (design D5, D9)
     assert "class dma_engine_c extends dma_engine_c_component;" in sv
     assert ("class dma_engine_c_root #(type Timp = dma_engine_c_imp_if) "
-            "implements dma_engine_c_imp_if, dma_engine_c_ctxt_if;") in sv
+            "implements dma_engine_c_imp_if, dma_engine_c_exp_if;") in sv
     # register model built over the import API (the factory, which forwards
     # to the platform): at 0 by construction, then at `base` by the model's
     # constructor, whose empty body keeps the flat convention
     assert "regs = new(pss_imp, 0);" in sv
     assert "regs = new(pss_imp, base);" in sv
     # factory returns the context handle
-    assert ("static function dma_engine_c_ctxt_if create(Timp pss_imp, "
+    assert ("static function dma_engine_c_exp_if create(Timp pss_imp, "
             "addr_handle_t base);") in sv
     # construction, then the model's constructor, then PSS construction (D3)
     assert ("dma_engine_c_root #(Timp) pss_model = new(pss_imp);\n"

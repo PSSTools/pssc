@@ -6,16 +6,27 @@
  *     bool try_put(T)       post unless already full
  *     bool try_get(T *)     take unless empty
  *
- * and that restriction is the whole design, not a first cut.
+ * plus, for `--chan-wait poll|yield`, the blocking ends lowered onto them.
  *
- * WHY NO BLOCKING get()/put(). They are the two operations that need a
- * scheduler, and this target has none -- see target_cfg.py and the
- * HAVE_EVENT_WAIT contract. A caller here cannot suspend until another party
- * posts, because there is no other party to run while it is suspended. The
- * generator REJECTS a model that calls them (lower_progseq._reject_blocking_chan)
- * rather than lowering them to something that looks like a wait and is not; a
- * `get()` that silently returned garbage on an empty channel would be a driver
- * that reports a completion nobody signalled.
+ * BLOCKING get()/put(). They are the two operations that need a scheduler,
+ * and this target has none: a caller here cannot suspend until another party
+ * posts, because there is no other party to run while it is suspended. What
+ * the generator does with them is `--chan-wait`:
+ *
+ *     reject  (default) refuse the model, naming the call
+ *     poll    spin on the channel's flag, calling the platform's yield_()
+ *             between tries (pssc_chan1_get_poll). The flag is volatile, so an
+ *             interrupt handler can post it; yield_() can be a WFI, so the
+ *             spin costs no bus traffic between interrupts.
+ *     yield   lower like a PSS `yield` and go on (pssc_chan1_get_yield): a NOP
+ *             under `--yield none`, one yield_() under `--yield import`. For
+ *             a model whose every get() is a hint inside a re-check loop, as
+ *             the WB DMA's wait_hint() is: the caller re-reads the device
+ *             anyway.
+ *
+ * Neither invents a completion: get() under `poll` returns only a posted
+ * value, and under `yield` the value is 0 unless one was posted, for a model
+ * that discards the token.
  *
  * WHY THIS COSTS THE POLLING PROFILE NOTHING. `channel_c` is not only a wait
  * primitive. The WB DMA model's `inflight` guard uses try_get/try_put and never
@@ -41,10 +52,12 @@
  *
  * NOT THREAD-SAFE, deliberately. `try_put`/`try_get` are read-modify-write on a
  * plain object. Every caller in a generated model is the single foreground
- * thread; an interrupt handler posting to `wake` is the one case that is NOT,
- * and it is exactly the case that does not exist on this profile (notify_irq
- * is gated on HAVE_EVENT_WAIT). A platform that adds one must supply its own
- * critical section -- override PSSC_CHAN_ENTER/PSSC_CHAN_EXIT below.
+ * thread, except an interrupt handler that posts (a model's notify method,
+ * called from an ISR). The foreground's try_get is a read-then-clear of
+ * `full`; an ISR post landing between the two is lost. That costs a wake, not
+ * correctness, for a caller that re-checks the device after every wait -- but
+ * a platform that needs every post must supply a critical section: override
+ * PSSC_CHAN_ENTER/PSSC_CHAN_EXIT below (e.g. mask interrupts).
  */
 #ifndef PSSC_CHAN_H
 #define PSSC_CHAN_H
@@ -66,9 +79,12 @@ extern "C" {
 #  define PSSC_CHAN_EXIT()  ((void)0)
 #endif
 
+/* Volatile because an interrupt handler may post while the foreground spins
+ * on `full` (`--chan-wait poll`); without it the compiler may hoist the load
+ * out of the loop. */
 typedef struct pssc_chan1_s {
-    uint64_t v;        /* the held value; meaningful only while `full` */
-    uint8_t  full;     /* 0 = empty, 1 = holds one element */
+    volatile uint64_t v;     /* the held value; meaningful only while `full` */
+    volatile uint8_t  full;  /* 0 = empty, 1 = holds one element */
 } pssc_chan1_t;
 
 static inline void pssc_chan1_init(pssc_chan1_t *c) {
@@ -105,6 +121,38 @@ static inline bool pssc_chan1_try_get(pssc_chan1_t *c, uint64_t *v) {
     }
     PSSC_CHAN_EXIT();
     return ok;
+}
+
+/* Blocking get(), `--chan-wait poll`: take the next posted value, calling
+ * `yield` (the platform's yield_) between tries. Returns only when something
+ * was posted. */
+static inline uint64_t pssc_chan1_get_poll(pssc_chan1_t *c, void (*yield)(void)) {
+    uint64_t v;
+    while (!pssc_chan1_try_get(c, &v)) {
+        yield();
+    }
+    return v;
+}
+
+/* Blocking put(), `--chan-wait poll`: post once there is room. */
+static inline void pssc_chan1_put_poll(pssc_chan1_t *c, uint64_t v,
+                                       void (*yield)(void)) {
+    while (!pssc_chan1_try_put(c, v)) {
+        yield();
+    }
+}
+
+/* Blocking get(), `--chan-wait yield`: yield once (if `yield` is non-null --
+ * `--yield none` passes null, making this a NOP wait), then take a posted
+ * value if there is one (0 if not). Consuming it keeps a stale post from
+ * lingering for a later caller. */
+static inline uint64_t pssc_chan1_get_yield(pssc_chan1_t *c, void (*yield)(void)) {
+    uint64_t v = 0;
+    if (yield) {
+        yield();
+    }
+    (void)pssc_chan1_try_get(c, &v);
+    return v;
 }
 
 #ifdef __cplusplus

@@ -231,11 +231,11 @@ _TIER0_LIST = [
     _e("write_bytes", Disposition.MEM, TARGET_ONLY, "21.12",
        "it takes list<bit[8]>, and the lowering has no list representation"),
     _e("read_struct",  Disposition.MEM, TARGET_ONLY, "21.12",
-       "generic struct parameters are not lowered; serialize the fields, as "
-       "wb_dma_c/functions/write_descriptor.pss does"),
+       "this target does not lower it yet; the C target does (see "
+       "docs/design/write-struct-plan.md)"),
     _e("write_struct", Disposition.MEM, TARGET_ONLY, "21.12",
-       "generic struct parameters are not lowered; serialize the fields, as "
-       "wb_dma_c/functions/write_descriptor.pss does"),
+       "this target does not lower it yet; the C target does (see "
+       "docs/design/write-struct-plan.md)"),
 
     _e("get_offset_of_path", Disposition.FOLD, BOTH, "21.14.6",
        "it takes list<node_s>; use get_offset_of_instance[_array]"),
@@ -294,6 +294,10 @@ _SV_EXT = [
     _e("put",     Disposition.CHANNEL, TARGET_ONLY, "21.9.1"),
     _e("try_get", Disposition.CHANNEL, TARGET_ONLY, "21.9.1"),
     _e("try_put", Disposition.CHANNEL, TARGET_ONLY, "21.9.1"),
+    # Renderable for packed_s structs: targets/packed_image.py decides the
+    # accesses (docs/design/write-struct-plan.md).
+    _e("read_struct",  Disposition.MEM, TARGET_ONLY, "21.12"),
+    _e("write_struct", Disposition.MEM, TARGET_ONLY, "21.12"),
 ]
 
 #: What each target adds beyond COMMON, and what it explicitly cannot do.
@@ -387,6 +391,10 @@ register_extension("op-model-c", [
         # Renderable: pssc_chan1_try_get / _try_put (DEPTH > 1 is rejected).
         _e("try_get", Disposition.CHANNEL, TARGET_ONLY, "21.9.1"),
         _e("try_put", Disposition.CHANNEL, TARGET_ONLY, "21.9.1"),
+        # Renderable for packed_s structs: targets/packed_image.py decides
+        # the accesses (docs/design/write-struct-plan.md).
+        _e("read_struct",  Disposition.MEM, TARGET_ONLY, "21.12"),
+        _e("write_struct", Disposition.MEM, TARGET_ONLY, "21.12"),
 ])
 
 # C++ reaches the same conclusions as C and for the same reasons -- no string

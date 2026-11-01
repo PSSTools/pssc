@@ -1,6 +1,6 @@
 """Lower a PSS component TREE to the C++ programming API.
 
-Each regular component becomes a pure-virtual export interface (``<Cls>_if``)
+Each regular component becomes a pure-virtual export interface (``<Cls>_exp_if``)
 and a class implementing it; the model's `import target/solve function`s become
 one ``<ns>_import_if``, which extends ``pssc::mem_if`` so the platform supplies
 memory access and its own hooks through a single object.
@@ -212,10 +212,10 @@ def _solve_functions(comp, ctor_names=None) -> List[object]:
 
 def _solve_member(fn, be, cls) -> List[str]:
     """One solve function as a member function, rendered as the constructor's
-    body is. Not virtual and not on `<cls>_if`."""
+    body is. Not virtual and not on `<cls>_exp_if`."""
     lines = [""] + doc_block(getattr(fn, "doc", None), "    ", LINE)
     lines.append(f"    // A solve function: the constructor's to call, not on "
-                 f"{cls}_if.")
+                 f"{cls}_exp_if.")
     lines.append(f"    {_ret(fn)} {mangle(fn.name)}({_params(fn)}) {{")
     lines += be.stmts(fn.body, 2)
     lines.append("    }")
@@ -1536,20 +1536,20 @@ def _ret(fn) -> str:
 
 
 def _iface(names, dtype) -> str:
-    return f"{names[dtype]}_if"
+    return f"{names[dtype]}_exp_if"
 
 
 def emit_export_api(node, names, ctor_names=None, model=None) -> str:
     """The pure-virtual operation interface for one component.
 
     Sub-component access is ON THE INTERFACE, returning the child's interface:
-    the root factory hands back a `<Cls>_if`, so anything not reachable through
+    the root factory hands back a `<Cls>_exp_if`, so anything not reachable through
     it is not reachable at all.
     """
     comp = node.dtype
     cls = names[comp]
     ops, subs, head = (_operations(comp, ctor_names), sub_components(comp),
-                       f"struct {cls}_if {{")
+                       f"struct {cls}_exp_if {{")
     if model is not None and ci.in_hierarchy(model.ctx, comp):
         # Its own operations and sub-components; its base interface's by
         # inheritance -- VIRTUAL, as the class derives from both.
@@ -1557,10 +1557,10 @@ def emit_export_api(node, names, ctor_names=None, model=None) -> str:
         ops = [f for f in fns if func_kind(f, ctor_names) == FuncKind.EXPORT_OP]
         subs = sub_components(_view(fields))
         if base is not None:
-            head = f"struct {cls}_if : public virtual {_iface(names, base)} {{"
+            head = f"struct {cls}_exp_if : public virtual {_iface(names, base)} {{"
     lines = doc_block(getattr(comp, "doc", None), "", LINE)
     lines.append(head)
-    lines.append(f"    virtual ~{cls}_if() = default;")
+    lines.append(f"    virtual ~{cls}_exp_if() = default;")
     for fn in ops:
         blank_line(lines)
         lines += doc_block(getattr(fn, "doc", None), "    ", LINE)
@@ -1573,8 +1573,8 @@ def emit_export_api(node, names, ctor_names=None, model=None) -> str:
                 raise ValueError(
                     f"sub-component array '{sub.name}' has no folded size; the "
                     f"generated accessor needs a bound.")
-            lines.append(f"    static constexpr std::size_t "
-                         f"{mangle(sub.name)}_count = {sub.size};")
+            lines.append(f"    std::size_t {mangle(sub.name)}_size() const "
+                         f"{{ return {sub.size}; }}")
             lines.append(f"    virtual {sub_if} &{mangle(sub.name)}"
                          f"(std::size_t i) = 0;")
         else:
@@ -1806,7 +1806,7 @@ def emit_component(node, names, ns: str, *, imports=None, is_root: bool,
     subs = sub_components(comp)
     groups = _reg_group_fields(comp)
 
-    lines: List[str] = [f"class {cls} : public {cls}_if {{"]
+    lines: List[str] = [f"class {cls} : public {cls}_exp_if {{"]
 
     # PSS component state is reachable ALONG THE HIERARCHY -- a parent may read
     # a child's attributes and post to its channels, which is what
@@ -1936,8 +1936,8 @@ def emit_hier_component(node, names, ns: str, model, *, imports=None,
     view = _view(own_fields)
     subs = sub_components(view)
     groups = _reg_group_fields(view)
-    head = (f"class {cls} : public {names[base]}, public virtual {cls}_if {{"
-            if base is not None else f"class {cls} : public virtual {cls}_if {{")
+    head = (f"class {cls} : public {names[base]}, public virtual {cls}_exp_if {{"
+            if base is not None else f"class {cls} : public virtual {cls}_exp_if {{")
     lines: List[str] = [head]
     for parent in parents:
         lines.append(f"    friend class {names[parent]};")
@@ -2100,7 +2100,7 @@ def _emit_factory(cls: str, ns: str, ctor) -> List[str]:
     all_params = f"{ns}_import_if &_imp" + (f", {params}" if params else "")
     fwd = ", ".join(mangle(a.arg) for a in (ctor.args.args if ctor else []))
     return [
-        f"    static std::unique_ptr<{cls}_if> create({all_params}) {{",
+        f"    static std::unique_ptr<{cls}_exp_if> create({all_params}) {{",
         f"        auto _self = std::make_unique<{cls}>(_imp);",
         f"        _self->initialize({fwd});",
         f"        return _self;",

@@ -888,28 +888,33 @@ def _bus_macro(link_style: str, mem: MemAccess = None,
     return lines
 
 
-def _sub_accessors(node, prefixes, style=None) -> List[str]:
-    """``wb_dma_ch(wb_dma_t *s, unsigned i)`` + ``WB_DMA_CH_COUNT``.
+def _sub_accessors(node, prefixes, style=None, subs=None) -> List[str]:
+    """``wb_dma_ch(wb_dma_t *s, unsigned i)``, ``wb_dma_ch_size(wb_dma_t *s)``
+    and ``WB_DMA_CH_SIZE``; ``wb_dma_dma0(wb_dma_t *s)`` for an instance.
 
-    The count is emitted as a macro because a caller needs it in a `for` bound
-    and in an array size, and because it is the number the model states -- the
-    alternative is firmware repeating a 4 the generator already knows.
+    The size is emitted as a macro too because a caller needs it in an array
+    size, and because it is the number the model states -- the alternative is
+    firmware repeating a 4 the generator already knows. The function is the
+    form every language shares (`x_size()`). ``subs`` limits the accessors to
+    those children (the export view's); None gives every child.
     """
     style = _style(style)
     comp = node.dtype
     parent = prefixes[comp]
     parent_t = style.type_name(prefixes.type_name(comp))
     out: List[str] = []
-    for sub in sub_components(comp):
+    for sub in (sub_components(comp) if subs is None else subs):
         name = style.symbol(parent, mangle(sub.name))
         sub_t = style.type_name(prefixes.type_name(sub.dtype))
         if sub.is_array:
-            out.append(
-                f"#define {style.macro(parent, mangle(sub.name) + '_COUNT')} "
-                f"{sub.size}u")
+            size = style.macro(parent, mangle(sub.name) + '_SIZE')
+            out.append(f"#define {size} {sub.size}u")
             out.append(
                 f"static inline {sub_t} *{name}({parent_t} *{HANDLE}, unsigned i) "
                 f"{{ return &{HANDLE}->{mangle(sub.name)}[i]; }}")
+            out.append(
+                f"static inline unsigned {name}_size({parent_t} *{HANDLE}) "
+                f"{{ (void){HANDLE}; return {size}; }}")
         else:
             out.append(
                 f"static inline {sub_t} *{name}({parent_t} *{HANDLE}) "
@@ -924,15 +929,23 @@ def lower_handles(model, prefixes, link_style: str = "vtable",
     Structs in post-order (children first): a parent embeds its children by
     value, so their types must already be complete. The accessors come after ALL
     the structs, since each names two of them.
+
+    The structs are complete -- the caller owns their storage -- but their
+    members are not API. Only the public children that lead to an API get an
+    accessor (`OpModel.apis`).
     """
-    lines = ["/* ----- Component handles. ----- */"]
+    lines = ["/* ----- Component handles. ----- */",
+             "/* The members of these structs are not API: reach a "
+             "sub-component through its accessor below. */"]
     for node in post_order(model):
         lines.append(emit_handle(node, prefixes, link_style, style, reg_map))
         lines.append("")
     lines += _bus_macro(link_style, style=style, reg_map=reg_map)
     acc: List[str] = []
     for node in regular_nodes(model):
-        acc += _sub_accessors(node, prefixes, style)
+        api = model.api(node.dtype)
+        acc += _sub_accessors(node, prefixes, style,
+                              api.children if api else ())
     if acc:
         lines.append("")
         lines.append("/* ----- Sub-component access. ----- */")
@@ -954,10 +967,32 @@ def by_handle_params(fn) -> Set[str]:
             and a.arg not in const}
 
 
+def const_ptr_params(fn) -> Set[str]:
+    """The `const` struct parameters of *fn*. C passes them as a pointer to
+    const: no copy, and the compiler holds the callee to the read-only
+    promise (LRM 20.2.3). A caller with no variable to point at passes a
+    compound literal (see `CBodyEmitter._c_args`)."""
+    const = set((getattr(fn, "metadata", None) or {}).get("const_params", ()))
+    return {a.arg for a in fn.args.args
+            if _dt_name(a.annotation) == "DataTypeStruct" and a.arg in const}
+
+
+def c_param_type(fn, a) -> str:
+    """The C type of operation parameter *a*: `T *` by handle, `const T *`
+    for a `const` struct, else `T`."""
+    ct = c_type(a.annotation)
+    if a.arg in by_handle_params(fn):
+        return f"{ct} *"
+    if a.arg in const_ptr_params(fn):
+        return f"const {ct} *"
+    return ct
+
+
 def _op_params(fn) -> str:
-    handle = by_handle_params(fn)
-    parts = [f"{c_type(a.annotation)} {'*' if a.arg in handle else ''}"
-             f"{mangle(a.arg)}" for a in fn.args.args]
+    parts = []
+    for a in fn.args.args:
+        t = c_param_type(fn, a)
+        parts.append(f"{t}{'' if t.endswith('*') else ' '}{mangle(a.arg)}")
     return (", " + ", ".join(parts)) if parts else ""
 
 
@@ -987,11 +1022,8 @@ def op_signature_parts(fn, ctx: "OpCtx",
     params: List[Tuple[str, str]] = []
     if handle is not None:
         params.append((f"{style.type_name(ctx.type_name)} *", handle))
-    by_handle = by_handle_params(fn)
     for a in fn.args.args:
-        ct = c_type(a.annotation)
-        params.append((f"{ct} *" if a.arg in by_handle else ct,
-                       mangle(a.arg)))
+        params.append((c_param_type(fn, a), mangle(a.arg)))
     return ret, style.symbol(ctx.prefix, mangle(fn.name)), params
 
 
@@ -1032,6 +1064,11 @@ DEFAULT_API = DefaultOpApi()
 
 
 def _linkage(fn, ctx: "OpCtx") -> str:
+    """``fn``'s linkage: `static` if it is not on the model's API
+    (`op_api.py`: private, or in no public instance), else the backend's."""
+    from ..progseq_model import on_api
+    if not on_api(fn):
+        return "static"
     out = ctx.op_api.linkage(fn, ctx)
     if out not in LINKAGES:
         raise ValueError(f"linkage() for '{fn.name}' returned {out!r}; "
@@ -1064,7 +1101,15 @@ def _import_signature(fn) -> str:
     return f"{ret} {mangle(fn.name)}({', '.join(parts) or 'void'})"
 
 
-def lower_imports(imports: Dict[str, object], yield_mode: str = "none") -> str:
+def needs_yield_import(yield_mode: str, chan_wait: str = "reject") -> bool:
+    """Whether the platform supplies `yield_()`: asked for directly
+    (`--yield import`), or needed by a polled blocking channel call
+    (`--chan-wait poll`). `--chan-wait yield` follows `--yield`."""
+    return yield_mode == "import" or chan_wait == "poll"
+
+
+def lower_imports(imports: Dict[str, object], yield_mode: str = "none",
+                  chan_wait: str = "reject") -> str:
     """Prototypes for what the PLATFORM supplies, under their PSS names.
 
     THE NAME IS THE MODEL'S, not a table's. `pssc_r32` and friends are hard-coded
@@ -1086,6 +1131,7 @@ def lower_imports(imports: Dict[str, object], yield_mode: str = "none") -> str:
 
     `--yield import` adds `yield_()`: that mode lowers a PSS `yield` to a call
     on the platform, and a call with no prototype is an implicit declaration.
+    `--chan-wait poll` adds it too: a blocking get() spins on it.
     C++ declares it on its import interface, and SV on `import_api_if`.
     """
     lines = []
@@ -1097,8 +1143,8 @@ def lower_imports(imports: Dict[str, object], yield_mode: str = "none") -> str:
                   " with the PSS name. */"]
         for name in sorted(imports):
             lines.append(f"{_import_signature(imports[name])};")
-    if yield_mode == "import":
-        lines += ["/* `--yield import`: what a PSS `yield` costs on this platform"
+    if needs_yield_import(yield_mode, chan_wait):
+        lines += ["/* `--yield import` / `--chan-wait`: what a wait costs on this platform"
                   " (a WFI, a */",
                   "/* watchdog kick, a delay). Supplied by the PLATFORM. */",
                   "void yield_(void);"]
@@ -1150,6 +1196,7 @@ _MEM_PRIMS = {
 C_BUILTINS = frozenset({
     "message", "print", "error", "fatal",
     "make_handle_from_handle", "addr_value",
+    "read_struct", "write_struct",
 }) | frozenset(_MEM_PRIMS)
 
 
@@ -1515,6 +1562,7 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
     def __init__(self, fn, comp, prefix: str, reg_style: str = "bitfields",
                  yield_mode: str = "none", match_default: str = "message",
                  message_style: str = "import", handle: str = HANDLE,
+                 chan_wait: str = "reject",
                  prefixes=None, link_style: str = "vtable", imports=None,
                  mem: MemAccess = None, style=None, accs=None,
                  ctor_names=None, reg_map: bool = False, ctx=None):
@@ -1545,6 +1593,8 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         self.prefix = prefix
         self.reg_style = reg_style
         self.yield_mode = yield_mode
+        #: How a blocking channel get()/put() lowers (`--chan-wait`).
+        self.chan_wait = chan_wait
         self.match_default = match_default
         self.message_style = message_style
         #: Name of the handle parameter in the emitted signature: `HANDLE`,
@@ -1563,8 +1613,9 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         #: Operations of this component, so a call to a sibling operation is
         #: recognised as one and gets the handle threaded through.
         self.model_ops = {f.name for f in comp.functions}
-        #: A by-handle parameter is a pointer; the body reads it as `(*v)`.
-        handle = by_handle_params(fn)
+        #: A by-handle or `const` struct parameter is a pointer; the body
+        #: reads it as `(*v)`.
+        handle = by_handle_params(fn) | const_ptr_params(fn)
         self.arg_rename = {a.arg: (f"(*{mangle(a.arg)})" if a.arg in handle
                                    else mangle(a.arg)) for a in fn.args.args}
         self.arg_names = set(self.arg_rename)
@@ -1674,13 +1725,22 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
     def _chan_call(self, call) -> Optional[str]:
         """`inflight.try_get(tok)` / `wake.try_put(1)` -> the pssc_chan1 runtime.
 
-        Blocking `get()`/`put()` are REJECTED by name rather than lowered. They
-        are the only two channel operations that need a scheduler, this target
-        has none, and a `get()` that returned whatever was in the struct would
-        report a completion nobody signalled. A model reaches here having
-        already been told, by HAVE_EVENT_WAIT=false, that it cannot wait on an
-        event -- so a blocking call surviving into the C means the model asked
-        anyway.
+        Blocking `get()`/`put()` need a scheduler, and this target has none.
+        `--chan-wait` says what to do instead:
+
+        `reject` (default)
+            Refuse by name. A `get()` that returned whatever was in the struct
+            would report a completion nobody signalled.
+        `poll`
+            Spin on the channel's (volatile) flag, calling the platform's
+            `yield_()` between tries -- `pssc_chan1_get_poll` /
+            `pssc_chan1_put_poll`. Waits for a real post, which an ISR can make.
+        `yield`
+            Lower like a PSS `yield` statement and go on: a NOP under
+            `--yield none` (the default), one `yield_()` under `--yield
+            import`. A posted value is consumed (0 if none); a `put()` is a
+            coalescing `try_put`. Right for a model whose every `get()` is a
+            hint inside a loop that re-checks the device.
         """
         name = self._chan_name(call)
         if name is None:
@@ -1694,14 +1754,28 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             return f"pssc_chan1_try_put({ref}, {self.expr(args[0])})"
         if m == "try_get":
             return f"pssc_chan1_try_get({ref}, &{self.expr(args[0])})"
+        if m in ("get", "put") and self.chan_wait == "poll":
+            if m == "get":
+                return f"pssc_chan1_get_poll({ref}, yield_)"
+            if len(args) != 1:
+                raise ValueError("channel put() takes one argument")
+            return f"pssc_chan1_put_poll({ref}, {self.expr(args[0])}, yield_)"
+        if m in ("get", "put") and self.chan_wait == "yield":
+            if m == "get":
+                y = "yield_" if self.yield_mode == "import" else "0"
+                return f"pssc_chan1_get_yield({ref}, {y})"
+            if len(args) != 1:
+                raise ValueError("channel put() takes one argument")
+            return f"(void)pssc_chan1_try_put({ref}, {self.expr(args[0])})"
         if m in ("get", "put"):
             raise ValueError(
                 f"'{name}.{m}()' is a BLOCKING channel operation, and the C "
                 f"target has no scheduler to suspend to (HAVE_EVENT_WAIT is "
                 f"false for this target -- see targets/target_cfg.py). Use "
-                f"try_{m}(), or guard the call with "
-                f"`compile if (target_cfg_pkg::HAVE_EVENT_WAIT)` as "
-                f"src/pss/wb_dma_ch_c/functions/wait_hint.pss does.")
+                f"try_{m}(), generate with `--chan-wait poll` or "
+                f"`--chan-wait yield` to lower it onto the platform's "
+                f"yield_(), or guard the call with "
+                f"`compile if (target_cfg_pkg::HAVE_EVENT_WAIT)`.")
         raise ValueError(
             f"unsupported channel method '{m}' on '{name}'. The C channel "
             f"runtime implements try_put/try_get (share/c/pssc_chan.h).")
@@ -2305,11 +2379,14 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         return (f"(({self.expr(e.test)}) ? ({self.expr(e.body)}) : "
                 f"({self.expr(e.orelse)}))")
 
-    def _c_args(self, args, fn) -> List[str]:
+    def _c_args(self, args, fn, const_ptr: bool = True) -> List[str]:
         """Call arguments, each converted to its parameter's declared type
-        (8.7.2, "function call parameters")."""
+        (8.7.2, "function call parameters"). ``const_ptr``: `fn` takes its
+        `const` struct parameters as `const T *` -- every operation does; a
+        platform import (`lower_imports`) takes them by value."""
         params = list(getattr(getattr(fn, "args", None), "args", None) or ())
         handle = by_handle_params(fn) if params else set()
+        cptr = const_ptr_params(fn) if params and const_ptr else set()
         args = with_defaults(args, fn) if params else args
         out = []
         for i, a in enumerate(args):
@@ -2317,6 +2394,9 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
                 if i < len(params) else None
             if i < len(params) and params[i].arg in handle:
                 out.append(self._handle_arg(a, fn, params[i].arg))
+                continue
+            if i < len(params) and params[i].arg in cptr:
+                out.append(self._const_ptr_arg(a, ann))
                 continue
             out.append(self.convert_to(a, self.types.of_datatype(ann))
                        if ann is not None else self.expr(a))
@@ -2344,6 +2424,28 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
                 text[2:-1].isidentifier():
             return text[2:-1]
         return f"&{text}"
+
+    def _const_ptr_arg(self, a, ann) -> str:
+        """The argument of a `const` struct parameter (`const T *`): the
+        address of the caller's struct when it is a variable, else a compound
+        literal holding the value -- `(T[]){ v }`, an array of one whose
+        element is initialized from `v` and which decays to the pointer. It
+        lives until the end of the enclosing block, past the call."""
+        k = a
+        while _dt_name(k) in ("ExprAttribute", "ExprSubscript"):
+            if _dt_name(k) == "ExprAttribute" and \
+                    _dt_name(k.value) == "TypeExprRefSelf":
+                break
+            k = k.value
+        if _dt_name(k) in ("ExprRefLocal", "ExprAttribute"):
+            text = self.expr(a)
+            if text.startswith("(*") and text.endswith(")") and \
+                    text[2:-1].isidentifier():
+                return text[2:-1]
+            return f"&{text}"
+        value = (self.convert_to(a, self.types.of_datatype(ann))
+                 if ann is not None else self.expr(a))
+        return f"({c_type(ann)}[]){{ {value} }}"
 
     # -- calls, one hook per Disposition -------------------------------------
     #
@@ -2427,6 +2529,8 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             return self.expr(args[0])
         if name in _MEM_PRIMS:
             return self._mem_call(name, args)
+        if name in ("read_struct", "write_struct"):
+            return self._struct_mem_call(name, args, call)
         if name in ("message", "print"):
             return self._message_call(name, args)
         if name in ("error", "fatal"):
@@ -2473,14 +2577,68 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
             # converted to it, so `write8(h, 0x1FF)` writes 0xFF (W8).
             rendered[1] = self.convert_to(args[1],
                                           PssType("int", width, False))
+        return self._mem_access(direction, width, *rendered)
+
+    def _mem_access(self, direction: str, width: int, addr: str,
+                    value: Optional[str] = None) -> str:
+        """One access of ``width`` bits at the rendered address ``addr``,
+        through the seam `_mem_call` describes."""
         if self.reg_map:
-            ptr = f"(volatile void *)(uintptr_t)({rendered[0]})"
+            ptr = f"(volatile void *)(uintptr_t)({addr})"
             if direction == "read":
                 return self.mem.reg_ptr_read(width, ptr)
-            return self.mem.reg_ptr_write(width, ptr, rendered[1])
+            return self.mem.reg_ptr_write(width, ptr, value)
         if direction == "read":
-            return self.mem.read(width, self.h, rendered[0])
-        return self.mem.write(width, self.h, rendered[0], rendered[1])
+            return self.mem.read(width, self.h, addr)
+        return self.mem.write(width, self.h, addr, value)
+
+    def _struct_mem_call(self, name: str, args, call) -> str:
+        """`_struct_mem_parts` as one comma expression, for a call that is
+        part of a larger expression; `stmt_expr` writes a call that is a
+        statement as one statement per access."""
+        parts = self._struct_mem_parts(name, args, call)
+        return parts[0] if len(parts) == 1 else f"({', '.join(parts)})"
+
+    def _struct_mem_parts(self, name: str, args, call) -> List[str]:
+        """`write_struct(h, s)` / `read_struct(h, s)` (21.12): the packed image
+        of ``s`` moved by the accesses `packed_image.access_plan` decides --
+        one access of the struct's own size through its union's `raw`, or,
+        wider than 64 bits, each member at its own size. Every access goes
+        through `_mem_access`, so the struct reaches memory by the same route
+        a `write32` does, under every link style.
+
+        The accesses come back in address order, one expression each; both
+        arguments are read once per access (`packed_image.check_call`).
+        """
+        from ..packed_image import access_plan, check_call
+        h_e, s_e = check_call(name, args, call)
+        t = self.types.type_of(s_e)
+        if t is None or t.kind != "struct":
+            raise Refusal(f"'{name}': the second argument is not a struct",
+                          call)
+        plan = access_plan(self.types.resolve(t.dtype), where=(call,))
+        h, s = self.expr(h_e), self.expr(s_e)
+        if s.startswith("(*") and s.endswith(")") and s[2:-1].isidentifier():
+            s, dot = s[2:-1], "->"              # a by-handle parameter
+        else:
+            dot = "."
+        parts = []
+        for a in plan:
+            addr = h if a.offset == 0 else f"({h} + {a.offset}u)"
+            lv = s + dot + ".".join(a.path + (("raw",) if a.raw else ()))
+            whole = not a.raw or (a.shift == 0 and a.width == a.raw_bits)
+            if name == "write_struct":
+                v = lv if whole else f"(uint{a.width}_t)({lv} >> {a.shift})"
+                parts.append(self._mem_access("write", a.width, addr, v))
+                continue
+            rd = self._mem_access("read", a.width, addr)
+            if whole:
+                parts.append(f"{lv} = {rd}")
+            elif a.shift == 0:
+                parts.append(f"{lv} = (uint{a.raw_bits}_t){rd}")
+            else:
+                parts.append(f"{lv} |= (uint{a.raw_bits}_t){rd} << {a.shift}")
+        return parts
 
     def _report_call(self, name: str, args) -> str:
         """`error(fmt, ...)` / `fatal(status, fmt, ...)` (LRM 21.3) as the
@@ -2567,7 +2725,8 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         # the two cannot disagree about the signature.
         if name is not None and name in self.imports:
             return (f"{mangle(name)}("
-                    + ", ".join(self._c_args(call.args, self.imports[name]))
+                    + ", ".join(self._c_args(call.args, self.imports[name],
+                                             const_ptr=False))
                     + ")")
         raise ValueError(
             f"call to '{name or _dt_name(func)}' has no lowering in the C "
@@ -2749,6 +2908,10 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
                 if one is None:
                     return self._composed_masked_write(*parts, ind)
                 return [f"{self.pad(ind)}{one};"]
+        if _dt_name(e) == "ExprCall" and \
+                _builtin_name(e.func) in ("read_struct", "write_struct"):
+            return [f"{self.pad(ind)}{p};" for p in
+                    self._struct_mem_parts(_builtin_name(e.func), e.args, e)]
         return [f"{self.pad(ind)}{self.expr(e)};"]
 
     def stmt_return(self, s, ind: int) -> List[str]:
@@ -3562,7 +3725,7 @@ def _solve_impl(comp, prefix, prefixes, emitter_cls, qual, be_kw,
 def lower_impl(model, prefixes, *, link_style: str = "vtable",
                static_inline: bool = False, reg_style: str = "bitfields",
                yield_mode: str = "none", match_default: str = "message",
-               message_style: str = "import",
+               message_style: str = "import", chan_wait: str = "reject",
                lifecycle: str = "malloc", imports=None, style=None,
                accs=None, emitter_cls=None, emit_operation=None,
                reg_map: bool = False, api=None, lifecycle_impl=None) -> str:
@@ -3580,7 +3743,8 @@ def lower_impl(model, prefixes, *, link_style: str = "vtable",
     qual = "static inline " if static_inline else ""
     emitter_cls = emitter_cls or CBodyEmitter
     emit_operation = emit_operation or lower_operation
-    be_kw = dict(yield_mode=yield_mode, match_default=match_default,
+    be_kw = dict(yield_mode=yield_mode, chan_wait=chan_wait,
+                 match_default=match_default,
                  message_style=message_style, imports=imports, style=style,
                  accs=accs, reg_map=reg_map, ctx=getattr(model, "ctx", None))
     ctor_names = model.ctor_names

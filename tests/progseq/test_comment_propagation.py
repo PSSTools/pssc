@@ -36,7 +36,7 @@ component component_c {
      *
      * Completes when the read returns.
      */
-    target function int probe(int c) {
+    private target function int probe(int c) {
         // Read the status word.
         int s = 0;
 
@@ -84,10 +84,6 @@ component pss_top {
     target function void stop_first() {
         int was = armed;
     }
-
-    // The API: op-model-sv puts only exports on it.
-    export target function arm_first;
-    export target function stop_first;
 }
 '''
 
@@ -186,7 +182,8 @@ def test_a_trailing_comment_stays_on_its_statement_line(sv):
 def test_the_doc_block_is_on_both_the_prototype_and_the_implementation(sv):
     """The context interface is what a caller reads; the body is what a
     debugger reads. The one place a comment is deliberately duplicated -- and
-    only for an export, since only an export has a prototype there.
+    only for a function on the API, since only those have a prototype there
+    (`probe` is private).
     """
     assert sv.count("/** Arm the first channel. */") == 2
     assert "pure virtual task arm_first" in sv

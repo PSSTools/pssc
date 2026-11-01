@@ -223,8 +223,8 @@ using wb_dma_import_if = pssc::mem_if;   // this model declares no imports
  * makes the core trustworthy without a second regression: every SystemVerilog
  * run drives the core through the end-to-end wrappers.
  */
-struct wb_dma_ch_c_if {
-    virtual ~wb_dma_ch_c_if() = default;
+struct wb_dma_ch_c_exp_if {
+    virtual ~wb_dma_ch_c_exp_if() = default;
 
     /**
      * Block until the operation running on this channel reaches a terminal state.
@@ -700,8 +700,8 @@ struct wb_dma_ch_c_if {
  * * **bridge_access** -- the pass-through path is reachable only with a target
  *   on the far interface; omitted by review decision.
  */
-struct wb_dma_c_if {
-    virtual ~wb_dma_c_if() = default;
+struct wb_dma_c_exp_if {
+    virtual ~wb_dma_c_exp_if() = default;
 
     /**
      * Route a set of channels to one of the two aggregate interrupt outputs.
@@ -793,12 +793,12 @@ struct wb_dma_c_if {
      */
     virtual pssc::addr_t write_descriptor(pssc::addr_t at, pssc::addr_t prev, wb_dma_desc_s &desc) = 0;
 
-    static constexpr std::size_t ch_count = 4;
-    virtual wb_dma_ch_c_if &ch(std::size_t i) = 0;
+    std::size_t ch_size() const { return 4; }
+    virtual wb_dma_ch_c_exp_if &ch(std::size_t i) = 0;
 };
 
 // ----- Components. -----
-class wb_dma_ch_c : public wb_dma_ch_c_if {
+class wb_dma_ch_c : public wb_dma_ch_c_exp_if {
     friend class wb_dma_c;
     wb_dma_import_if &imp_;
     // Which channel this is, in ``dma_req_i``/``dma_ack_o`` and INT_SRC bit
@@ -1423,7 +1423,7 @@ public:
     }
 };
 
-class wb_dma_c : public wb_dma_c_if {
+class wb_dma_c : public wb_dma_c_exp_if {
     wb_dma_import_if &imp_;
     // How many channels this instance actually uses.
     //
@@ -1612,9 +1612,9 @@ public:
         return (at + 16);
     }
 
-    wb_dma_ch_c_if &ch(std::size_t i) override { return ch_[i]; }
+    wb_dma_ch_c_exp_if &ch(std::size_t i) override { return ch_[i]; }
 
-    static std::unique_ptr<wb_dma_c_if> create(wb_dma_import_if &_imp, pssc::addr_t base) {
+    static std::unique_ptr<wb_dma_c_exp_if> create(wb_dma_import_if &_imp, pssc::addr_t base) {
         auto _self = std::make_unique<wb_dma_c>(_imp);
         _self->initialize(base);
         return _self;
