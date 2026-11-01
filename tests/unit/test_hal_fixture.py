@@ -302,10 +302,10 @@ def test_state_without_a_handle_is_refused_with_its_location(hal, tmp_path):
     from pssc import driver
 
     src = MODEL.read_text().replace(
-        "    target function void kick() {",
+        "    private target function void kick() {",
         "    bit[32] count;\n"
         "    target function bit[32] get_count() { return count; }\n"
-        "    target function void kick() {")
+        "    private target function void kick() {")
     (tmp_path / "m.pss").write_text(src)
     with pytest.raises(driver.CompileError) as ei:
         _compile(TARGET, tmp_path / "out", src=tmp_path / "m.pss")

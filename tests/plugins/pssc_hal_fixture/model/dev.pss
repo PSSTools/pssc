@@ -100,7 +100,7 @@ component dev_c {
         return dev_pkg::status_e::STATUS_OK;
     }
 
-    target function void kick() {
+    private target function void kick() {
         ctl.go.write_val(1);
     }
 
