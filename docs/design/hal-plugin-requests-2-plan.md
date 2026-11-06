@@ -23,8 +23,8 @@ older than that.
 | Phase | Content | State |
 |-------|---------|-------|
 | 0 | Rulings R-Q1..R-Q8 (§2) | **partly ruled** 2026-11-06: R-Q1, R-Q2, R-Q7 as recommended; R-Q3 **widened** (symbolic by default in op-model-c); R-Q4 restated to match; R-Q5, R-Q6, R-Q8 stand as recommended unless reopened |
-| 1 | P7: raise the pssparser floor | **done** 2026-11-06, ready to commit |
-| 2 | P1: a package `const` folds as itself (bug) | **done** 2026-11-06, ready to commit |
+| 1 | P7: raise the pssparser floor | **committed** 2026-11-06 (`475275f`, pushed) |
+| 2 | P1: a package `const` folds as itself (bug) | **committed** 2026-11-06 (pushed) |
 | 3 | P2: op-model-c keeps named constants symbolic by default | not started; needs phase 2 |
 | 4 | P5 + P6: prelude sees its sources, dedup, `pssc.preludes` | not started |
 | 5 | P3: keep detached comments in bodies (opt-in) | not started |

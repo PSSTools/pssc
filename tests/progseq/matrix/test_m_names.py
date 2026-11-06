@@ -176,6 +176,31 @@ component pss_top {""" + ONE + """
     message(LOW, "%d %d", G, ::G);
   }
 }""", ["4 41 7 5", "1 7"], covers=("EX-REF.6",)),
+
+    # A package `const` named like an enum item. pssparser links `OPT_B` to
+    # the constant; pssc folded only a `static const` through the linker and
+    # found the ITEM by name (ordinal 1), so the early return was dead.
+    "a package const named like an enum item": Case("""
+package opt_pkg {
+  enum opt_e { OPT_A }
+  extend enum opt_e { OPT_B }
+  const int OPT_B = 0;
+}
+package other_pkg { const int OPT_B = 9; }
+import opt_pkg::*;
+component pss_top {""" + ONE + """
+  function bit[32] f(bit[32] mode) {
+    if (mode != 0 && OPT_B == 0) { return 2; }
+    return 3;
+  }
+  target function void run() {
+    a.STS.write_val(f(1));
+    a.STS.write_val(opt_pkg::OPT_B + 4);
+    a.STS.write_val(other_pkg::OPT_B);
+    a.STS.write_val((bit[32])opt_e::OPT_B);
+  }
+}""", ["write 32 0x1004 0x2", "write 32 0x1004 0x4", "write 32 0x1004 0x9",
+       "write 32 0x1004 0x1"], covers=("EX-REF.6", "DT-ENUM.14")),
 }
 
 test_construct = define_tests(CASES)

@@ -218,6 +218,15 @@ def _node_key(node) -> int:
     return nid() if callable(nid) else id(node)
 
 
+def _const_by_name(ctx, parts) -> Optional[int]:
+    """The package constant ``parts`` (a qualified path) names in
+    ``ctx.const_map``: the qualified name first, then the bare one. A
+    fallback for a name the linker left unresolved. Tested with `is None`:
+    a constant may be 0."""
+    value = ctx.const_map.get("::".join(parts))
+    return ctx.const_map.get(parts[-1]) if value is None else value
+
+
 def _is_selected(node) -> bool:
     """True if reference *node* carries a bit/part select or a subscript
     (`D[3:0]`, `D[1]`): it names a part of what it references."""
@@ -830,7 +839,8 @@ class AstToIrTranslator:
             elif isinstance(child, pss_ast.ExportAction):
                 self._record_export_action(ctx, child)
             elif isinstance(child, pss_ast.Field):
-                # A package- or global-scope field is a `static const`. Its
+                # A package- or global-scope field is a `static const`,
+                # `static` written or not (_is_static_const). Its
                 # value is folded so it can size an array: `wb_dma_ch_c
                 # ch[WB_DMA_MAX_CH]` must reach the IR as a 4-element array, not
                 # as `size=-1`, or nothing downstream can emit the accessors or
@@ -902,11 +912,14 @@ class AstToIrTranslator:
         return _Phase.DECLARE
 
     def _record_const(self, ctx: AstToIrContext, field, namespace_prefix: str = "") -> None:
-        """Fold a package-scope ``static const`` with a constant initializer.
+        """Fold a package-scope ``const`` (`static` or not) with a constant
+        initializer.
 
         Recorded under both the bare and the qualified name, matching how types
         are registered, so `WB_DMA_MAX_CH` and `wb_dma_regs_pkg::WB_DMA_MAX_CH`
-        both resolve. Non-constant initializers are skipped rather than guessed
+        both resolve. These names are a fallback for a reference the linker
+        left unresolved; what it resolved is folded from its declaration.
+        Non-constant initializers are skipped rather than guessed
         at -- an unfolded constant leaves the array size at -1, which is loud
         downstream, while a wrong fold would not be.
         """
@@ -951,15 +964,31 @@ class AstToIrTranslator:
         ctx.static_consts[key] = value
         return value
 
+    @staticmethod
+    def _is_static_const(decl) -> bool:
+        """Whether field *decl* is a `static const`: declared `static`, or at
+        package scope, where there is no instance for it to belong to (LRM
+        allows `const` there without `static`; ruling R-Q1). Whether it is
+        `const` is _static_const_value's to check."""
+        if not isinstance(decl, pss_ast.Field):
+            return False
+        attr = int(decl.getAttr()) if hasattr(decl, 'getAttr') else 0
+        return bool(attr & int(pss_ast.FieldAttr.Static)) or isinstance(
+            decl.getParent(), (pss_ast.PackageScope, pss_ast.GlobalScope))
+
+    def _linked_decl(self, ctx: AstToIrContext, expr):
+        """The declaration *expr*'s linker target names, or None if the
+        linker left it unresolved. A reference the linker resolved is never
+        folded by NAME: the name may also be an enum item's, or another
+        package's constant's (ruling R-Q2)."""
+        ref = expr.getTarget() if hasattr(expr, 'getTarget') else None
+        return self._symbol_scope_at(ctx, ref, depth=0) if ref is not None else None
+
     def _linked_static_const(self, ctx: AstToIrContext, expr):
         """The folded value of the `static const` *expr*'s linker target
         names, or None."""
-        ref = expr.getTarget() if hasattr(expr, 'getTarget') else None
-        decl = self._symbol_scope_at(ctx, ref, depth=0) if ref is not None else None
-        if not isinstance(decl, pss_ast.Field):
-            return None
-        attr = int(decl.getAttr()) if hasattr(decl, 'getAttr') else 0
-        if not attr & int(pss_ast.FieldAttr.Static):
+        decl = self._linked_decl(ctx, expr)
+        if not self._is_static_const(decl):
             return None
         return self._static_const_value(ctx, decl)
 
@@ -1134,8 +1163,7 @@ class AstToIrTranslator:
         for n in (node, getattr(node, 'getType_id', lambda: None)()):
             ref = n.getTarget() if hasattr(n, 'getTarget') else None
             decl = self._symbol_scope_at(ctx, ref, 0) if ref is not None else None
-            if isinstance(decl, pss_ast.Field) \
-                    and int(decl.getAttr()) & int(pss_ast.FieldAttr.Static):
+            if self._is_static_const(decl):
                 return self._ref_qname(ctx, ref, decl)
         return None
 
@@ -1774,8 +1802,7 @@ class AstToIrTranslator:
                 if hasattr(eid, 'getId'):
                     parts.append(eid.getId())
             if parts:
-                return (ctx.const_map.get("::".join(parts))
-                        or ctx.const_map.get(parts[-1]))
+                return _const_by_name(ctx, parts)
         # pkg::NAME
         if isinstance(expr, pss_ast.ExprRefPathStatic) and expr.numBase() > 0:
             parts = []
@@ -1785,8 +1812,7 @@ class AstToIrTranslator:
                 if eid is not None and hasattr(eid, 'getId'):
                     parts.append(eid.getId())
             if parts:
-                return (ctx.const_map.get("::".join(parts))
-                        or ctx.const_map.get(parts[-1]))
+                return _const_by_name(ctx, parts)
         # NAME, as an unqualified reference: ExprRefPathContext -> hier id.
         hier = getattr(expr, 'getHier_id', lambda: None)()
         if hier is not None and getattr(hier, 'numElems', lambda: 0)() > 0:
@@ -1796,8 +1822,7 @@ class AstToIrTranslator:
                 if hasattr(eid, 'getId'):
                     parts.append(eid.getId())
             if parts:
-                return (ctx.const_map.get("::".join(parts))
-                        or ctx.const_map.get(parts[-1]))
+                return _const_by_name(ctx, parts)
         leaf = getattr(expr, 'getLeaf', lambda: None)()
         if leaf is not None and hasattr(leaf, 'getId'):
             return ctx.const_map.get(leaf.getId())
@@ -5103,13 +5128,15 @@ class AstToIrTranslator:
         if linked is not None:
             # `k::D[7:4]`: the slice was dropped (I14).
             return self._apply_ref_bit_slice(ctx, expr, linked)
-        for key in (qualified, parts[-1]):
-            if key in ctx.const_map:
-                return self._apply_ref_bit_slice(
-                    ctx, expr, ir.ExprConstant(value=ctx.const_map[key]))
-        enum_val = self._resolve_enum_constant(ctx, parts[-1])
-        if enum_val is not None:
-            return ir.ExprConstant(value=enum_val)
+        if self._linked_decl(ctx, expr) is None:
+            # By name only for what the linker left unresolved (R-Q2).
+            for key in (qualified, parts[-1]):
+                if key in ctx.const_map:
+                    return self._apply_ref_bit_slice(
+                        ctx, expr, ir.ExprConstant(value=ctx.const_map[key]))
+            enum_val = self._resolve_enum_constant(ctx, parts[-1])
+            if enum_val is not None:
+                return ir.ExprConstant(value=enum_val)
 
         if self.debug:
             self.logger.debug(f"static reference not folded: {qualified}")
@@ -5128,10 +5155,7 @@ class AstToIrTranslator:
                 or not 0 <= idx < getattr(scope, "numChildren", lambda: 0)():
             return None
         decl = scope.getChild(idx)
-        if not isinstance(decl, pss_ast.Field):
-            return None
-        attr = int(decl.getAttr()) if hasattr(decl, 'getAttr') else 0
-        if not attr & int(pss_ast.FieldAttr.Static):
+        if not self._is_static_const(decl):
             return None
         value = self._static_const_value(ctx, decl)
         if value is None:
@@ -5494,13 +5518,17 @@ class AstToIrTranslator:
                     # was dropped, so `C[0]` read as `C` (I14).
                     return self._apply_ref_bit_slice(ctx, expr, self._apply_subscripts(
                         ctx, elems[0], linked))
-            enum_val = self._resolve_enum_constant(ctx, name)
-            if enum_val is not None:
-                return self._apply_ref_bit_slice(
-                    ctx, expr, ir.ExprConstant(value=enum_val))
-            if name in ctx.const_map and name not in ctx.local_vars:
-                return self._apply_ref_bit_slice(
-                    ctx, expr, ir.ExprConstant(value=ctx.const_map[name]))
+            # By name only for what the linker left unresolved (R-Q2): an
+            # enum item named like a linked package constant folded as the
+            # item.
+            if self._linked_decl(ctx, expr) is None:
+                enum_val = self._resolve_enum_constant(ctx, name)
+                if enum_val is not None:
+                    return self._apply_ref_bit_slice(
+                        ctx, expr, ir.ExprConstant(value=enum_val))
+                if name in ctx.const_map and name not in ctx.local_vars:
+                    return self._apply_ref_bit_slice(
+                        ctx, expr, ir.ExprConstant(value=ctx.const_map[name]))
 
         # Build the ExprAttribute chain starting from self. (`super.x` was
         # handled above: the front end gives it its own node, ExprRefPathSuper.)
