@@ -3,7 +3,7 @@
 The front end already produces STRUCTURED diagnostics: every marker
 ``pssparser`` collects carries a severity, a message, a file, a line, a column,
 the extent of the offending token and a diagnostic code (see
-``pssparser.parser.Parser._collectMarkers``). What reaches a user, though, is
+``ParseException.markers``). What reaches a user, though, is
 whatever someone chose to print -- and a location rendered at the END of a
 sentence is a location no editor, IDE problem matcher or log filter can act on.
 

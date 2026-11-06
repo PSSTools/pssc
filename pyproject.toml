@@ -24,7 +24,9 @@ dependencies = [
   # PSS018, PSS064) and every constraint statement is located -- the tests
   # expect those diagnostics from the parser, not from ast2ir.
   # 3.5: annotation values (`pssparser.annotations`) and their checks (PSS150).
-  "pssparser>=3.5",
+  # 3.6: function access (`ast.FunctionAccess`), which says what is on the
+  # op-model API (`targets/op_api.py`). tests/unit/test_dependency_floors.py.
+  "pssparser>=3.6",
   # 0.2.0 across the zuspec set: pssc reads IR that 0.1.0 does not have
   # (typed and named constants, FlowKind/JoinKind, the action and component
   # trees), and the 0.2.0 backends read it too. Without floors a resolver
