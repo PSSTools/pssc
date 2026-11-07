@@ -152,7 +152,16 @@ that clause's `else`, never in front of the chain (`docs/design/if-chain-plan.md
 
 Comment attachment happens in `BodyWalker.stmt` alone, so every nesting level
 of every ported language carries its PSS prose. A statement that lowers to no
-lines takes its comment with it.
+lines takes its comment with it. The exception is a comment-only statement
+(`comments.is_comment_only`): a `StmtPass` that ast2ir appends to a block,
+under `keep_detached_comments`, for the detached comment after its last
+statement. It renders as its comment alone, and Python adds `pass` if the
+block is otherwise empty. A statement's `comment` may hold several blocks
+separated by a `comments.RUN_BREAK` line (a form feed, never an empty line,
+which is a paragraph break); `comment_lines` renders each as its own
+comment. The option is per compile (`--keep-detached-comments`) or per
+target class (`OpModelTarget.keep_detached_comments`), and file-scope and
+declaration comments stay dropped either way.
 
 The two scans are free functions, not methods: `scan_write_only` (locals the
 model assigns and never reads — emitted as `(void)x;`) and
@@ -435,6 +444,25 @@ its scope only on a clash. Which constants are declared is found by
 rendering the package once with a recording table
 (`SvOpModelBackend.constants`), so only what the code references is.
 
+A package-scope `const` is a `static const`, `static` written or not
+(`ast2ir._is_static_const`, from the field's AST parent). A reference the
+linker resolved is folded from ITS declaration; the by-name lookups
+(`const_map`, `_resolve_enum_constant`) are only for a reference it left
+unresolved -- an enum item named like a linked constant used to win.
+
+**Named constants are macros in op-model-c** (`targets/c/constants.py`,
+`CConstants`). A body's reference
+to a named integer constant is written `((T)(N))`, defined `#ifndef` in the
+header's `constants` section, so the build may change it.
+`IntSemantics.is_symbolic` makes it an unknown value of its declared type:
+never fold, range or decide a comparison from it. A fold site that uses a
+constant's value outside a body (a size, a width, an offset, a template
+argument, another constant's initializer) must call `ast2ir.pin_constants`;
+a pinned constant is asserted (`PSSC_PINNED_CONSTANT`), else a header
+override would half-apply silently. The naming rule is shared with SV
+(`targets/constant_names.py`). `--fold-constants` restores values. C++ and
+`bool` constants still fold.
+
 **An enum item is spelled by name** (review and plan:
 `docs/design/enum-handling-review.md`). `targets/enum_names.py` (`item_of`)
 is the one reader of an item's `ref`, and `ExprTypes` types an item as its
@@ -587,6 +615,16 @@ venv has setuptools and wheel only), and is skipped only if none works.
 `PSSC_NO_PLUGINS=1` skips discovery entirely. That is the first thing to try
 when pssc misbehaves on a machine with plugins installed: it separates "pssc's
 bug" from "a plugin's bug" in one command.
+
+`pssc.preludes` entry points contribute `(name, text)` PSS units to every
+compile on every target (`pssc/preludes.py`). Which units reach the parser
+is `driver.prelude_units` alone: the target's own prelude, then
+contributions in entry-point name order, then dropping any unit
+byte-identical to a source (`opts.sources`, set by `compile` before
+`prelude()`) or to an earlier unit. `compile`, `pssc parse`,
+`pssc.testing.generated_sections` and `pssc.Check` all call it, so never
+build a prelude by hand. A failing contributor is skipped and reported
+(`prelude_errors`), never fatal.
 
 `pssc.testing` is the **public** kit for people writing targets — a bundled PSS
 model, `compile_op_model`, `assert_common_tier`, `assert_deterministic`,

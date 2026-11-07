@@ -1,5 +1,71 @@
 # pssc release notes
 
+## Unreleased
+
+pssc now needs pssparser 3.6.
+
+### Output changes
+
+- **op-model-c: named constants are macros.** A body's reference to a
+  `static const` or package `const` is written by name, as a macro, instead
+  of its value. The macros are defined `#ifndef N` / `#define N (v)` in a new
+  `constants` header section, so a `-D` or a header included first can change
+  the value. pssc decides nothing from that value: each use is cast to its
+  declared type. pssc also uses some values at generation time (an array
+  size, a width, a register offset, a template argument, another constant's
+  initializer). Such a "pinned" constant is checked with
+  `PSSC_PINNED_CONSTANT`, so overriding it is a compile error, never a silent
+  half-change. Generated C changes wherever a body names a constant.
+  `--fold-constants` restores the old output. C++ still folds; so do `bool`
+  constants.
+- **A package `const` without `static` folds to its own value.** pssparser
+  links an unqualified reference to the constant, but pssc folded only a
+  `static const` that way. It then found an enum item of the same name by
+  name and folded the item's ordinal: wrong code, with no diagnostic. A
+  reference the linker resolved is now folded from its declaration, never
+  by name. A non-static package constant now also keeps its name, so SV
+  writes it as a `localparam`.
+
+### Additions
+
+- **Detached comments in bodies, opt-in.** Turn it on with
+  `--keep-detached-comments`, `driver.compile(keep_detached_comments=True)`,
+  or `keep_detached_comments = True` on an `OpModelTarget` subclass. Comments
+  that a blank line detaches from a statement in a function or exec body are
+  kept: above the statement, each separate block as its own comment, and at
+  the end of a block as a comment-only statement. File-scope and declaration
+  comments are still dropped. Off by default, so the default output is
+  unchanged.
+- **A target's prelude sees the sources.** `compile()` sets `opts.sources`
+  (the compile's source paths, a list of strings) before it calls
+  `Target.prelude(opts)`. The driver drops any prelude unit whose text is
+  byte-identical to a source file or to an earlier unit. Passing a package
+  explicitly that a prelude also supplies therefore no longer gives a
+  duplicate declaration. A modified copy is still a clash: units are matched
+  by content, never by name.
+- **`pssc.preludes` entry points.** An installed plug-in can put PSS source
+  in scope on every target with a callable `(target_name, opts) ->
+  list[(name, text)]`. A typical use is a package of annotation types, so an
+  annotated model compiles on `op-model-c` and `op-model-sv` without passing
+  the library by hand. Contributions follow the target's own prelude, in
+  entry-point name order, and are deduplicated the same way.
+  - A failing contributor is skipped. `pssc targets` reports it, and
+    `pssc compile` warns about it.
+  - `pssc parse` takes the contributions too.
+  - `PSSC_NO_PLUGINS=1` skips the group.
+- **New published members (provisional):** `CStylePolicy.constant_name`,
+  `COpModelBackend.emit_constants`, and the manifest's `constants` list and
+  `settings.fold_constants`.
+
+### Fixes
+
+- **op-model-cpp and op-model-sv: a parent binding a child's register
+  group.** `ch0.regs.set_handle(b)` in the root raised an internal error in
+  C++, and SV printed a call that Verilator rejects. Both now bind the
+  child's group, as C and Python already did.
+- **Packaging:** the pssparser floor is 3.6. 3.5 lacks `FunctionAccess`,
+  which the op-model API reads.
+
 ## 0.2.0
 
 pssc 0.2.0 includes the bc backend and needs pssparser 3.5 and
