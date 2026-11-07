@@ -546,3 +546,96 @@ def test_a_value_struct_local_used_whole_is_refused(hal, tmp_path):
     assert "used whole" in "\n".join(map(str, ei.value.errors))
     assert [m["line"] for m in ei.value.markers] == \
         [src.splitlines().index(ret) + 1]
+
+
+# -- a composition: the root's API only ----------------------------------------
+
+#: A root that calls a helper component's functions, one of them private.
+#: ``@P@`` is `private ` or nothing.
+COMPOSED = """\
+import addr_reg_pkg::*;
+package hx_pkg {
+    import addr_reg_pkg::*;
+    pure component win_c : reg_group_c {
+        reg_c<bit[32], READWRITE, 32> CTL;
+        reg_c<bit[32], READWRITE, 32> STS;
+        function bit[64] get_offset_of_instance(string name) {
+            match (name) {
+                ["CTL"]: return 0x0;
+                ["STS"]: return 0x4;
+                default: return -1;
+            }
+        }
+    }
+}
+component util_c {
+    target function bit[32] scaled(bit[32] x) { return twice(x) + 3; }
+    private target function bit[32] twice(bit[32] x) { return x * 2; }
+    export target function scaled;
+}
+component top_c {
+    hx_pkg::win_c regs;
+    @P@util_c u;
+    solve function void initialize(addr_handle_t base) {
+        regs.set_handle(base);
+    }
+    target function bit[32] go(bit[32] n) {
+        regs.CTL.write_val(u.scaled(n));
+        return regs.STS.read_val();
+    }
+    export target function go;
+}
+"""
+
+
+@pytest.mark.parametrize("private", [False, True], ids=["public", "private"])
+def test_a_child_is_off_the_root_api(hal, tmp_path, private):
+    """The fixture's API is the root's exports: a child's functions are the
+    .c's own (`linkage`) and it has no accessor (it removes the sections),
+    so declaring the instance `private` changes no byte. The trace is
+    op-model-c's."""
+    from pssc import driver
+
+    srcs = {}
+    for p in ("", "private "):
+        srcs[p] = tmp_path / f"m{len(p)}.pss"
+        srcs[p].write_text(COMPOSED.replace("@P@", p))
+    src = srcs["private " if private else ""]
+
+    def compile_(target, out, s, **kw):
+        driver.compile([str(s)], target=target, output_dir=str(out),
+                       progseq_root="top_c", **kw)
+        return out
+
+    out = compile_(TARGET, tmp_path / "hal", src)
+    other = compile_(TARGET, tmp_path / "hal_other",
+                     srcs["" if private else "private "])
+    assert {p.name: p.read_bytes() for p in out.iterdir()} == \
+        {p.name: p.read_bytes() for p in other.iterdir()}
+    h, c = (out / "top.h").read_text(), (out / "top.c").read_text()
+    assert "uint32_t top_go(uintptr_t base, uint32_t n);" in h
+    for absent in ("util_", "top_u(", "top_c *"):
+        assert absent not in h, absent
+    assert "static inline uint32_t util_scaled(uint32_t x) {" in c
+    assert "static inline uint32_t util_twice(uint32_t x) {" in c
+
+    base = compile_("op-model-c", tmp_path / "base", src,
+                    c_link_style="direct", c_lifecycle="static")
+    main = ['#include <stdio.h>', '#include "top.h"', '#include "tb_mem.h"',
+            "int main(void) {", "@INIT@",
+            '    printf("= %u\\n", (unsigned)top_go(@ARGS@));',
+            "    return 0;", "}", ""]
+
+    def run(gen, init, args, extra):
+        m = tmp_path / f"{gen.name}_main.c"
+        m.write_text("\n".join(main).replace("@INIT@", init)
+                     .replace("@ARGS@", args))
+        return _run(_build(gen, [gen / "top.c", PLATFORM / "tb_mem.c",
+                                 *extra, m], tmp_path / f"{gen.name}_run"))
+
+    want = run(base, "    top_c t;\n    top_init(&t, 0x10000);", "&t, 4",
+               [PLATFORM / "pssc_seam.c"])
+    got = run(out, "", "0x10000, 4", [])
+    assert want == got
+    assert want[0] == "W 0x10000 0x0000000b" and want[1].startswith(
+        "R 0x10004 "), want

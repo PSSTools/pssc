@@ -1937,7 +1937,8 @@ class _CtorEmitter(_BodyEmitter):
             from .lower_init import binding_call
             lines = binding_call(s.expr, members=self.member_of,
                                  reg_groups=self.reg_groups, bus=IMP_MEMBER,
-                                 expr=self.expr, pad=self.pad(ind))
+                                 expr=self.expr, pad=self.pad(ind),
+                                 comp=self.comp)
             if lines is not None:
                 return lines
         return super().stmt_expr(s, ind)

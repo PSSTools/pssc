@@ -19,6 +19,57 @@ INIT_NOT_LOWERED = {t: Refused([r"`exec init_down` is not lowered by "
                     for t in ("c", "cpp")}
 
 
+def apertures(*, parent_binds=True, private=False, exports=False):
+    """A composition: two instances of one channel type, each with its own
+    register group at its own aperture, and a helper type whose functions
+    the root calls, one of them private. The root's two handles are the
+    apertures (the cases pass 0x1000 and 0x2000).
+
+    ``parent_binds``: the root binds each channel's group itself
+    (`ch0.regs.set_handle(b0)`); otherwise each channel's constructor does.
+    ``private``: the instances are `private`, so off the API.
+    ``exports``: the children also `export` their functions, which the
+    op-model API ignores (`op_api`)."""
+    p = "private " if private else ""
+    ctor = "" if parent_binds else (
+        "  solve function void initialize(addr_handle_t b) "
+        "{ regs.set_handle(b); }\n")
+    bind = ("ch0.regs.set_handle(b0); ch1.regs.set_handle(b1);"
+            if parent_binds else "ch0.initialize(b0); ch1.initialize(b1);")
+    exp_ch = ("  export target function start;\n"
+              "  export target function status;\n") if exports else ""
+    exp_u = "  export target function scaled;\n" if exports else ""
+    return f"""
+component chan_c {{
+  ga_c regs;
+{ctor}  target function void start(int n) {{ regs.CTL.write_val(n); }}
+  target function int status() {{ return regs.STS.read_val(); }}
+{exp_ch}}}
+component util_c {{
+  int bias = 3;
+  target function int scaled(int x) {{ return twice(x) + bias; }}
+  private target function int twice(int x) {{ return x * 2; }}
+{exp_u}}}
+component pss_top {{
+  {p}chan_c ch0, ch1;
+  {p}util_c u;
+  solve function void initialize(addr_handle_t b0, addr_handle_t b1) {{
+    {bind}
+  }}
+  target function void run() {{
+    ch0.start(u.scaled(1));
+    ch1.start(u.scaled(2));
+    ch1.regs.STS.write_val(ch0.status());
+  }}
+}}"""
+
+
+#: `apertures()`'s trace: each channel's CTL at its own aperture, ch0's STS
+#: read at the first and written to ch1's at the second.
+APERTURE_TRACE = ["write 32 0x1000 0x5", "write 32 0x2000 0x7",
+                  "read 32 0x1004 0x55", "write 32 0x2004 0x55"]
+
+
 CASES = {
     # --- construction (LRM 20.1.2) -------------------------------------------
     # Every instance is constructed, whether or not a constructor reaches it.
@@ -134,6 +185,21 @@ component pss_top {
 }""", ["write 32 0x1104 0x1", "write 32 0x1004 0x1", "write 32 0x1104 0x1"],
         covers=("FN-CALL", "ST-FOREACH", "EX-IDX", "DT-ARR.15", "EX-IDX.6",
                 "EX-REF.4", "FN-CALL.5")),
+
+    # Two instances of one type, each at its own aperture. The root binds
+    # each one's group itself: C++ raised an internal error and SV rendered
+    # `ch0.regs.set_handle(b0)` verbatim (the group class has no such
+    # method), though the gate counts the group bound by the parent.
+    "two instances of one type, each at the aperture its parent binds": Case(
+        apertures(), APERTURE_TRACE, args=(0x1000, 0x2000),
+        mem={0x1004: 0x55}, covers=("LIB-REG.8", "FN-CALL", "EX-REF.1")),
+
+    # The same with the instances `private` (off the API, LRM 17.4) and
+    # each channel binding its own group: the root still calls them.
+    "two private instances of one type, each at its own aperture": Case(
+        apertures(parent_binds=False, private=True, exports=True),
+        APERTURE_TRACE, args=(0x1000, 0x2000), mem={0x1004: 0x55},
+        covers=("LIB-REG.8", "FN-CALL", "EX-REF.11")),
 
     "a sub-component's value in a condition": Case("""
 component sub_c {

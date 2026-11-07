@@ -1475,6 +1475,16 @@ class _CtorEmitter(_BodyEmitter):
         if _dt_name(func) != "ExprAttribute":
             return None
         chain = self._chain(func.value)
+        if chain and len(chain) > 1 and func.attr == "set_handle":
+            # `sub.regs.set_handle(h)`: a parent binding a sub-component's
+            # group (`group_binding` counts it bound by the parent).
+            owner = self._chain_comp(chain[:-1])
+            groups = _reg_group_fields(owner) if owner is not None else {}
+            if chain[-1][0] in groups and chain[-1][1] is None:
+                gt = _strip_pkg(groups[chain[-1][0]].name)
+                return (f"{self.expr(func.value)} = "
+                        f"{gt}(this->{_IMP}, {self.expr(call.args[0])})")
+            return None
         if not chain or len(chain) != 1 or chain[0][0] not in self.reg_groups:
             return None
         field = chain[0][0]

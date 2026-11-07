@@ -741,3 +741,59 @@ def test_the_api_reaches_each_instance(hier):
     run = subprocess.run([str(exe)], capture_output=True, text=True)
     assert run.stdout.split("\n")[:5] == [
         "go 12 23", "peek 0", "peek 1", "peek 2", "lf 99 size 3"], run.stdout
+
+
+# --- a composition: one child type at two apertures ---------------------------
+#
+# `matrix/test_m_components.py` RUNS `apertures()` on every target and holds
+# each instance's accesses to its own aperture; here is what its API is.
+
+def _aper(tmp_path, target, **kw):
+    from . import trace_harness as th
+    from .matrix._matrix import REGS
+    from .matrix.test_m_components import apertures
+    tmp_path.mkdir()
+    return th.compile_model(tmp_path, REGS + apertures(**kw), target)
+
+
+def _files(out):
+    return {p.relative_to(out).as_posix(): p.read_bytes()
+            for p in sorted(out.rglob("*")) if p.is_file()}
+
+
+@pytest.mark.parametrize("private", [False, True], ids=["public", "private"])
+@pytest.mark.parametrize("target", ["c", "py", "cpp", "sv"])
+def test_child_exports_change_nothing(tmp_path, target, private):
+    """`export target function` on the children is accepted and changes no
+    byte of the output (`op_api`): the API follows visibility."""
+    a = _files(_aper(tmp_path / "a", target, private=private))
+    b = _files(_aper(tmp_path / "b", target, private=private, exports=True))
+    assert a.keys() == b.keys()
+    assert [n for n in a if a[n] != b[n]] == []
+
+
+def test_private_children_are_off_the_c_api(tmp_path):
+    """Declared `private`, the instances lose their accessors and their
+    functions leave the header (`static inline` in the .c); the root still
+    calls them. Public, both are on it -- the contrast is the point."""
+    pub = _aper(tmp_path / "pub", "c")
+    assert_c((pub / "pss_top.h").read_text(), code=True,
+             has=["static inline chan_c *pss_top_ch0(pss_top *_self)",
+                  "static inline chan_c *pss_top_ch1(pss_top *_self)",
+                  "static inline util_c *pss_top_u(pss_top *_self)",
+                  "void chan_start(chan_c *_self, int n);",
+                  "int util_scaled(util_c *_self, int x);"],
+             has_not=["util_twice"])
+
+    priv = _aper(tmp_path / "priv", "c", private=True)
+    assert_c((priv / "pss_top.h").read_text(), code=True,
+             has=["void pss_top_run(pss_top *_self);"],
+             has_not=["pss_top_ch0(", "pss_top_ch1(", "pss_top_u(",
+                      "chan_start", "chan_status", "util_scaled",
+                      "util_twice"])
+    assert_c((priv / "pss_top.c").read_text(), code=True,
+             has=["static inline void chan_start(chan_c *_self, int n) {",
+                  "static inline int chan_status(chan_c *_self) {",
+                  "static inline int util_scaled(util_c *_self, int x) {",
+                  "static inline int util_twice(util_c *_self, int x) {",
+                  "chan_start(&_self->ch0, ", "chan_start(&_self->ch1, "])

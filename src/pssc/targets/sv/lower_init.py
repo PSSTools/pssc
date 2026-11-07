@@ -48,13 +48,15 @@ def _self_attr_name(e) -> Optional[str]:
 
 def binding_call(call, *, members: Dict[str, str], reg_groups: List[str],
                  bus: str, expr: Callable[[object], str],
-                 pad: str) -> Optional[List[str]]:
+                 pad: str, comp=None) -> Optional[List[str]]:
     """The lines a constructor's ``call`` statement becomes, if it is one of
     the address-binding calls above; None for any other call.
 
     ``members`` maps a PSS field name to its member name, ``bus`` is the
     expression a rebuilt register group is wired to, and ``expr`` renders an
-    IR expression.
+    IR expression. With ``comp``, the component whose body this is, a
+    sub-component's group bound here (`sub.regs.set_handle(h)`) is rebuilt
+    too.
     """
     fn = call.func
     if _dt_name(fn) != "ExprAttribute":
@@ -67,4 +69,33 @@ def binding_call(call, *, members: Dict[str, str], reg_groups: List[str],
         if name in reg_groups:
             handle = expr(call.args[0]) if call.args else bus
             return [f"{pad}{members[name]} = new({bus}, {handle});"]
+        if comp is not None and call.args and _sub_group(comp, fn.value):
+            # `sub.regs.set_handle(h)`: a parent binding a sub-component's
+            # group (`group_binding` counts it bound by the parent).
+            return [f"{pad}{expr(fn.value)} = new({bus}, "
+                    f"{expr(call.args[0])});"]
     return None
+
+
+def _sub_group(comp, e) -> bool:
+    """Is ``e`` `self.<sub>[...]...<group>`: a register group (not an
+    element of a group array) of a sub-component of ``comp``?"""
+    from ..progseq_model import field_is_reg_group, sub_components
+    path = []
+    while _dt_name(e) in ("ExprAttribute", "ExprSubscript"):
+        if _dt_name(e) == "ExprAttribute":
+            path.append(e.attr)
+        elif not path:
+            return False                # `regs[i]`: a group array element
+        e = e.value
+    if _dt_name(e) != "TypeExprRefSelf" or len(path) < 2:
+        return False
+    path.reverse()
+    dt = comp
+    for name in path[:-1]:
+        sub = {s.name: s for s in sub_components(dt)}.get(name)
+        if sub is None:
+            return False
+        dt = sub.dtype
+    return any(f.name == path[-1] and field_is_reg_group(f)
+               for f in getattr(dt, "fields", None) or [])
