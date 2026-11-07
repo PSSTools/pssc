@@ -55,15 +55,20 @@ def lower(ctx) -> None:
         for fn in list(getattr(dtype, "functions", None) or ()):
             if getattr(fn, "body", None):
                 types = ExprTypes(fn, dtype, ctx)
-                _walk(fn.body, types, {}, getattr(fn, "name", "?"))
+                _walk(fn.body, types, {}, getattr(fn, "name", "?"), ctx)
 
 
-def _walk(node, types, bounds: Dict[str, int], where: str) -> None:
+def _walk(node, types, bounds: Dict[str, tuple], where: str,
+          ctx=None) -> None:
     """Visit ``node``; ``bounds`` maps a loop index to the exclusive upper
-    bound its loop guarantees."""
+    bound its loop guarantees, and the constant that bound is (or None).
+
+    A named constant this trusts -- an index, or a `repeat` count bounding
+    one -- is pinned on *ctx* (a pinned constant): the check it leaves out is
+    right for the constant's value only."""
     if isinstance(node, list):
         for x in node:
-            _walk(x, types, bounds, where)
+            _walk(x, types, bounds, where, ctx)
         return
     if not dc.is_dataclass(node) or isinstance(node, type) \
             or _dt_name(node).startswith("DataType"):
@@ -75,20 +80,20 @@ def _walk(node, types, bounds: Dict[str, int], where: str) -> None:
         n = _array_size(node.iter, types)
         if index is not None and n is not None \
                 and not assigns_local(node.body, index.name):
-            inner = dict(bounds, **{index.name: n})
+            inner = dict(bounds, **{index.name: (n, None)})
     elif cn == "StmtFor":
         name = getattr(getattr(node, "target", None), "name", None)
         k = _const(node.iter)
         if name is not None and k is not None \
                 and not assigns_local(node.body, name):
-            inner = dict(bounds, **{name: k})
+            inner = dict(bounds, **{name: (k, node.iter)})
     for f in dc.fields(node):
         if f.name in NON_CHILD_FIELDS:
             continue
         v = getattr(node, f.name, None)
-        _walk(v, types, inner if f.name == "body" else bounds, where)
+        _walk(v, types, inner if f.name == "body" else bounds, where, ctx)
     if cn == "ExprSubscript":
-        _mark(node, types, bounds, where)
+        _mark(node, types, bounds, where, ctx)
 
 
 def _const(e) -> Optional[int]:
@@ -113,7 +118,14 @@ def _array_size(e, types) -> Optional[int]:
     return n
 
 
-def _mark(e, types, bounds, where) -> None:
+def _pin(ctx, e) -> None:
+    ref = getattr(e, "ref", None) if _dt_name(e) == "ExprConstant" else None
+    if ref:
+        from ..ast2ir import pin_constants
+        pin_constants(ctx, [ref])
+
+
+def _mark(e, types, bounds, where, ctx=None) -> None:
     sl = e.slice
     if _dt_name(sl) in ("ExprSlice", "ExprRange"):
         return
@@ -122,9 +134,11 @@ def _mark(e, types, bounds, where) -> None:
         return
     k = _const(sl)
     if k is not None and 0 <= k < n:
+        _pin(ctx, sl)
         return
     if _dt_name(sl) == "ExprRefLocal" and sl.name in bounds \
-            and bounds[sl.name] <= n:
+            and bounds[sl.name][0] <= n:
+        _pin(ctx, bounds[sl.name][1])
         return
     if any(_dt_name(x) in ("ExprCall", "ExprMemberCall") for x in _nodes(sl)):
         raise Refusal(

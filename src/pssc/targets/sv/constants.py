@@ -28,6 +28,7 @@ from typing import Dict, Iterable, List, Optional, Set
 
 from zuspec.ir.core.expr import int_literal_type
 
+from ..constant_names import clashing, plain_name, qualified_name
 from ..enum_names import prefixed_item
 from .keywords import SV_KEYWORDS
 
@@ -94,19 +95,13 @@ class SvConstants(object):
         taken = set()
         for enum, items in self._enum_items.items():
             taken |= {self.item_name(enum, i) for i in items}
-        by_name: Dict[str, List[str]] = {}
-        for q in consts:
-            by_name.setdefault(_split(q)[1], []).append(q)
+        # The rule C shares (`constant_names`): qualified only on a clash.
+        qualify = clashing(consts, taken)
         names: Dict[str, str] = {}
-        for name, qs in by_name.items():
-            for q in qs:
-                head = _split(q)[0]
-                if (len(qs) > 1 or name in taken) and head:
-                    names[q] = head.replace("::", "_") + "_" + name
-                else:
-                    names[q] = name
-                if names[q] in SV_KEYWORDS:
-                    names[q] += "_"
+        for q in consts:
+            names[q] = qualified_name(q) if q in qualify else plain_name(q)
+            if names[q] in SV_KEYWORDS:
+                names[q] += "_"
         return names
 
     @staticmethod

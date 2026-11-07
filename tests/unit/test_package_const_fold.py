@@ -9,8 +9,8 @@ pssparser links an unqualified `OPT_B` to the constant. pssc folded only a
 `static const` through the linker, so for this one it fell back to a lookup by
 NAME across every enum, found the item, and folded its ordinal: wrong code, no
 diagnostic. At package scope there is no instance, so `const` and `static
-const` are one thing (ruling R-Q1), and what the linker resolved is what is
-folded; a name lookup never overrides it (R-Q2).
+const` are one thing (user ruling, 2026-11-06), and what the linker resolved is what is
+folded; a name lookup never overrides it.
 """
 import pytest
 

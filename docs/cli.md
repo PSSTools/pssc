@@ -204,6 +204,7 @@ Per-target options (contributed by each target's `add_args`):
 | `op-model-c` | `--link-style {vtable,direct,mmio}` | memory-access seam (default `mmio`) |
 | `op-model-c` | `--reg-style {bitfields,accessors}` | register value layout (default `bitfields`) |
 | `op-model-c` | `--header-only` | emit a single `.h` (forced for `mmio`) |
+| `op-model-c` | `--fold-constants` | write every named PSS constant (`static const`, package `const`) as its value. By default a constant a body names is a macro the header defines under `#ifndef`, so a `-D` or a project header included first may change it; one pssc also folded elsewhere (an array size, a register offset) is asserted against its value (`PSSC_PINNED_CONSTANT`). See [custom-generator-styles.md](custom-generator-styles.md#named-constants) |
 | `op-model-cpp` | `--namespace NAME` | namespace and `<ns>_import_if` (default root sans `_c`); classes keep their PSS names |
 | `op-model-cpp` | `--dispatch {virtual,template}` | dispatch model (default `virtual`) |
 | `op-model-py` | `--py-module NAME` | generated module name (default root sans `_c`) |

@@ -225,7 +225,8 @@ def _groups(comp, model) -> List[Dict[str, Any]]:
 def build(model, *, target: str, settings: Optional[Dict[str, Any]] = None,
           files: Sequence = (), runtime_files: Sequence[str] = (),
           include_files: Sequence[str] = (),
-          enum_symbol=None, extern=None) -> Dict[str, Any]:
+          enum_symbol=None, extern=None,
+          constants: Sequence[Dict[str, Any]] = ()) -> Dict[str, Any]:
     """The manifest document for one generation.
 
     ``files`` is the path list the target returned, IN ORDER -- that order is a
@@ -236,6 +237,8 @@ def build(model, *, target: str, settings: Optional[Dict[str, Any]] = None,
     how the target spells an enum item (`OpModelTarget.enum_item_symbol`),
     and ``extern(dtype)`` whether the platform declares a type
     (`OpModelTarget.is_extern_type`): such an enum carries `"extern": true`.
+    ``constants`` are the named constants the generated code spells by name
+    (`OpModelTarget.named_constants`): op-model-c's macros.
 
     The labels come from ``runtime_files``, which is the target's own
     `core_file_names()` -- the list it copied FROM. Deciding by extension would
@@ -265,6 +268,7 @@ def build(model, *, target: str, settings: Optional[Dict[str, Any]] = None,
         "exports": [_function(fn) for fn in getattr(model, "exports", ())],
         "value_structs": _value_structs(model),
         "enums": _enums(model, enum_symbol, extern),
+        "constants": [dict(c) for c in constants],
         "components": [_component(n, model) for n in model.components],
         "files": [dict({"name": Path(p).name,
                         "role": ("runtime" if Path(p).name in set(runtime_files)

@@ -924,14 +924,14 @@ pssc_addr_t wb_dma_write_descriptor(wb_dma_c *_self, pssc_addr_t at, pssc_addr_t
     pssc_w32(pssc_bus(_self), at, csr_word);
     pssc_w32(pssc_bus(_self), (at + 4), d.adr0);
     pssc_w32(pssc_bus(_self), (at + 8), d.adr1);
-    pssc_w32(pssc_bus(_self), (at + 12), d.next);
+    pssc_w32(pssc_bus(_self), (at + ((uint64_t)(WB_DMA_DESC_NEXT_OFF))), d.next);
     /*
      * Extend the list. The check is on the resolved address rather than a
      * handle comparison, because an address handle is opaque and not
      * usefully comparable.
      */
     if (prev != 0ull) {
-        pssc_w32(pssc_bus(_self), (prev + 12), (at & 0xffffffffu));
+        pssc_w32(pssc_bus(_self), (prev + ((uint64_t)(WB_DMA_DESC_NEXT_OFF))), (at & 0xffffffffu));
     }
-    return (at + 16);
+    return (at + ((uint64_t)(WB_DMA_DESC_BYTES)));
 }

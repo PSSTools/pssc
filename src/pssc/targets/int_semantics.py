@@ -162,6 +162,13 @@ class IntSemantics:
         language whose own types are narrower than *t* widens it here."""
         return self.expr(e)
 
+    def is_symbolic(self, e) -> bool:
+        """Whether the folded constant *e* is rendered by NAME, as a value
+        the build may change: an unknown value of its declared
+        type, never folded, compared or ranged by its value here. False by
+        default: every constant is its value."""
+        return False
+
     def _arms(self, e, render):
         """The two arms of `?:`, each rendered by *render*."""
         return render(e.body), render(e.orelse)
@@ -317,7 +324,8 @@ class IntSemantics:
         t = self._final[id(e)]
         s = self.types.type_of(e).as_int()
         v = getattr(e, "value", None) if _dt_name(e) == "ExprConstant" else None
-        if isinstance(v, int) and not isinstance(v, bool):
+        if isinstance(v, int) and not isinstance(v, bool) \
+                and not self.is_symbolic(e):
             return self.int_const(v if t.signed else v & ((1 << s.width) - 1), t)
         if _dt_name(e) == "ExprCast":
             # Its range is what the conversion produced, which is often much

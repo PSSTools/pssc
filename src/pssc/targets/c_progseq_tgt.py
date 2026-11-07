@@ -139,6 +139,14 @@ class CProgSeqTarget(OpModelTarget):
                  "with --include so something still declares uint32_t",
         )
         parser.add_argument(
+            "--fold-constants", dest="c_fold_constants", action="store_true",
+            default=False,
+            help="op-model-c: write every named PSS constant (`static const`, "
+                 "package `const`) as its value, as before 0.3. By default a "
+                 "constant a body names is a macro the header defines "
+                 "`#ifndef`, so a -D or a project header may change it",
+        )
+        parser.add_argument(
             "--header-only", dest="c_header_only", action="store_true",
             default=False,
             help="c-progseq: emit a single self-contained .h -- every body, "
@@ -310,6 +318,7 @@ class CProgSeqTarget(OpModelTarget):
             includes_impl=getattr(opts, "c_include_impl", None),
             omit_stdint=getattr(opts, "c_omit_stdint", False),
             addr_bits=getattr(opts, "c_addr_bits", 64),
+            fold_constants=getattr(opts, "c_fold_constants", False),
         )
 
     def enum_item_symbol(self, enum_dtype, item, opts):
@@ -419,4 +428,27 @@ class CProgSeqTarget(OpModelTarget):
         be = self.backend_for(opts)
         s = settings_for(model, self.prefix_for(opts), style=be.style,
                          **self.flags_for(opts))
-        return be.generate(model, s) + self.install_core(model, opts)
+        out = be.generate(model, s) + self.install_core(model, opts)
+        # What the manifest reports (`named_constants`), from the backend
+        # that wrote the files.
+        self._constants = (id(model), be.constants,
+                           be.pinned_constants(model)
+                           if be.constants is not None else set())
+        return out
+
+    def named_constants(self, model, opts: argparse.Namespace) -> list:
+        """Each macro a body spells: its name, the PSS constant's qualified
+        name, its value and declared type, and whether a build may override
+        it (`pinned`: pssc also folded its value elsewhere).
+        Empty under `--fold-constants`."""
+        got = getattr(self, "_constants", None)
+        if not got or got[0] != id(model) or got[1] is None:
+            return []
+        table, pinned = got[1], got[2]
+        out = []
+        for name, q in table.declared():
+            c = table.used[q]
+            out.append({"name": name, "qname": q, "value": c.value,
+                        "type": f"{'int' if c.signed else 'bit'}[{c.width}]",
+                        "pinned": q in pinned})
+        return out

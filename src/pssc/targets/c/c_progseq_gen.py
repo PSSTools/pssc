@@ -101,6 +101,7 @@ def settings_for(model, prefix: str, *,
                  emit_stubs: bool = False, mem_access=None,
                  includes=None, includes_impl=None,
                  omit_stdint: bool = False, addr_bits: int = 64,
+                 fold_constants: bool = False,
                  style=None) -> "CSettings":
     """Turn the command line's keywords into the backend's `CSettings`.
 
@@ -162,7 +163,8 @@ def settings_for(model, prefix: str, *,
         yield_mode=yield_mode, chan_wait=chan_wait,
         match_default=match_default,
         message_style=message_style, emit_stubs=emit_stubs,
-        prefix_map=tuple(prefix_map or ()))
+        prefix_map=tuple(prefix_map or ()),
+        fold_constants=fold_constants)
 
 
 def _style_renders_registers(style, link_style: str) -> bool:

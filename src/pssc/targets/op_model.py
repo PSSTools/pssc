@@ -1035,8 +1035,16 @@ class OpModelTarget(Target):
             files=outputs, runtime_files=self.core_file_names(model, opts),
             include_files=self.include_only_files(outputs),
             enum_symbol=lambda e, item: self.enum_item_symbol(e, item, opts),
-            extern=lambda dt: self.is_extern_type(dt, opts))
+            extern=lambda dt: self.is_extern_type(dt, opts),
+            constants=self.named_constants(model, opts))
         return [_manifest.write(path, doc)]
+
+    def named_constants(self, model, opts: argparse.Namespace
+                        ) -> List[Dict[str, Any]]:
+        """The named PSS constants the generated code spells by NAME, for
+        the manifest: ``{name, qname, value, type, pinned}`` each. None here;
+        op-model-c's macros (user ruling, 2026-11-06)."""
+        return []
 
     def enum_item_symbol(self, enum_dtype, item: str,
                          opts: argparse.Namespace) -> Optional[str]:

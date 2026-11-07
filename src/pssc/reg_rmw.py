@@ -649,6 +649,23 @@ def _walk_exprs(node, fn, seen=None):
         work.extend(reversed(todo))
 
 
+def _pin_folded(ctx, old, new) -> None:
+    """Pin each named constant of *old*'s arguments that the reduction
+    folded into a literal of *new* (a pinned constant): its value is in the mask
+    or the packed word, and a build that overrides the constant would not
+    reach it there."""
+    from .ast2ir import pin_constants
+    from .targets.ir_walk import walk
+
+    def consts(args, out):
+        out += [n for n in walk(list(args)) if isinstance(n, ir.ExprConstant)]
+        return out
+
+    kept = {id(x) for x in consts(list(new.args), [])}
+    pin_constants(ctx, [x.ref for x in consts(list(old.args), [])
+                        if getattr(x, "ref", None) and id(x) not in kept])
+
+
 def _reduce_body(comp, body: List[ir.Stmt], ctx, via=None) -> None:
     """Rewrite every masked/field-wise call under ``body`` in place.
 
@@ -662,6 +679,7 @@ def _reduce_body(comp, body: List[ir.Stmt], ctx, via=None) -> None:
         new = _reduce_call(comp, e, ctx, via)
         if new is None:
             return
+        _pin_folded(ctx, e, new)
         if isinstance(parent, list):
             parent[attr] = new
         else:

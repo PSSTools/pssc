@@ -75,8 +75,9 @@ def _cc():
     return cc
 
 
-def _build(out, sources, exe):
-    r = subprocess.run([_cc(), *_CFLAGS, "-I", str(out), "-I", str(PLATFORM),
+def _build(out, sources, exe, flags=()):
+    r = subprocess.run([_cc(), *_CFLAGS, *flags, "-I", str(out),
+                        "-I", str(PLATFORM),
                         *map(str, sources), "-o", str(exe)],
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
@@ -188,9 +189,11 @@ def _run(exe):
     return r.stdout.splitlines()
 
 
-def _traces(tmp_path, mutate=None, src=MODEL, scenario=SCENARIO):
+def _traces(tmp_path, mutate=None, src=MODEL, scenario=SCENARIO,
+            hal_flags=()):
     """The scenario's bus trace through op-model-c and through the fixture,
-    after ``mutate(out)`` has had a go at the fixture's output."""
+    after ``mutate(out)`` has had a go at the fixture's output; the
+    fixture's built with ``hal_flags`` too."""
     base = _compile("op-model-c", tmp_path / "base", src=src,
                     c_link_style="direct", c_lifecycle="static")
     out = _compile(TARGET, tmp_path / "hal", src=src)
@@ -219,7 +222,7 @@ def _traces(tmp_path, mutate=None, src=MODEL, scenario=SCENARIO):
                        tmp_path / "base_run"))
     got = _run(_build(out, [out / "dev.c", PLATFORM / "tb_mem.c",
                             _driver(tmp_path / "hal_main.c", hal_call, scenario)],
-                      tmp_path / "hal_run"))
+                      tmp_path / "hal_run", hal_flags))
     return want, got
 
 
@@ -248,6 +251,23 @@ def test_the_bus_trace_is_op_model_cs(hal, tmp_path):
         "-- classify", f"{stat} 0xa5a5a5a4", f"{stat} 0xa5a5a5a4", "= 0"]
     assert want[-3:] == ["-- copy_len", "R 0x10020 0xa5a5a5a4",
                          "W 0x10028 0xa5a5a5a4"]
+
+
+def test_the_project_header_defines_the_constants(hal, tmp_path):
+    """The fixture removes the `constants` section: `HAS_GO` comes from
+    the platform's `dev_features.h`, and the trace above is op-model-c's,
+    whose header defines it as the model says. Another variant of the
+    project is another header, and the same C then leaves out the `go`
+    write."""
+    out = _compile(TARGET, tmp_path / "gen")
+    assert "#define HAS_GO" not in (out / "dev.h").read_text()
+    assert "((int32_t)(HAS_GO)) != 0" in (out / "dev.c").read_text()
+    variant = tmp_path / "variant.h"
+    variant.write_text("#define DEV_FEATURES_H\n#define HAS_GO 0\n")
+    want, got = _traces(tmp_path, hal_flags=["-include", str(variant)])
+    go = "W 0x10004 0x00000001"
+    assert go in want and go not in got
+    assert [ln for ln in want if ln != go] == got
 
 
 def _edit(name, old, new):
@@ -292,8 +312,9 @@ def test_it_differs_from_op_model_c_only_where_it_says(hal):
 
     testing.assert_differs_from_baseline(
         TARGET, "op-model-c", sources=[str(MODEL)], root="dev_c",
-        expect_changed=["banner", "includes", "api_types", "reg_map", "handles",
-                        "decls", "impl", "accessors", "extra_files"])
+        expect_changed=["banner", "includes", "constants", "api_types",
+                        "reg_map", "handles", "decls", "impl", "accessors",
+                        "extra_files"])
 
 
 def test_state_without_a_handle_is_refused_with_its_location(hal, tmp_path):

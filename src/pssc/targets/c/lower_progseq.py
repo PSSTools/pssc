@@ -161,6 +161,7 @@ def handle_from_handle(em, args) -> str:
     32 bits after the add, truncating the address (W33)."""
     h = em.expr(args[0])
     off = (em.expr(args[1]) if _dt_name(args[1]) == "ExprConstant"
+           and not em.is_symbolic(args[1])
            else em.convert_to(args[1], PssType("int", 64, False)))
     off = off if _c_atomic(off) else f"({off})"
     plus, minus = f"({h} + {off})", f"({h} - {off})"
@@ -1292,6 +1293,16 @@ class CIntSemantics(IntSemantics):
     The emitter supplies `expr`, `types`, `fn`, and `_final` (a dict).
     """
 
+    #: The named-constant table (`c/constants.py`), or None: every constant
+    #: is its value. Only op-model-c's emitter sets one; C++ shares these
+    #: semantics and folds.
+    constants = None
+
+    def is_symbolic(self, e) -> bool:
+        """A named constant is spelled by name when a table is set
+        (`CConstants.symbolic`)."""
+        return self.constants is not None and self.constants.symbolic(e)
+
     def int_type_name(self, ct: str) -> str:
         """A fixed-width integer type's spelling (`uint32_t`)."""
         return ct
@@ -1497,7 +1508,7 @@ class CIntSemantics(IntSemantics):
         if target is None or target.kind != "int" or not is_integral(s):
             return self.expr(e)
         if _dt_name(e) == "ExprConstant" and isinstance(e.value, int) \
-                and not isinstance(e.value, bool):
+                and not isinstance(e.value, bool) and not self.is_symbolic(e):
             # A constant the target cannot hold is folded here: C would
             # wrap it too, and warn (`-Woverflow`), and C++ refuses one in
             # braces. `bit[8] x = 300;` is 44 (8.7.2).
@@ -1598,8 +1609,12 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
                  chan_wait: str = "reject",
                  prefixes=None, link_style: str = "vtable", imports=None,
                  mem: MemAccess = None, style=None, accs=None,
-                 ctor_names=None, reg_map: bool = False, ctx=None):
+                 ctor_names=None, reg_map: bool = False, ctx=None,
+                 constants=None):
         self.fn = fn
+        #: The named-constant table (`c/constants.py`): a constant a body
+        #: names is spelled by name. None under `--fold-constants`.
+        self.constants = constants
         #: The compile context, for `ExprTypes` (the type map, and the
         #: functions a call's result type comes from).
         self.ctx = ctx
@@ -2453,6 +2468,8 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         item = self.enums.constant(e)
         if item is not None:
             return item
+        if self.is_symbolic(e):
+            return self.constants.use(e)
         v = e.value
         if isinstance(v, bool):
             return "1" if v else "0"
@@ -2530,11 +2547,36 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         return self._types
 
     def expr_subscript(self, e) -> str:
-        sel = bit_select(e, self.types)
+        sel = self._bit_select(e)
         if sel is None:
             return (checked_index(self, e)
                     or f"{self.expr(e.value)}[{self.expr(e.slice)}]")
         return c_select_read(sel, self.expr)
+
+    def int_shift_text(self, op: str, a: _Val, b: _Val, t, e) -> str:
+        """C's `<<` of a negative signed value is undefined (C99 6.5.7), and
+        a compiler that sees a constant one refuses it (`-Wshift-negative-
+        value`) -- which a named constant, `-D`'d negative, is. PSS's is the
+        modular result (8.7), so a signed left operand that may be negative
+        is shifted unsigned and converted back, as `int_sint_text` does."""
+        if op != "LShift" or not t.signed or a.nonneg():
+            return CIntSemantics.int_shift_text(self, op, a, b, t, e)
+        cw = 64 if t.width > 32 else 32
+        ua = _Val(self.int_cast_text(self.int_type_name(f"uint{cw}_t"),
+                                     a.text, a.atom), None, None)
+        text = CIntSemantics.int_shift_text(self, op, ua, b, t, e)
+        return self.int_cast_text(self.int_type_name(f"int{cw}_t"), text,
+                                  False)
+
+    def _bit_select(self, e):
+        """`bit_select(e)`. A constant bound is folded into the shift and
+        the mask, so a named one is pinned."""
+        sel = bit_select(e, self.types)
+        if sel is not None and self.constants is not None \
+                and (sel.lo_const is not None
+                     or _dt_name(e.slice) == "ExprSlice"):
+            self.constants.pin(e.slice)
+        return sel
 
     def _select_assign_value(self, sel, value) -> str:
         return c_select_write(sel, self.expr,
@@ -3117,7 +3159,7 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
         if tt is not None and tt.kind == "array":
             return self._array_assign(self.expr(tgt), s.value, tt.dtype, pad,
                                       tgt)
-        sel = bit_select(tgt, self.types)
+        sel = self._bit_select(tgt)
         if sel is not None:
             tgt, value = sel.base, self._select_assign_value(sel, s.value)
         else:
@@ -4059,7 +4101,8 @@ def lower_impl(model, prefixes, *, link_style: str = "vtable",
                message_style: str = "import", chan_wait: str = "reject",
                lifecycle: str = "malloc", imports=None, style=None,
                accs=None, emitter_cls=None, emit_operation=None,
-               reg_map: bool = False, api=None, lifecycle_impl=None) -> str:
+               reg_map: bool = False, api=None, lifecycle_impl=None,
+               constants=None) -> str:
     """Lifecycle + operation bodies for every component, CHILDREN FIRST.
 
     ``emit_operation(fn, ctx)`` renders one operation; it defaults to
@@ -4077,7 +4120,8 @@ def lower_impl(model, prefixes, *, link_style: str = "vtable",
     be_kw = dict(yield_mode=yield_mode, chan_wait=chan_wait,
                  match_default=match_default,
                  message_style=message_style, imports=imports, style=style,
-                 accs=accs, reg_map=reg_map, ctx=getattr(model, "ctx", None))
+                 accs=accs, reg_map=reg_map, ctx=getattr(model, "ctx", None),
+                 constants=constants)
     ctor_names = model.ctor_names
     lines: List[str] = ["/* ----- Component lifecycle + operations. ----- */"]
 

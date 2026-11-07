@@ -31,6 +31,10 @@
         "since": "0.1",
         "stability": "stable"
       },
+      "emit_constants": {
+        "since": "0.3",
+        "stability": "provisional"
+      },
       "emit_decls": {
         "since": "0.1",
         "stability": "stable"

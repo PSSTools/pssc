@@ -80,6 +80,37 @@ def test_the_tree_driver_programs_the_right_registers(tmp_path, cc):
 
 @pytest.mark.c_toolchain
 @pytest.mark.skipif(not _CC, reason="no C compiler")
+def test_named_constants_keep_the_trace(tmp_path):
+    """Differential, folded vs symbolic (user ruling, 2026-11-06): the driver with its
+    named constants as macros (the default) and as values
+    (`--fold-constants`) passes the same checks with the same bus trace.
+    The text differs -- that is the change -- and the addresses do not,
+    since a register offset is never symbolic."""
+    outs = {}
+    for form, kw in (("symbolic", {}), ("folded", {"c_fold_constants": True})):
+        out = _generate(tmp_path / form, c_lifecycle="static", **kw)
+        tb = os.path.join(out, "op_model_tb.c")
+        with open(tb) as f:
+            text = f.read()
+        # Print the last case's trace on a pass too, so the two can be
+        # compared access by access.
+        with open(tb, "w") as f:
+            f.write(text.replace('printf("WB_DMA OP MODEL PASS\\n");',
+                                 'om_dump(&mock); '
+                                 'printf("WB_DMA OP MODEL PASS\\n");'))
+        res = _build_and_run(out, _CC[0])
+        assert res.returncode == 0, res.stdout + res.stderr
+        assert "accesses" in res.stdout
+        outs[form] = res.stdout
+        with open(os.path.join(out, "wb_dma.h")) as f:
+            outs[form + ".h"] = f.read()
+    assert outs["symbolic"] == outs["folded"]
+    assert "#define WB_DMA_DESC_BYTES" in outs["symbolic.h"]
+    assert "#define WB_DMA_DESC_BYTES" not in outs["folded.h"]
+
+
+@pytest.mark.c_toolchain
+@pytest.mark.skipif(not _CC, reason="no C compiler")
 def test_the_gate_fails_when_the_per_channel_base_is_dropped(tmp_path):
     """The mutation check, run rather than described.
 

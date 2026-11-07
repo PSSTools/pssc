@@ -515,8 +515,9 @@ else (an argument, a return value) is refused at its line.
 
 **Leaving the object out** -- operations only, `static` ones declared in
 the `.c` alone -- needs no `emit_impl` override. It is `linkage`, above, the
-lifecycle pair, returned empty, and three sections removed by name (`sections.remove` raises on a name that does not
-exist, so an upstream rename cannot silently undo it):
+lifecycle pair, returned empty, and sections removed by name (`sections.remove` raises on a name that does not
+exist, so an upstream rename cannot silently undo it). The `constants`
+section goes too; see [Named constants](#named-constants) below:
 
 ```python
 # tests/plugins/pssc_hal_fixture/pssc_hal_fixture/backend.py
@@ -528,8 +529,9 @@ exist, so an upstream rename cannot silently undo it):
         return []
 
     def header_sections(self, model, s):
-        return remove(remove(super().header_sections(model, s), "reg_map"),
-                      "handles")
+        # ...and no constants: the project's header defines them.
+        return remove(remove(remove(super().header_sections(model, s),
+                                    "reg_map"), "handles"), "constants")
 
     def impl_sections(self, model, s):
         return remove(super().impl_sections(model, s), "accessors")
@@ -547,13 +549,83 @@ declares is used and never defined, and its enum items keep their PSS names:
         return annotations.of(dtype, EXTERN) is not None
 
     def seam_includes(self, model, s):
-        # The platform's macros, then the map they read; pssc's seam is
-        # not used.
-        return ['#include "dev_access.h"', f'#include "{s.prefix}_map.h"']
+        # The project's feature parameters, the platform's macros, then
+        # the map they read; pssc's seam is not used.
+        return ['#include "dev_features.h"', '#include "dev_access.h"',
+                f'#include "{s.prefix}_map.h"']
 
     def seam_headers(self, link_style):
         return ()           # ...so none is copied
 ```
+
+#### Named constants
+
+A HAL built once and compiled for several variants of a project takes its
+feature parameters from the project's headers. So `op-model-c` writes a
+`static const` or package `const` that a body names as a MACRO, not as its
+value. The model's package:
+
+```pss
+# tests/plugins/pssc_hal_fixture/model/dev.pss
+package dev_cfg_pkg {
+    /** Whether this variant of the device has the `go` register: a feature
+     *  parameter, which the project's header gives the generated C. */
+    const int HAS_GO = 1;
+}
+```
+
+and its use, `if (dev_cfg_pkg::HAS_GO != 0) { kick(); }`, comes out as
+`if (((int32_t)(HAS_GO)) != 0) {`. Each use is cast to the constant's
+declared type, because a `-D` or a project header may define the macro as any
+integer expression, and pssc decides nothing from the value: it is an unknown
+value of its type, widened, wrapped and sign-extended as a variable of that
+type would be. A comparison its declared range alone decides (a `bit[8]`
+against 300) is still decided.
+
+`op-model-c`'s header defines each constant the bodies name, in its
+`constants` section, only if the build has not:
+
+```c
+#ifndef HAS_GO
+#define HAS_GO (1)  /* dev_cfg_pkg::HAS_GO */
+#endif
+```
+
+The fixture removes that section (above) and includes the project's
+`dev_features.h` instead, which defines `HAS_GO`. Its differential trace
+runs the fixture's C against that header and `op-model-c`'s against its own
+definitions, and requires one bus trace; a second header defining `HAS_GO`
+as 0 leaves out the `go` write, from the same C.
+
+The macro's spelling is the style's: `CStylePolicy.constant_name(qname,
+qualify)` (provisional). The default is the PSS name, qualified with its
+package only when two constants the code names share a name (`p1_pkg_K`,
+`p2_pkg_K`), the rule op-model-sv uses for its `localparam`s. A macro named
+like any other file-scope name is refused before a file is written. A house
+prefix is one override:
+
+```python
+# tests/progseq/test_c_named_constants.py
+class _Prefixed(CStylePolicy):
+    def constant_name(self, qname, qualify):
+        return "FEAT_" + super().constant_name(qname, qualify)
+```
+
+The section's own contract is `emit_constants` (provisional): whatever
+replaces it must define every macro `self.constants.declared()` lists.
+
+Some constants are NOT the build's to change, because pssc used their value
+to make the code: an array size, a width, a template argument, a register
+offset, a bit-select bound, an index whose range check it left out, a
+field's initial value, and anything another such constant was folded from.
+Those are folded where they are used, and the constant is PINNED: its
+definition is followed by `PSSC_PINNED_CONSTANT(N, v, "pssc folded N = v
+into this file; regenerate to change it")`, a static assertion, so a build
+that overrides one fails to compile rather than mixing two values. The
+manifest (`--emit-manifest`) lists every macro, with `pinned`.
+
+`--fold-constants` writes every constant as its value instead, with no
+section, as before.
 
 The proof is differential, as above, and also DRIVEN: `tests/unit/test_hal_fixture.py`
 runs every exported function through `op-model-c`'s output and through the

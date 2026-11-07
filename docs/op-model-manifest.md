@@ -67,6 +67,7 @@ most of the reason to have one.
 | `exports` | [function] | the root component's exported functions (`export target function f;` in its body, an extension of LRM 20.4.2), in declaration order |
 | `value_structs` | [struct] | packed register value structs, de-duplicated |
 | `enums` | [enum] | the enums the API uses, each item with its value and generated spelling |
+| `constants` | [constant] | the named PSS constants the generated code spells by name (op-model-c's macros); `[]` for a target that spells none |
 | `components` | [component] | the walked tree, **children before parents** |
 | `files` | [file] | what was produced, **in emission order** |
 
@@ -267,6 +268,26 @@ says otherwise). C++ writes `wb_dma_status_e::WB_DMA_DONE` and Python
 An enum the platform declares (the target's `is_extern_type` says so; the
 generated code uses it and never defines it) carries `"extern": true`. The key
 is absent on every other enum.
+
+### `constants`
+
+Every named PSS constant (a `static const` or a package `const`) that the
+generated code writes as a NAME rather than as its value, in name order.
+`op-model-c` does so by default: each is a macro its header defines only if
+the build has not (`#ifndef`):
+
+```json
+{"name": "OPT", "qname": "feat_pkg::OPT", "value": 0, "type": "int[32]",
+ "pinned": false}
+```
+
+`name` is the macro, `qname` the constant as the front end resolved it,
+`value` and `type` its PSS value and declared type. `pinned` is true when
+pssc also folded the value into the generated code (an array size, a width,
+a register offset, ...): the header then asserts the value, and a build that
+defines the macro otherwise does not compile. Under `--fold-constants` the
+list is empty, and `settings` says `"fold_constants": true`. Every other
+target writes `[]`.
 
 ---
 

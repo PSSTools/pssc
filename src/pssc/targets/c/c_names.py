@@ -14,7 +14,10 @@ did not write.
 So the names are gathered from the same functions that spell them, and two
 sources of one name are a `CompileError` naming both PSS sources, raised
 before any file is written. Struct tags and macros are not gathered: a tag has
-a namespace of its own, and the macros are counts in upper case.
+a namespace of its own, and the macros are counts in upper case. The one
+exception is a named PSS constant (`c/constants.py`), a macro under the
+model's own name, which `check_constants` gathers once the bodies are
+rendered.
 """
 from __future__ import annotations
 
@@ -23,7 +26,7 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 __all__ = ["HANDLE", "BUS", "RESERVED", "C_KEYWORDS", "check_identifier",
            "declared_names", "occupied_names", "parameter_clashes",
-           "check"]
+           "check", "check_constants"]
 
 #: The component handle every generated function takes, and the constructor's
 #: bus parameter. Both are only ever parameters and locals, where a leading
@@ -162,6 +165,12 @@ def declared_names(backend, model, s) -> List[Tuple[str, str]]:
     if s.yield_mode == "import" or s.chan_wait == "poll":
         out.append(("yield_", "the platform's yield (`--yield import` or "
                               "`--chan-wait poll`)"))
+    # The named constants the bodies spell, once they are rendered
+    # (`COpModelBackend.prepare`): each is a macro at file scope, and a
+    # macro named like a function rewrites every use of the function.
+    consts = getattr(backend, "constants", None)
+    for name, q in (consts.declared() if consts is not None else ()):
+        out.append((name, f"constant '{q}'"))
     return out
 
 
@@ -290,9 +299,7 @@ def occupied_names(backend, model, s) -> List[Tuple[str, str]]:
     return out
 
 
-def check(backend, model, s) -> None:
-    """Refuse two declarations of one C name (see the module docstring),
-    then any `parameter_clashes`."""
+def _check_declared(backend, model, s) -> None:
     from ...driver import CompileError
 
     seen: Dict[str, str] = {}
@@ -307,6 +314,27 @@ def check(backend, model, s) -> None:
             f"{len(bad)} name(s) would be declared twice in the generated C. "
             f"Rename one in the model, or give its component another prefix "
             f"with --prefix / --prefix-map", bad)
+
+
+def check_constants(backend, model, s) -> None:
+    """`check`'s refusal of two declarations of one name, once the named
+    constants are known: they are recorded while the bodies are rendered,
+    which is after `check` runs. A macro C will not take is refused at the
+    constant's first use."""
+    consts = getattr(backend, "constants", None)
+    if consts is None or not consts.used:
+        return
+    for name, q in consts.declared():
+        check_identifier(name, consts.used[q])
+    _check_declared(backend, model, s)
+
+
+def check(backend, model, s) -> None:
+    """Refuse two declarations of one C name (see the module docstring),
+    then any `parameter_clashes`."""
+    from ...driver import CompileError
+
+    _check_declared(backend, model, s)
     bad = parameter_clashes(backend, model, s)
     if bad:
         raise CompileError(

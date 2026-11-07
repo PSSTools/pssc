@@ -20,6 +20,15 @@
 #include "pssc_env.h"
 #include "pssc_chan.h"
 
+/* Named PSS constants. Each holds the model's value unless the build defines it
+ * first (-D, or a header included before this one). */
+#ifndef WB_DMA_DESC_BYTES
+#define WB_DMA_DESC_BYTES (16ull)  /* wb_dma_types_pkg::WB_DMA_DESC_BYTES */
+#endif
+#ifndef WB_DMA_DESC_NEXT_OFF
+#define WB_DMA_DESC_NEXT_OFF (12ull)  /* wb_dma_types_pkg::WB_DMA_DESC_NEXT_OFF */
+#endif
+
 /* ----- Data types used by the export API. ----- */
 typedef enum {
     WB_DMA_INT_BANK_WB_DMA_INT_A = 0,

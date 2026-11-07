@@ -191,6 +191,32 @@ def _unescape(text: str) -> str:
 _OFFSET_FNS = ("get_offset_of_instance", "get_offset_of_instance_array")
 
 
+def constant_refs(node) -> Set[str]:
+    """The qualified name of every named constant (an `ExprConstant` with a
+    `ref`) under IR *node* -- an expression, a statement, or a list of
+    them. Enum items are included; a consumer that cares tells them apart."""
+    from .targets.ir_walk import walk
+    return {n.ref for n in walk(node)
+            if isinstance(n, ir.ExprConstant) and getattr(n, "ref", None)}
+
+
+def pin_constants(ctx, qnames) -> None:
+    """Record that pssc used the value of each named constant in *qnames*
+    outside an operation body (`AstToIrContext.pinned_constants`).
+    A no-op for a context that does not track them."""
+    pinned = getattr(ctx, "pinned_constants", None)
+    if pinned is not None:
+        pinned.update(q for q in qnames if q)
+
+
+def _record_deps(ctx, decl, qname) -> None:
+    """File the constants *decl*'s initializer named under its qualified
+    name (`AstToIrContext.constant_deps`)."""
+    deps = getattr(ctx, "const_deps_by_key", {}).get(_node_key(decl))
+    if qname and deps:
+        ctx.constant_deps.setdefault(qname, set()).update(deps)
+
+
 def _mark_offset_functions(ctx) -> None:
     """Record on each function NAMED like a register group's offset function
     whether it IS one -- declared by a component that derives from
@@ -213,6 +239,13 @@ def _mark_offset_functions(ctx) -> None:
         return is_group(tm.get(name), seen + (name,)) if name in tm else False
 
     for comp in {id(c): c for c in tm.values()}.values():
+        if type(comp).__name__ == "DataTypeRegisterGroup":
+            # Run at build time (`progseq_model._OffsetEval`): every constant
+            # an offset function names is folded into an address.
+            for f in getattr(comp, "functions", None) or []:
+                if f.name in _OFFSET_FNS:
+                    pin_constants(ctx, constant_refs(f.body))
+            continue
         if type(comp).__name__ != "DataTypeComponent":
             continue
         fns = [f for f in getattr(comp, "functions", None) or []
@@ -221,6 +254,10 @@ def _mark_offset_functions(ctx) -> None:
             group = is_group(comp)
             for f in fns:
                 f.metadata["reg_offset"] = group
+                if group:
+                    # Run at build time (`progseq_model._OffsetEval`): every
+                    # constant it names is folded into an address.
+                    pin_constants(ctx, constant_refs(f.body))
 
 
 def ast_loc(node: Any, files: Dict[int, str]) -> Optional[Loc]:
@@ -509,6 +546,20 @@ class AstToIrContext:
         # `static const` fields folded so far, by AST node id (None: does not
         # fold); see _static_const_value.
         self.static_consts: Dict[int, object] = {}
+        # Named constants whose VALUE pssc used outside an operation body --
+        # an array size, a width, a template argument, a register offset,
+        # another constant's initializer -- by qualified name.
+        # A backend that keeps a constant symbolic (op-model-c) asserts each
+        # of these against the value it folded, so a build that overrides
+        # one fails to compile instead of mixing two values. See
+        # `pin_constants`.
+        self.pinned_constants: Set[str] = set()
+        # qualified name -> the constants its initializer named: `B = A + 1`
+        # folds A into B, so whatever relies on B's value relies on A's.
+        self.constant_deps: Dict[str, Set[str]] = {}
+        # The same, by the declaration's AST node id, as `_static_const_value`
+        # finds it (it does not know the qualified name).
+        self.const_deps_by_key: Dict[int, Set[str]] = {}
         # Enum (and `extend enum`) declarations' item values, by AST node id
         # (None: an item's value does not fold); see _enum_decl_values. And
         # each item's value by the ITEM's node id, which is what a reference
@@ -1016,7 +1067,9 @@ class AstToIrTranslator:
             if init is not None:
                 saved = list(ctx.errors)
                 try:
-                    value = _eval_const_ir(self._translate_expression(ctx, init))
+                    e = self._translate_expression(ctx, init)
+                    value = _eval_const_ir(e)
+                    ctx.const_deps_by_key[key] = constant_refs(e)
                 except Exception:
                     value = None
                 # A failed fold is "unknown", not an error of the model.
@@ -1028,7 +1081,7 @@ class AstToIrTranslator:
     def _is_static_const(decl) -> bool:
         """Whether field *decl* is a `static const`: declared `static`, or at
         package scope, where there is no instance for it to belong to (LRM
-        allows `const` there without `static`; ruling R-Q1). Whether it is
+        allows `const` there without `static`; user ruling, 2026-11-06). Whether it is
         `const` is _static_const_value's to check."""
         if not isinstance(decl, pss_ast.Field):
             return False
@@ -1040,7 +1093,7 @@ class AstToIrTranslator:
         """The declaration *expr*'s linker target names, or None if the
         linker left it unresolved. A reference the linker resolved is never
         folded by NAME: the name may also be an enum item's, or another
-        package's constant's (ruling R-Q2)."""
+        package's constant's (user ruling, 2026-11-06)."""
         ref = expr.getTarget() if hasattr(expr, 'getTarget') else None
         return self._symbol_scope_at(ctx, ref, depth=0) if ref is not None else None
 
@@ -1122,6 +1175,12 @@ class AstToIrTranslator:
                 out = ir.ExprConstant(
                     value=v, ref=getattr(e, "ref", None)
                     if isinstance(e, ir.ExprConstant) else None)
+        if out is not None:
+            # A specialization is named, and laid out, by its arguments'
+            # values (`s_s<K>` is `s_s_4`): the argument is pinned.
+            pin_constants(ctx, constant_refs(out))
+            if dflt is not None and not isinstance(dflt, pss_ast.TypeIdentifier):
+                pin_constants(ctx, constant_refs(e))
         ctx.static_consts[key] = out
         return out
 
@@ -1189,6 +1248,7 @@ class AstToIrTranslator:
         """`ExprConstant` of the `static const` *decl*'s *value*, typed as
         declared: an integer type gives the width and signedness, and the
         value is converted to it as its initializer was (8.7.2)."""
+        _record_deps(ctx, decl, qname)
         dtype = None
         try:
             dtype = self._translate_data_type(ctx, decl.getType())
@@ -1224,8 +1284,18 @@ class AstToIrTranslator:
             ref = n.getTarget() if hasattr(n, 'getTarget') else None
             decl = self._symbol_scope_at(ctx, ref, 0) if ref is not None else None
             if self._is_static_const(decl):
-                return self._ref_qname(ctx, ref, decl)
+                qname = self._ref_qname(ctx, ref, decl)
+                self._static_const_value(ctx, decl)
+                _record_deps(ctx, decl, qname)
+                return qname
         return None
+
+    def _pin_named(self, ctx: AstToIrContext, node) -> None:
+        """Pin the constant AST *node* names through the linker, if any
+        (`pin_constants`): its value is about to be used outside a body."""
+        qname = self._linked_const_name(ctx, node) if node is not None else None
+        if qname:
+            pin_constants(ctx, [qname])
 
     def _record_scope_generic_constraint(self, ctx: AstToIrContext, decl,
                                          namespace_prefix: str = "") -> None:
@@ -2042,6 +2112,8 @@ class AstToIrTranslator:
             except (TypeError, ValueError):
                 pass
         folded = self._fold_const_expr(ctx, size_node)
+        if folded is not None:
+            self._pin_named(ctx, size_node)
         if folded is None:
             ctx.add_error(f"{_ast_where(pool)}pool size is not a constant "
                           f"pssc can evaluate")
@@ -2815,6 +2887,8 @@ class AstToIrTranslator:
         ranges = self._translate_domain_range_list(ctx, domain, ir_type)
         del ctx.errors[saved:]                   # the field reports them
         spans = []
+        # The default is folded from the domain's bounds.
+        pin_constants(ctx, constant_refs(ranges))
         for r in (ranges.ranges if ranges is not None else []):
             lo = _eval_const_ir(r.lower)
             hi = lo if r.upper is None else _eval_const_ir(r.upper)
@@ -5216,7 +5290,7 @@ class AstToIrTranslator:
             # `k::D[7:4]`: the slice was dropped (I14).
             return self._apply_ref_bit_slice(ctx, expr, linked)
         if self._linked_decl(ctx, expr) is None:
-            # By name only for what the linker left unresolved (R-Q2).
+            # By name only for what the linker left unresolved.
             for key in (qualified, parts[-1]):
                 if key in ctx.const_map:
                     return self._apply_ref_bit_slice(
@@ -5605,7 +5679,7 @@ class AstToIrTranslator:
                     # was dropped, so `C[0]` read as `C` (I14).
                     return self._apply_ref_bit_slice(ctx, expr, self._apply_subscripts(
                         ctx, elems[0], linked))
-            # By name only for what the linker left unresolved (R-Q2): an
+            # By name only for what the linker left unresolved: an
             # enum item named like a linked package constant folded as the
             # item.
             if self._linked_decl(ctx, expr) is None:
@@ -5763,7 +5837,10 @@ class AstToIrTranslator:
             return value
         saved = list(ctx.errors)
         try:
-            value = _eval_const_ir(self._translate_expression(ctx, val_node))
+            e = self._translate_expression(ctx, val_node)
+            value = _eval_const_ir(e)
+            # An enum item's value is folded into the enum's declaration.
+            pin_constants(ctx, constant_refs(e))
         except Exception:
             value = None
         # A failed fold is reported by the caller, once, with its item.
@@ -5994,7 +6071,9 @@ class AstToIrTranslator:
         if not isinstance(value, int) or isinstance(value, bool):
             saved = len(ctx.errors)
             try:
-                value = _eval_const_ir(self._translate_expression(ctx, width))
+                e = self._translate_expression(ctx, width)
+                value = _eval_const_ir(e)
+                pin_constants(ctx, constant_refs(e))
             except Exception:
                 value = None
             del ctx.errors[saved:]          # reported below, once
@@ -6290,6 +6369,8 @@ class AstToIrTranslator:
                         folded = v
                 if folded is None:
                     folded = self._fold_const_expr(ctx, inner)
+                    if folded is not None:
+                        self._pin_named(ctx, inner)
                 if folded is not None:
                     depth = folded
 
@@ -6374,13 +6455,18 @@ class AstToIrTranslator:
                 if n is not None and hasattr(n, 'getTarget'):
                     linked = self._linked_static_const(ctx, n)
                     if isinstance(linked, int) and not isinstance(linked, bool):
+                        self._pin_named(ctx, n)
                         return linked
             folded = None if selected else self._fold_const_expr(ctx, inner)
+            if folded is not None:
+                self._pin_named(ctx, inner)
             if folded is None and isinstance(inner, pss_ast.Expr):
                 # An expression over constants (`array<int, N + 1>`).
                 try:
-                    folded = _eval_const_ir(
-                        self._translate_expression(ctx, inner))
+                    e = self._translate_expression(ctx, inner)
+                    folded = _eval_const_ir(e)
+                    if folded is not None:
+                        pin_constants(ctx, constant_refs(e))
                 except Exception:
                     folded = None
             return folded if folded is not None else -1

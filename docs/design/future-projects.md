@@ -149,6 +149,32 @@ and does not do it.
 - **An enum's IR name is unqualified** (`result_e`, not `plat_pkg::result_e`),
   so `c_names` messages name it so; qualifying it moves `_qual` diagnostics.
 
+## Stateless APIs over a component tree
+
+- **A child type instantiated twice has no stateless API.**
+  `OpModel.unpacked_signature` refuses it: a function of that type has no
+  single base per register group. Supporting it needs per-call-site base
+  mapping (the caller instance's bases passed at each call).
+- **A plugin cannot name an operation's owner from the root.** The HAL
+  fixture refuses a child with its own register group: `RegAccess.group_path`
+  is owner-relative, `bases(fn)` root-relative, and the owner's instance path
+  is private (`OpModel._instance_path`). Publish it before claiming that a
+  stateless plugin supports such children.
+- **`test_group_binding.py::test_the_emitters_agree_with_the_gate`** checks
+  only C and Python; the `apertures` matrix cases cover C++ and SV by
+  execution.
+
+## Named constants
+
+- **C++ keeps folding named constants.** op-model-c spells them as macros
+  (user ruling, 2026-11-06); op-model-cpp shares `CIntSemantics` and folds. The C++ form is a
+  `constexpr` the build can replace, gated like C's.
+- **A `bool` constant folds in C.** Only integer constants are symbolic; a
+  feature flag declared `static const bool` is still its value.
+- **C++ shifts a negative signed value left** (`int64_t x << 2`), which is
+  undefined before C++20. C now shifts it unsigned (`CBodyEmitter.
+  int_shift_text`); C++ was left alone to keep its output.
+
 ## Test rot found during the 0.2.0 wave
 
 These fail the same way before and after the release changes, so they are

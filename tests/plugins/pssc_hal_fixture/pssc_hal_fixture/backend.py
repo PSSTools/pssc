@@ -10,6 +10,8 @@ a statement (so the target asks for `reg_read_form = "statement"`),
 `DEV_WRITE32(base, REG, i, v)`, `DEV_FIELD_SET(REG, F, x, v)` and
 `DEV_FIELD_GET(REG, F, v)`, over the `<REG>_OFF`, `<REG>_STRIDE`,
 `<REG>_<F>_LSB` and `<REG>_<F>_MASK` this target writes to `<prefix>_map.h`.
+The project supplies `dev_features.h`, which defines the model's named
+constants (`HAS_GO`), so the generated header defines none.
 """
 from __future__ import annotations
 
@@ -42,9 +44,10 @@ class HalStyle(CStylePolicy):
         return annotations.of(dtype, EXTERN) is not None
 
     def seam_includes(self, model, s):
-        # The platform's macros, then the map they read; pssc's seam is
-        # not used.
-        return ['#include "dev_access.h"', f'#include "{s.prefix}_map.h"']
+        # The project's feature parameters, the platform's macros, then
+        # the map they read; pssc's seam is not used.
+        return ['#include "dev_features.h"', '#include "dev_access.h"',
+                f'#include "{s.prefix}_map.h"']
 
     def seam_headers(self, link_style):
         return ()           # ...so none is copied
@@ -137,8 +140,9 @@ class HalBackend(COpModelBackend):
         return []
 
     def header_sections(self, model, s):
-        return remove(remove(super().header_sections(model, s), "reg_map"),
-                      "handles")
+        # ...and no constants: the project's header defines them.
+        return remove(remove(remove(super().header_sections(model, s),
+                                    "reg_map"), "handles"), "constants")
 
     def impl_sections(self, model, s):
         return remove(super().impl_sections(model, s), "accessors")

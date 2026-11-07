@@ -795,14 +795,14 @@ pssc_addr_t wb_dma_write_descriptor(wb_dma_c *_self, pssc_addr_t at, pssc_addr_t
     pssc_write32((volatile void *)(uintptr_t)(at), csr_word);
     pssc_write32((volatile void *)(uintptr_t)((at + 4)), d.adr0);
     pssc_write32((volatile void *)(uintptr_t)((at + 8)), d.adr1);
-    pssc_write32((volatile void *)(uintptr_t)((at + 12)), d.next);
+    pssc_write32((volatile void *)(uintptr_t)((at + ((uint64_t)(WB_DMA_DESC_NEXT_OFF)))), d.next);
     /*
      * Extend the list. The check is on the resolved address rather than a
      * handle comparison, because an address handle is opaque and not
      * usefully comparable.
      */
     if (prev != 0ull) {
-        pssc_write32((volatile void *)(uintptr_t)((prev + 12)), (at & 0xffffffffu));
+        pssc_write32((volatile void *)(uintptr_t)((prev + ((uint64_t)(WB_DMA_DESC_NEXT_OFF)))), (at & 0xffffffffu));
     }
-    return (at + 16);
+    return (at + ((uint64_t)(WB_DMA_DESC_BYTES)));
 }

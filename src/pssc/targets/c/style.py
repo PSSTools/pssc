@@ -63,6 +63,9 @@ class CSettings:
     message_style: str = "import"
     emit_stubs: bool = False
     prefix_map: Tuple[str, ...] = ()
+    #: `--fold-constants`: every named constant is its value, as before
+    #: user ruling, 2026-11-06; no `constants` section.
+    fold_constants: bool = False
 
 
 def pssc_version() -> str:
@@ -178,6 +181,26 @@ class CStylePolicy(StylePolicy):
         """
         from ..enum_names import prefixed_item
         return prefixed_item(enum_name, item)
+
+    def constant_name(self, qname: str, qualify: bool) -> str:
+        """The macro a named PSS constant is spelled as (provisional):
+        ``cfg_pkg::MAX_CH`` -> ``MAX_CH``.
+
+        op-model-c keeps a `static const` or package `const` that a body
+        references as a macro, defined in the header's `constants` section
+        unless the build defines it first (user ruling, 2026-11-06). *qname* is the
+        constant's qualified name, as the linker resolved it. *qualify* is
+        True when another constant the code references, in another scope,
+        has the same name, or a local, parameter, member, function or type
+        of the model does (the macro would rewrite it): the default then
+        prefixes the scope (``cfg_pkg_MAX_CH``; ``global_G`` for ``::G``),
+        the rule op-model-sv uses (`targets/constant_names.py`). A house style may return any
+        identifier; two constants, or a constant and any other file-scope
+        name, spelled alike are refused before a file is written
+        (`c_names`).
+        """
+        from ..constant_names import plain_name, qualified_name
+        return qualified_name(qname) if qualify else plain_name(qname)
 
     def enum_item_for(self, enum_dtype, item: str) -> str:
         """The enumerator for *item* of the enum *enum_dtype*: the item's PSS

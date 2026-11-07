@@ -85,6 +85,8 @@ class COpModelBackend:
             else self.style_cls()
         self.model = None
         self.settings = None
+        #: The named-constant table (`c/constants.py`), set by `prepare`.
+        self.constants = None
 
     #: The body emitter used for operation bodies. `None` means "the module's
     #: own", resolved in `prepare()` so a subclass sees a class, not None.
@@ -162,6 +164,12 @@ class COpModelBackend:
         # The backend's own per-function decisions, before anything asks
         # `signature` or `linkage` (`c_names` does, next).
         self.plan(model, s)
+        # The named constants the bodies spell (`c/constants.py`), recorded
+        # while they are rendered; None under `--fold-constants`.
+        tm = getattr(model.ctx, "type_map", None) or {}
+        from .constants import CConstants
+        self.constants = (None if getattr(s, "fold_constants", False)
+                          else CConstants(self.style, tm))
         # Before any section is rendered, so that two rules producing one C
         # name is the model's error with both sources named, not a
         # conflicting-declaration error in the header (`c_names`).
@@ -171,6 +179,20 @@ class COpModelBackend:
                   ", ".join(f"{getattr(c, 'name', '?')}->{self.prefixes[c]}"
                             for c in self.comps))
         self.impl = self.emit_impl(model, s)
+        if self.constants is not None and self.constants.used:
+            from .constants import model_identifiers
+            taken = model_identifiers(tm)
+            if self.constants.renamed(taken):
+                # Two constants the code spells share a name, or one is named
+                # like a local or a member, which its macro would rewrite:
+                # each is qualified (`constant_names`), and the bodies are
+                # rendered again with the final names. Rare, so the common
+                # case renders once.
+                self.constants = CConstants(
+                    self.style, tm, names=self.constants.final_names(taken))
+                self.impl = self.emit_impl(model, s)
+        # The constants' macros, now that they are known.
+        c_names.check_constants(self, model, s)
         # Computed here, once, rather than on every call to `emit_impl_includes`:
         # whether the private regs header exists decides both ITS OWN content
         # and whether the `.c` includes it, and the two must agree on one
@@ -253,6 +275,56 @@ class COpModelBackend:
         precede the seam, for instance.
         """
         return list(self.style.include_order(model, s)) + [""]
+
+    @overridable(since='0.3', stability='provisional')
+    def emit_constants(self, model, s: CSettings) -> List[str]:
+        """The definitions of the named PSS constants the bodies spell
+        (user ruling, 2026-11-06). Returns LINES; empty when there are none, and under
+        `--fold-constants`.
+
+        Each is ``#ifndef N`` / ``#define N (<value>)`` / ``#endif``, so a
+        ``-D`` or a header included first decides the value, and the model's
+        value is the default. Contract: whatever replaces this section must
+        define every macro in ``self.constants.declared()`` before the
+        bodies use it -- the bodies spell each one cast to its declared type
+        and decide nothing from its value. A constant pssc folded elsewhere
+        (`pinned_constants`) is followed by a `_Static_assert` that the build
+        kept the folded value; a replacement that drops the assert drops that
+        check. A plugin whose project headers define the macros removes the
+        section (`sections.remove(..., "constants")`) and includes its
+        header instead.
+        """
+        if self.constants is None or not self.constants.used:
+            return []
+        return (["/* Named PSS constants. Each holds the model's value unless "
+                 "the build defines it",
+                 " * first (-D, or a header included before this one). */"]
+                + self.constants.definitions(self.pinned_constants(model))
+                + [""])
+
+    def pinned_constants(self, model):
+        """The qualified names of the constants whose value pssc folded
+        into generated code: where ast2ir and the model passes
+        used one (`AstToIrContext.pinned_constants`), where a body's
+        rendering did (`CConstants.pinned`), a field's initial value, and
+        what each of those -- or a constant the bodies spell -- was folded
+        from."""
+        from .constants import constant_refs, pinned_closure
+        ctx = model.ctx
+        roots = set(getattr(ctx, "pinned_constants", None) or ())
+        if self.constants is not None:
+            roots |= self.constants.pinned
+        tm = getattr(ctx, "type_map", None) or {}
+        holders = list(self.comps) + [t for t in tm.values()
+                                      if type(t).__name__ == "DataTypeStruct"]
+        for t in {id(t): t for t in holders}.values():
+            for f in getattr(t, "fields", None) or ():
+                iv = getattr(f, "initial_value", None)
+                if iv is not None and not getattr(f, "is_const", False):
+                    roots |= constant_refs(iv)
+        spelled = self.constants.used if self.constants is not None else ()
+        return pinned_closure(roots, getattr(ctx, "constant_deps", None) or {},
+                              spelled)
 
     @overridable(since='0.1', stability='stable', pairs_with=['emit_value_unions'])
     def emit_api_types(self, model, s: CSettings) -> List[str]:
@@ -616,7 +688,8 @@ class COpModelBackend:
                           style=self.style,
                           accs=self.accs,
                           emitter_cls=self.emitter_cls,
-                          api=self, lifecycle_impl=self.emit_lifecycle)
+                          api=self, lifecycle_impl=self.emit_lifecycle,
+                          constants=self.constants)
 
     @staticmethod
     def _block(text: str) -> List[str]:
@@ -677,6 +750,7 @@ class COpModelBackend:
             Section("banner",      self.emit_banner),
             Section("guard_open",  self.emit_guard_open),
             Section("includes",    self.emit_includes),
+            Section("constants",   self.emit_constants),
             Section("api_types",   self.emit_api_types),
             Section("reg_values",  self.emit_value_unions),
             Section("reg_map",     self.emit_reg_maps if s.header_only
