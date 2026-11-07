@@ -23,7 +23,8 @@ else:
     import pssparser.ast as pss_ast
 
 
-def ast_comments(node: Any) -> Tuple[Optional[str], Optional[str]]:
+def ast_comments(node: Any, keep_detached: bool = False
+                 ) -> Tuple[Optional[str], Optional[str]]:
     """The ``(leading, trailing)`` comment text attached to a PSS AST node.
 
     Empty when the parser was not asked to collect comments, which is what
@@ -33,21 +34,73 @@ def ast_comments(node: Any) -> Tuple[Optional[str], Optional[str]]:
     deliberately dropped. That is the mechanism by which a file note above the
     imports stays out of the generated code, and by which an author suppresses
     propagation of any one comment. See docs/design/pss-comment-propagation-plan.md.
+
+    With *keep_detached* (a statement's comments, under
+    ``keep_detached_comments``), the orphans above the node are kept too, in
+    source order ahead of its leading comment, and each run of comment the
+    source kept apart -- by a blank line, or by being detached from the
+    statement while the next run is not -- is separated by a
+    `comments.RUN_BREAK` line, so each renders as a comment of its own.
     """
     getter = getattr(node, "getComments", None)
     if getter is None:
         return (None, None)
 
-    leading: List[str] = []
+    above: List[Any] = []
     trailing: List[str] = []
     for c in getter():
         placement = c.getPlacement()
         if placement == pss_ast.CommentPlacement.CommentPlacement_Leading:
-            leading.append(_comment_prose(c))
+            above.append(c)
         elif placement == pss_ast.CommentPlacement.CommentPlacement_Trailing:
             trailing.append(_comment_prose(c))
+        elif (keep_detached and placement
+                == pss_ast.CommentPlacement.CommentPlacement_Orphan):
+            above.append(c)
 
-    return ("\n".join(leading) or None, "\n".join(trailing) or None)
+    leading = _comment_runs(above) if keep_detached else \
+        "\n".join(_comment_prose(c) for c in above)
+    return (leading or None, "\n".join(trailing) or None)
+
+
+def ast_detached_trailing(scope: Any) -> Optional[str]:
+    """The detached comment after a block's last statement, as one text with a
+    `comments.RUN_BREAK` between runs; None if there is none.
+
+    pssparser records it on the scope (``trailing_comments``, every one an
+    orphan) because there is no next construct to attach it to.
+    """
+    getter = getattr(scope, "getTrailing_comments", None)
+    if getter is None:
+        return None
+    return _comment_runs(list(getter())) or None
+
+
+def _comment_runs(comments: List[Any]) -> str:
+    """*comments* (in source order) as prose, a `RUN_BREAK` line wherever the
+    placement changes or a blank source line falls between two of them."""
+    from .targets.comments import RUN_BREAK
+    out: List[str] = []
+    prev = None
+    for c in comments:
+        if prev is not None and (
+                c.getPlacement() != prev.getPlacement()
+                or _comment_line(c) > _comment_end_line(prev) + 1):
+            out.append(RUN_BREAK)
+        out.append(_comment_prose(c))
+        prev = c
+    return "\n".join(out)
+
+
+def _comment_line(c: Any) -> int:
+    loc = c.getLocation()
+    return loc.lineno if loc is not None else 0
+
+
+def _comment_end_line(c: Any) -> int:
+    """The source line a comment ends on (a `/* */` may span several; a `//`
+    comment's raw text keeps its newline)."""
+    return _comment_line(c) + (c.getRaw() or "").rstrip("\n").count("\n")
 
 
 def _comment_prose(c: Any) -> str:
@@ -556,13 +609,20 @@ class AstToIrTranslator:
     - Data types
     """
 
-    def __init__(self, debug: bool = False):
+    def __init__(self, debug: bool = False,
+                 keep_detached_comments: bool = False):
         """Initialize translator
 
         Args:
             debug: Enable debug logging
+            keep_detached_comments: Keep the detached (orphan) comments in a
+                procedural body: those above a statement join its comment, and
+                those after a block's last statement become a comment-only
+                ``StmtPass`` (`_detached_trailing`). File-scope and
+                declaration orphans are dropped either way.
         """
         self.debug = debug
+        self.keep_detached_comments = keep_detached_comments
         self.logger = logging.getLogger(__name__)
         if debug:
             self.logger.setLevel(logging.DEBUG)
@@ -4634,7 +4694,33 @@ class AstToIrTranslator:
             stmt = self._translate_statement(ctx, child)
             if stmt:
                 stmts.append(stmt)
+        if self.keep_detached_comments:
+            tail = self._detached_trailing(scope)
+            if tail is not None:
+                stmts.append(tail)
         return stmts
+
+    def _detached_trailing(self, scope) -> Optional[ir.Stmt]:
+        """The comment-only statement for the detached comment after *scope*'s
+        last statement, or None.
+
+        Every block with statements -- a function or exec body, an `if`
+        clause, an `else`, a loop body, a `match` arm, a stand-alone block --
+        is translated by `_translate_block_children`, so this one call covers
+        them all. The statement is a `StmtPass`, which every analysis already
+        treats as doing nothing; its provenance (`comments.COMMENT_ONLY`) is
+        what tells an emitter to render the comment anyway.
+        """
+        text = ast_detached_trailing(scope)
+        if text is None:
+            return None
+        from .targets.comments import COMMENT_ONLY
+        stmt = ir.StmtPass(comment=text)
+        stmt.provenance = ir.Provenance(
+            pass_name=COMMENT_ONLY,
+            description="the detached comment after a block's last statement")
+        stmt.loc = self._loc(next(iter(scope.getTrailing_comments())))
+        return stmt
 
     def _loc(self, node: Any) -> Optional[Loc]:
         """*node*'s source location, or None (also for no node)."""
@@ -4708,7 +4794,8 @@ class AstToIrTranslator:
             # Where a gate that refuses something in it points (plan P5).
             stmt.loc = self._loc(stmt_node)
         if stmt is not None:
-            leading, trailing = ast_comments(stmt_node)
+            leading, trailing = ast_comments(
+                stmt_node, keep_detached=self.keep_detached_comments)
             if leading is not None:
                 stmt.comment = leading
             if trailing is not None:

@@ -683,6 +683,16 @@ class OpModelTarget(Target):
     #: (`OpModel.classes`), and the gate checks their bodies too.
     native_inheritance: bool = False
 
+    #: Whether a compile for this target keeps the DETACHED comments of a
+    #: procedural body by default: a block of comment a blank line cuts off
+    #: from the statement below it joins that statement's comment as a
+    #: comment of its own, and one after a block's last statement becomes a
+    #: comment-only statement (`comments.is_comment_only`). File-scope and
+    #: declaration comments stay dropped. `--keep-detached-comments` (or
+    #: `driver.compile(keep_detached_comments=...)`) overrides it per run;
+    #: `driver.compile` reads it.
+    keep_detached_comments: bool = False
+
     #: Whether this backend renders `OpModel.entries` (`--export-action`). A
     #: backend that does not refuses a model with entries rather than
     #: generating an API without them.

@@ -178,3 +178,93 @@ def test_a_doxygen_marker_is_not_prose():
         ("//////", None),
         ("  indented", None),
     ]
+
+
+# --- detached comments, kept (`keep_detached_comments`) ---------------------
+
+DETACHED_SRC = '''
+component pss_top {
+    target function int f(int n) {
+        int s = 0;
+
+        // Detached, line one.
+        // Detached, line two.
+
+        /* A second detached run. */
+
+        // Leading.
+        s = n;
+        if (n > 0) {
+            s = 1;
+
+            // At the end of the clause.
+        }
+        return s;
+
+        // At the end of the body.
+    }
+}
+'''
+
+
+def _detached(keep):
+    p = Parser(collect_comments=True)
+    p.parses([("m.pss", DETACHED_SRC)])
+    ctx = AstToIrTranslator(keep_detached_comments=keep).translate(p.link())
+    assert not ctx.errors, ctx.errors
+    return next(f for f in ctx.type_map["pss_top"].functions
+                if f.name == "f")
+
+
+def test_detached_runs_join_the_statement_comment_each_its_own():
+    """Each run the source kept apart is its own comment: separated by
+    `RUN_BREAK`, never by an empty line, which is a paragraph break inside
+    one comment."""
+    from pssc.targets.comments import RUN_BREAK
+    f = _detached(True)
+    assert f.body[1].comment == "\n".join([
+        "Detached, line one.", "Detached, line two.", RUN_BREAK,
+        "A second detached run.", RUN_BREAK, "Leading."])
+
+
+def test_detached_off_is_the_ir_there_was():
+    f = _detached(False)
+    assert f.body[1].comment == "Leading."
+    assert [type(s).__name__ for s in f.body] == [
+        "StmtAnnAssign", "StmtAssign", "StmtIf", "StmtReturn"]
+    assert f.body[2].body[-1].comment is None
+
+
+def test_detached_trailing_comment_is_a_comment_only_pass():
+    """No IR kind of its own: a `StmtPass`, which every analysis already
+    treats as doing nothing, marked by its provenance."""
+    from pssc.targets.comments import COMMENT_ONLY, is_comment_only
+    f = _detached(True)
+    tail = f.body[-1]
+    assert isinstance(tail, ir.StmtPass)
+    assert tail.comment == "At the end of the body."
+    assert tail.provenance.pass_name == COMMENT_ONLY
+    assert is_comment_only(tail)
+    assert tail.loc is not None and tail.loc.line == 20
+    clause = f.body[2].body
+    assert is_comment_only(clause[-1])
+    assert clause[-1].comment == "At the end of the clause."
+    assert not is_comment_only(ir.StmtPass())
+
+
+def test_detached_comment_only_statements_compare_by_their_comment():
+    """`comment` and `provenance` are compared fields of every statement
+    (unlike `annotations`), so two comment-only statements are equal when
+    their text is; a plain `StmtPass` is not one of them. Nothing compares
+    IR across the option: it is off unless asked for."""
+    from pssc.targets.comments import COMMENT_ONLY
+    flds = {f.name: f.compare for f in dc.fields(ir.StmtPass)}
+    assert flds["comment"] and flds["provenance"]
+    assert not flds["annotations"]
+
+    def only(text):
+        return ir.StmtPass(comment=text, provenance=ir.Provenance(
+            pass_name=COMMENT_ONLY))
+    assert only("a") == only("a")
+    assert only("a") != only("b")
+    assert only("a") != ir.StmtPass()

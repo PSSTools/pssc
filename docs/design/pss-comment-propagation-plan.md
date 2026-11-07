@@ -664,3 +664,40 @@ does not self-update.
   pre-`desc` register package, so pssc's end-to-end tests do not see the new
   comments. The register-struct emitters are covered by unit tests instead;
   a `scripts/sync_op_model.py` run would close it.
+
+## 13. Follow-up: detached comments in bodies, opt-in (applied)
+
+Orphans are still dropped by default (§3.1). A compile can keep the ones in a
+procedural body (a downstream HAL plugin's request, 2026-11), for sources
+that keep reasoning blocks and commented-out calls
+inside a function:
+
+- **The opt-in.** `--keep-detached-comments`, `driver.compile(...,
+  keep_detached_comments=)`, and the target class attribute
+  `OpModelTarget.keep_detached_comments = False`, which the other two override.
+  It reaches `AstToIrTranslator(keep_detached_comments=)` and affects statement
+  comments only: file-scope and declaration orphans stay dropped.
+- **Orphans above a statement** join its `comment`, in source order ahead of its
+  leading comment. Each run the source kept apart -- by a blank line, or by the
+  change from detached to leading -- is separated by a `comments.RUN_BREAK`
+  line (a form feed), not by an empty line: an empty line is already a
+  paragraph break inside one comment (`//` alone, or a blank line in a `/* */`)
+  and must stay one comment. `comment_lines` renders each run as its own
+  comment, an empty line between (C: separate `/* */`).
+- **Orphans at the end of a block** (`trailing_comments`, which nothing read
+  before) become a **comment-only statement** appended to the block: a
+  `StmtPass` carrying the comment, marked by
+  `provenance.pass_name == comments.COMMENT_ONLY` (`is_comment_only`).
+  `_translate_block_children` translates every block -- function and exec
+  bodies, `if`/`else if`/`else` clauses, loops, `match` arms, stand-alone
+  blocks -- so one call covers them all. `Stmt` has no `metadata` slot in
+  ir-core, and `provenance` ("synthesized, not translated one-for-one") is
+  the existing slot for exactly this. No new IR kind, so no emitter-registry
+  row beyond `StmtPass` becoming a rendered kind (a `stmt_pass` hook that
+  lowers to nothing).
+- **Rendering.** `BodyWalker.stmt` and the C++ `stmt` copy render a
+  comment-only statement as its comment alone; every other statement that
+  lowers to nothing still drops its comment. Python's suite adds `pass` when a
+  block is otherwise only comments, as it already did for `yield`. Every
+  analysis sees the empty statement it is; the bus trace is the same with the
+  option on as off (`test_comment_propagation.py::test_detached_*`).

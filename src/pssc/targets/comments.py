@@ -9,9 +9,12 @@ what every other comment it emits already looks like; a `#` language (Python,
 Make, shell) has one form for both. All are selected with ``style``.
 
 See docs/design/pss-comment-propagation-plan.md for where the text comes from, and why
-orphaned comments are not among it.
+orphaned comments are not among it -- unless a compile keeps them
+(``keep_detached_comments``), when a statement's comment may hold several
+RUNS (`RUN_BREAK`) and a block may end in a comment-only statement
+(`is_comment_only`).
 """
-from typing import List, Optional
+from typing import Any, List, Optional
 
 #: `//` line comments -- SystemVerilog statements.
 LINE = "line"
@@ -31,6 +34,31 @@ HASH = "hash"
 _MARKER = {LINE: "//", HASH: "#"}
 
 
+#: A line of a statement's ``comment`` that separates two comment RUNS:
+#: blocks of comment the source kept apart with a blank line (or a detached
+#: block and the statement's own leading comment). Put there only by a
+#: compile that keeps detached comments (ast2ir ``ast_comments``).
+#:
+#: Not an empty line: an empty line inside one comment is a paragraph break
+#: (`//` alone, or a blank line in a `/* */`), and must stay one comment. A
+#: form feed is the conventional section separator in source text and never
+#: part of a comment's prose.
+RUN_BREAK = "\f"
+
+#: ``Provenance.pass_name`` of a comment-only statement: a `StmtPass` that
+#: ast2ir appends to a block for the detached comment written after the
+#: block's last statement. It renders as its comment alone.
+COMMENT_ONLY = "comment_only"
+
+
+def is_comment_only(s: Any) -> bool:
+    """Whether *s* is a comment-only statement: nothing to execute, only the
+    comment it carries (`COMMENT_ONLY`). Every analysis treats it as the
+    empty statement it is; only an emitter looks."""
+    prov = getattr(s, "provenance", None)
+    return getattr(prov, "pass_name", None) == COMMENT_ONLY
+
+
 def _has_close_marker(text: str) -> bool:
     return "*/" in text
 
@@ -40,9 +68,20 @@ def comment_lines(text: Optional[str], pad: str, style: str = LINE) -> List[str]
 
     A blank source line stays blank rather than becoming a bare `//`, so the
     paragraph breaks in a doc comment survive as paragraph breaks.
+
+    A `RUN_BREAK` line splits *text* into separate comments, each rendered on
+    its own and kept apart by an empty line, as the source kept them.
     """
     if not text:
         return []
+
+    if RUN_BREAK in text:
+        out: List[str] = []
+        for run in text.split("\n" + RUN_BREAK + "\n"):
+            if out:
+                out.append("")
+            out += comment_lines(run, pad, style)
+        return out
 
     lines = text.split("\n")
 

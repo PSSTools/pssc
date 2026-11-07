@@ -148,7 +148,8 @@ def prelude_units(tgt: Any, opts: argparse.Namespace,
 def translate(sources: Union[PathLike, Sequence[PathLike]],
               reg_rmw: str = "native",
               prelude: Sequence[tuple] = (),
-              comments: bool = True) -> AstToIrContext:
+              comments: bool = True,
+              keep_detached_comments: bool = False) -> AstToIrContext:
     """Parse + link + translate ``sources`` (file paths) to an ``AstToIrContext``.
 
     The returned context is enriched with ``ctx.ir_context`` — the canonical
@@ -164,6 +165,9 @@ def translate(sources: Union[PathLike, Sequence[PathLike]],
     else a backend needs in scope first. :func:`compile` fills this from the
     selected target; callers that translate without a target (``pssc.Check``)
     pass nothing and the model takes its own defaults.
+
+    ``keep_detached_comments`` keeps the comments a blank line detached from
+    a statement, in procedural bodies only (`AstToIrTranslator`).
     """
     paths = source_list(sources)
 
@@ -182,7 +186,9 @@ def translate(sources: Union[PathLike, Sequence[PathLike]],
         root = parser.link()
     except ParseException as e:
         raise _parse_error(e, prelude) from None
-    ctx = AstToIrTranslator().translate(root, files=parser.file_map)
+    ctx = AstToIrTranslator(
+        keep_detached_comments=keep_detached_comments).translate(
+            root, files=parser.file_map)
     if reg_rmw == "expand":
         _reg_rmw.expand_all(ctx)
     ctx.ir_context = to_core_context(ctx)
@@ -195,6 +201,7 @@ def compile(
     output_dir: Optional[PathLike] = None,
     opts: Optional[argparse.Namespace] = None,
     raise_on_error: bool = True,
+    keep_detached_comments: Optional[bool] = None,
     **overrides: Any,
 ) -> CompileResult:
     """Compile PSS ``sources`` (file paths) with ``target``.
@@ -206,7 +213,15 @@ def compile(
     keyword ``overrides`` are applied on top (e.g. ``emit="repr"``). With
     ``raise_on_error`` (default), unknown targets and translation errors raise
     :class:`CompileError`; otherwise they are returned in ``CompileResult.errors``.
+
+    ``keep_detached_comments`` keeps the comments a blank line detached from
+    a statement in a procedural body (``--keep-detached-comments``). None, the
+    default, takes the option's value from ``opts`` and else the target's
+    class attribute of the same name, so a target can turn it on for itself.
     """
+    if keep_detached_comments is not None:
+        overrides = dict(overrides,
+                         keep_detached_comments=keep_detached_comments)
     opts = _normalize_opts(opts, output_dir, overrides)
     # Normalized ONCE: the prelude sees exactly the list that is translated
     # (`opts.sources` is the documented input to `Target.prelude`).
@@ -252,8 +267,12 @@ def compile(
     # than as an exception. A parse failure is an error like any other, so it
     # honours that promise too -- before, it was the one error that escaped.
     try:
+        keep = getattr(opts, "keep_detached_comments", None)
+        if keep is None:
+            keep = getattr(tgt, "keep_detached_comments", False)
         ctx = translate(paths, reg_rmw=getattr(opts, "reg_rmw", "native"),
                         comments=not getattr(opts, "no_comments", False),
+                        keep_detached_comments=bool(keep),
                         prelude=prelude)
     except CompileError as e:
         if raise_on_error:

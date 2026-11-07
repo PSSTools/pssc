@@ -67,8 +67,10 @@ ROWS = {
     # `comp_inherit` has already replaced it; C++ has no `super;` in a body
     # it renders yet, and refuses one.
     "StmtSuper": _on(c=REFUSED, cpp=REFUSED, py=RENDERED, sv=RENDERED),
-    "StmtPass": NotProduced("ast2ir makes one only for an `if` with no "
-                            "clause, which the grammar does not allow"),
+    # The comment-only statement ast2ir appends to a block for its detached
+    # trailing comment (`keep_detached_comments`); otherwise only an `if`
+    # with no clause, which the grammar does not allow.
+    "StmtPass": RENDERED,
     "StmtRandomize": NotProduced("refused by ast2ir with its line "
                                  "(test_ir_statements.py)"),
     "StmtDefault": NotProduced("a constraint statement (`default`)"),

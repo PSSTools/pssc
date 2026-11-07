@@ -34,7 +34,7 @@ import re
 from typing import Any, Callable, Dict, List, Optional, Set
 
 from ..diag import Refusal
-from .comments import LINE, append_trailing, comment_lines
+from .comments import LINE, append_trailing, comment_lines, is_comment_only
 from .progseq_model import _dt_name
 
 __all__ = ["BodyWalker", "CallDispatch", "hook_name", "match_values",
@@ -439,20 +439,30 @@ class BodyWalker:
         Every nesting level comes through here -- a nested body is emitted by
         `stmts`, which calls back into this -- so one hook covers the whole
         tree. A statement that lowers to no lines gets no comment either; prose
-        with nothing to describe is worse than none.
+        with nothing to describe is worse than none -- except a comment-only
+        statement (`comments.is_comment_only`), whose comment is all there is.
         """
         try:
             lines = self.render_stmt(s, ind)
         except Refusal as e:
             raise e.at_least(s)
+        pad = self.pad(ind)
         if not lines:
+            if is_comment_only(s):
+                return comment_lines(getattr(s, "comment", None), pad,
+                                     self.comment_style)
             return lines
 
-        pad = self.pad(ind)
         return comment_lines(getattr(s, "comment", None), pad,
                              self.comment_style) + \
             append_trailing(lines, getattr(s, "comment_trailing", None),
                             self.comment_style)
+
+    def stmt_pass(self, s, ind: int) -> List[str]:
+        """The empty statement lowers to nothing. ast2ir makes one only to
+        carry a block's detached trailing comment (`comments.COMMENT_ONLY`),
+        which `stmt` renders."""
+        return []
 
     def render_stmt(self, s, ind: int) -> List[str]:
         """*s* rendered, with no comment attachment. The dispatch point.

@@ -37,7 +37,8 @@ from ..body_walker import (match_values, foreach_parts, assigns_local,
                            match_arm_test)
 
 from ...diag import Refusal
-from ..comments import LINE, append_trailing, blank_line, comment_lines, doc_block
+from ..comments import (LINE, append_trailing, blank_line, comment_lines,
+                        doc_block, is_comment_only)
 from ..array_literal import is_literal
 from ..progseq_model import (
     func_kind, FuncKind, field_is_reg_group, _dt_name, channel_fields,
@@ -334,8 +335,8 @@ class _BodyEmitter(CIntSemantics):
         "StmtAnnAssign", "StmtAssign", "StmtAugAssign", "StmtBreak",
         "StmtContinue", "StmtExpr", "StmtFor", "StmtForeach", "StmtIf",
         "StmtIfChain",
-        "StmtMatch", "StmtRepeatWhile", "StmtReturn", "StmtWhile",
-        "StmtYield"})
+        "StmtMatch", "StmtPass", "StmtRepeatWhile", "StmtReturn",
+        "StmtWhile", "StmtYield"})
 
     """Translate one operation body to C++ lines.
 
@@ -1108,21 +1109,26 @@ class _BodyEmitter(CIntSemantics):
     def stmt(self, s, ind: int) -> List[str]:
         """Emit *s*, wrapped in whatever the PSS source wrote around it.
 
-        One site for the whole tree, mirroring the SV and C emitters' hook.
+        One site for the whole tree, mirroring the SV and C emitters' hook,
+        a comment-only statement included (`BodyWalker.stmt`).
         """
         try:
             lines = self._stmt_lines(s, ind)
         except Refusal as e:
             raise e.at_least(s)
-        if not lines:
-            return lines
         pad = "    " * ind
+        if not lines:
+            if is_comment_only(s):
+                return comment_lines(getattr(s, "comment", None), pad, LINE)
+            return lines
         return comment_lines(getattr(s, "comment", None), pad, LINE) + \
             append_trailing(lines, getattr(s, "comment_trailing", None), LINE)
 
     def _stmt_lines(self, s, ind: int) -> List[str]:
         pad = "    " * ind
         cn = _dt_name(s)
+        if cn == "StmtPass":
+            return []
         if cn == "StmtAnnAssign":
             return self._decl(s, pad)
         if cn == "StmtAssign":

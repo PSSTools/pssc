@@ -170,6 +170,8 @@ _C_STMT_KINDS = {
     "StmtIf", "StmtIfChain", "StmtRepeatWhile", "StmtWhile", "StmtBreak",
     "StmtContinue",
     "StmtFor", "StmtForeach", "StmtMatch", "StmtYield",
+    # The comment-only statement (`keep_detached_comments`), on the walker.
+    "StmtPass",
 }
 
 _C_EXPR_KINDS = {

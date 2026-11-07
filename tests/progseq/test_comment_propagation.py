@@ -437,3 +437,287 @@ def test_the_other_styles_are_unchanged_by_the_addition():
     assert doc_block("hi", "", LINE) == ["/** hi */"]
     assert doc_block("a */ b", "", BLOCK) == ["// a */ b"]
     assert append_trailing(["x;"], "c", BLOCK) == ["x;   /* c */"]
+
+
+# --- detached comments, kept on request (`keep_detached_comments`) ----------
+#
+# Off by default: a blank line is how an author keeps a note out of the
+# generated code. A project whose reviewers read the generated code against
+# its source -- reasoning blocks, commented-out calls -- turns it on, per
+# compile (`--keep-detached-comments`) or per target (the class attribute).
+
+DETACHED_SRC = '''
+// A file note the option must not carry.
+
+pure component dev_regs_c : reg_group_c {
+  reg_c<bit[32], READWRITE, 32> CTL;
+  reg_c<bit[32], READWRITE, 32> STS;
+  function bit[64] get_offset_of_instance(string name) {
+    if (name == "CTL") {
+      return 0x0;
+    } else if (name == "STS") {
+      return 0x4;
+    }
+    return 0xFFFFFFFFFFFFFFFF;
+  }
+}
+
+component pss_top {
+  dev_regs_c regs;
+
+  // A declaration note the option must not carry.
+
+  int count;
+
+  solve function void initialize(addr_handle_t base) {
+    regs.set_handle(base);
+  }
+
+  target function void kick(bit[32] v) {
+    regs.CTL.write_val(v);
+  }
+
+  target function void run() {
+    regs.CTL.write_val(1);
+
+    // Detached block: the reset value stays.
+    // kick(0);
+
+    // Consecutive block one.
+
+    // Consecutive block two.
+    // Leading comment of the write.
+    regs.STS.write_val(2);
+    if (count == 0) {
+      regs.CTL.write_val(3);
+
+      // Trailing block of the if clause.
+      // kick(4);
+    } else {
+      regs.CTL.write_val(5);
+    }
+    if (count != 0) {
+      // A clause holding nothing but a note.
+    }
+    repeat (2) {
+      regs.STS.write_val(6);
+
+      // Trailing block of the loop body.
+    }
+
+    // Trailing block of the function.
+    // kick(7);
+  }
+}
+'''
+
+#: Every detached block, in source order.
+_BLOCKS = ("Detached block: the reset value stays.", "kick(0);",
+           "Consecutive block one.", "Consecutive block two.",
+           "Leading comment of the write.",
+           "Trailing block of the if clause.", "kick(4);",
+           "A clause holding nothing but a note.",
+           "Trailing block of the loop body.",
+           "Trailing block of the function.", "kick(7);")
+
+#: Hand-written: `count` is 0, so the first `if` takes its first clause and
+#: the second does nothing.
+_TRACE = ["write 32 0x1000 0x1", "write 32 0x1004 0x2",
+          "write 32 0x1000 0x3", "write 32 0x1004 0x6",
+          "write 32 0x1004 0x6"]
+
+_DETACHED_TARGETS = ("c", "cpp", "py", "sv")
+
+
+def _detached_text(tmp_path, target, **opts):
+    """Every generated file of ``target`` for DETACHED_SRC, concatenated."""
+    from . import trace_harness as th
+    out = th.compile_model(tmp_path, DETACHED_SRC, target, **opts)
+    return "\n".join(p.read_text() for p in sorted(out.iterdir())
+                     if p.suffix in (".c", ".h", ".hpp", ".py", ".sv", ".svh")
+                     and not p.name.startswith("pssc_"))
+
+
+@pytest.fixture(scope="module")
+def detached(tmp_path_factory):
+    """``{(target, keep): generated text}``; keep None is the default."""
+    out = {}
+    for tgt in _DETACHED_TARGETS:
+        for keep in (None, False, True):
+            d = tmp_path_factory.mktemp(f"det_{tgt}_{keep}")
+            extra = {} if keep is None else {"keep_detached_comments": keep}
+            out[(tgt, keep)] = _detached_text(d, tgt, **extra)
+    return out
+
+
+@pytest.mark.parametrize("target", _DETACHED_TARGETS)
+def test_detached_default_is_off(detached, target):
+    """Off unless asked for; the goldens hold the rest of the output to
+    what it was."""
+    assert detached[(target, None)] == detached[(target, False)]
+    attached = ("Consecutive block two.", "Leading comment of the write.")
+    for frag in _BLOCKS:
+        if frag not in attached:
+            assert frag not in detached[(target, None)], frag
+
+
+@pytest.mark.parametrize("target", _DETACHED_TARGETS)
+def test_detached_each_block_appears_once_in_source_order(detached, target):
+    text = detached[(target, True)]
+    for frag in _BLOCKS:
+        assert text.count(frag) == 1, (frag, text.count(frag))
+    at = [text.index(f) for f in _BLOCKS]
+    assert at == sorted(at), list(zip(_BLOCKS, at))
+
+
+@pytest.mark.parametrize("target", _DETACHED_TARGETS)
+def test_detached_file_and_declaration_notes_stay_dropped(detached, target):
+    text = detached[(target, True)]
+    assert "file note" not in text
+    assert "declaration note" not in text
+
+
+def test_detached_runs_are_separate_c_comments(detached):
+    """C writes every comment as `/* */`: two runs a blank line kept apart
+    are two comments, not one comment with a blank line in it."""
+    c = detached[("c", True)]
+    assert ("    /*\n"
+            "     * Detached block: the reset value stays.\n"
+            "     * kick(0);\n"
+            "     */\n"
+            "\n"
+            "    /* Consecutive block one. */\n"
+            "\n"
+            "    /*\n"
+            "     * Consecutive block two.\n"
+            "     * Leading comment of the write.\n"
+            "     */\n") in c
+
+
+_COMMENT_START = ("//", "/*", "*", "#")
+
+
+def _next_code_line(lines, i):
+    """The first line after ``lines[i]`` that is neither blank nor comment."""
+    for line in lines[i + 1:]:
+        s = line.strip()
+        if s and not s.startswith(_COMMENT_START):
+            return line
+    return ""
+
+
+def _indent(line):
+    return len(line) - len(line.lstrip())
+
+
+@pytest.mark.parametrize("target", _DETACHED_TARGETS)
+@pytest.mark.parametrize("frag,closes", [
+    ("Trailing block of the if clause.", "else"),
+    ("A clause holding nothing but a note.", None),
+    ("Trailing block of the loop body.", None),
+    ("Trailing block of the function.", None),
+])
+def test_detached_trailing_blocks_end_their_block(detached, target, frag,
+                                                  closes):
+    """A block's trailing note -- an `if` clause's, a loop body's, the
+    function's -- is the last thing in that block: what follows it closes
+    the block (Python: less indented)."""
+    lines = detached[(target, True)].split("\n")
+    i = next(k for k, l in enumerate(lines) if frag in l)
+    nxt = _next_code_line(lines, i)
+    if target == "py" and nxt.strip() == "pass":
+        # A suite holding only a note still needs a statement.
+        assert _indent(nxt) == _indent(lines[i])
+        nxt = _next_code_line(lines, lines.index(nxt, i))
+    assert _indent(nxt) < _indent(lines[i]), (lines[i], nxt)
+    if closes:
+        assert closes in nxt, nxt
+
+
+@pytest.fixture(scope="module")
+def detached_traces(tmp_path_factory):
+    """``{(target, keep): trace}`` from the trace harness, with the option
+    taken from the target CLASS (`OpModelTarget.keep_detached_comments`), as
+    a plug-in sets it."""
+    from . import trace_harness as th
+    from pssc.targets.op_model import OpModelTarget
+    builds, keys = [], []
+    mp = pytest.MonkeyPatch()
+    try:
+        for keep in (False, True):
+            mp.setattr(OpModelTarget, "keep_detached_comments", keep)
+            for tgt in _DETACHED_TARGETS:
+                if th.available(tgt):
+                    continue
+                d = tmp_path_factory.mktemp(f"trace_{tgt}_{keep}")
+                builds.append(th.prepare(tgt, d, DETACHED_SRC,
+                                          args=(0x1000,)))
+                keys.append((tgt, keep))
+    finally:
+        mp.undo()
+    return dict(zip(keys, th.run_many(builds)))
+
+
+@pytest.mark.parametrize("target", [
+    pytest.param("c", marks=pytest.mark.c_toolchain),
+    pytest.param("cpp", marks=pytest.mark.c_toolchain),
+    "py",
+    pytest.param("sv", marks=pytest.mark.sim)])
+def test_detached_bus_trace_is_unchanged(detached_traces, target):
+    """Comments are not behaviour: the same accesses in the same order with
+    the option on as off, and both the hand-written trace. The generated
+    code builds with a comment-only block in it (Python's needs `pass`)."""
+    from . import trace_harness as th
+    why = th.available(target)
+    if why:
+        pytest.skip(why)
+    off, on = detached_traces[(target, False)], detached_traces[(target, True)]
+    for got in (off, on):
+        if isinstance(got, BaseException):
+            raise got
+    assert off == _TRACE
+    assert on == off
+
+
+def test_detached_class_attribute_reaches_the_compile(tmp_path, monkeypatch):
+    """A target turns the option on for itself; an explicit False wins."""
+    from pssc.targets.op_model import OpModelTarget
+    monkeypatch.setattr(OpModelTarget, "keep_detached_comments", True)
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    assert "kick(7);" in _detached_text(tmp_path / "a", "c")
+    assert "kick(7);" not in _detached_text(
+        tmp_path / "b", "c", keep_detached_comments=False)
+
+
+def test_detached_cli_flag(tmp_path):
+    from pssc.cli import main
+    from . import trace_harness as th
+    p = tmp_path / "m.pss"
+    p.write_text(th._PRELUDE + DETACHED_SRC)
+    for flag, d in (([], "off"), (["--keep-detached-comments"], "on")):
+        rc = main(["compile", str(p), "-t", "op-model-c", "--root", "pss_top",
+                   "--prefix", "m", "-o", str(tmp_path / d), "-q", *flag])
+        assert rc == 0
+    assert "kick(7);" not in (tmp_path / "off" / "m.c").read_text()
+    assert "kick(7);" in (tmp_path / "on" / "m.c").read_text()
+
+
+def test_detached_note_the_default_drops_is_kept_on_request(tmp_path):
+    """The note `test_a_detached_comment_does_not_propagate` pins as dropped
+    is the one the option keeps."""
+    out = _gen(tmp_path, "op-model-c", c_prefix="m",
+               keep_detached_comments=True)
+    assert "/* A note that is deliberately detached. */" in \
+        (out / "m.c").read_text()
+
+
+def test_detached_runs_render_apart_in_every_style():
+    """A `RUN_BREAK` line ends one comment and starts the next; an empty
+    line is still a paragraph break inside one."""
+    from pssc.targets.comments import RUN_BREAK
+    text = "\n".join(["a", "", "b", RUN_BREAK, "c"])
+    assert comment_lines(text, "", BLOCK) == [
+        "/*", " * a", " *", " * b", " */", "", "/* c */"]
+    assert comment_lines(text, "", LINE) == ["// a", "//", "// b", "", "// c"]
+    assert comment_lines(text, "", HASH) == ["# a", "#", "# b", "", "# c"]

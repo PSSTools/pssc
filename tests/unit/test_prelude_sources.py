@@ -1,10 +1,9 @@
 """A prelude sees the compile's sources, duplicates are dropped by content,
 and the `pssc.preludes` group contributes to every target.
 
-`opts.sources` is what lets a target leave out a unit the user passed as well
-(R-Q8 a); the driver drops a unit byte-identical to a source or to an earlier
-unit whether or not the target looked (R-Q8 b); and an installed contributor
-puts its PSS in scope on every target (R-Q8 c). `prelude_units` is the one
+`opts.sources` is what lets a target leave out a unit the user passed as well; the driver drops a unit byte-identical to a source or to an earlier
+unit whether or not the target looked; and an installed contributor
+puts its PSS in scope on every target. `prelude_units` is the one
 place all three are decided, and `compile`, `pssc.testing` and `pssc.Check`
 each ask it -- the tests at the end hold each caller to that.
 """
@@ -94,7 +93,7 @@ def _files(tmp_path, **texts):
     return out
 
 
-# -- R-Q8 a: the prelude sees the sources ------------------------------------
+# -- the prelude sees the sources ------------------------------------
 
 def test_the_prelude_sees_a_list_of_sources(recorder, contributors, tmp_path):
     f = _files(tmp_path, lib=LIB, m=MODEL)
@@ -117,7 +116,7 @@ def test_the_cli_gives_the_prelude_the_sources(recorder, contributors,
     assert recorder.seen == [[f["lib"], f["m"]]]
 
 
-# -- R-Q8 b: dedup by content -------------------------------------------------
+# -- dedup by content -------------------------------------------------
 
 def test_a_unit_identical_to_a_source_is_one_package(recorder, contributors,
                                                      tmp_path):
@@ -152,7 +151,7 @@ def test_a_missing_source_is_left_to_the_parser(contributors, tmp_path):
     assert driver.prelude_units(tgt, ns) == [("a.pss", LIB)]
 
 
-# -- R-Q8 c: contributions ----------------------------------------------------
+# -- contributions ----------------------------------------------------
 
 def test_without_the_library_the_model_does_not_compile(contributors,
                                                         tmp_path):
@@ -178,6 +177,15 @@ def test_a_contribution_is_in_scope_on_every_target(contributors, tmp_path,
                          output_dir=str(tmp_path / "out"))
     assert res.ok and res.outputs
     assert seen == [(target, [f["m"]])]
+
+
+def test_parse_sees_a_contribution(contributors, tmp_path):
+    """`pssc parse` names no target, but a model that compiles must parse:
+    it takes the contributions too."""
+    f = _files(tmp_path, m=MODEL)
+    assert cli.main(["parse", f["m"]]) != 0
+    contributors.register("lib", lambda t, o: [("ann_lib_pkg.pss", LIB)])
+    assert cli.main(["parse", f["m"]]) == 0
 
 
 def test_a_contribution_also_passed_explicitly_is_one_package(contributors,

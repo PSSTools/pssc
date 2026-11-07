@@ -45,6 +45,7 @@ pssc compile SOURCES... [-t TARGET] [-o DIR] [--dump-ir FILE] [-q] [target-opts]
 | `-q, --quiet` | do not print written file paths |
 | `--target-cfg NAME=VALUE` | override what the target publishes as `target_cfg_pkg` (repeatable; see below) |
 | `--no-comments` | do not carry the PSS source's comments into the generated code (see below) |
+| `--keep-detached-comments` | also carry the comments a blank line detaches from a statement in a procedural body (see below) |
 
 ### `--no-comments` — dropping the source's prose
 
@@ -77,6 +78,44 @@ target function void arm() { }
 
 target function void stop() { }
 ```
+
+### `--keep-detached-comments` — keeping the notes inside a body
+
+Firmware sources often keep reasoning inside a function body as detached
+blocks: a note on why a reset value stays, a call commented out, a remark after
+the last statement. Reviewers who read the generated code against the source
+want those too. `--keep-detached-comments` keeps them, **in procedural bodies
+only** (function and exec bodies, and every block inside one):
+
+- a detached block above a statement is emitted above it, after the comment
+  before it and ahead of the statement's own comment. Each block the source
+  kept apart with a blank line stays a comment of its own, separated by a
+  blank line (in C, a separate `/* */`);
+- a block after the last statement of a block (a function body, an `if` or
+  `else` clause, a loop body, a `match` arm) is emitted at the end of that
+  block. Python adds `pass` if that leaves the block otherwise empty.
+
+```pss
+target function void run() {
+    regs.CTL.write_val(1);
+
+    // The reset value of STS stays.
+    // kick(0);
+
+    regs.STS.write_val(2);
+
+    // Nothing to wait for here.
+}
+```
+
+Comments are never behaviour: the generated code is the same with the option as
+without, comments aside. File-scope and declaration comments a blank line
+detaches are still dropped, so a file note above the `import`s stays out
+either way. With `--no-comments` there is nothing to keep.
+
+A target can turn the option on for itself with the class attribute
+`keep_detached_comments = True` (`OpModelTarget`; default `False`); the flag,
+or `driver.compile(..., keep_detached_comments=...)`, overrides it per run.
 
 ### `target_cfg_pkg` — the target describes itself to the model
 

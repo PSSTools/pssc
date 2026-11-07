@@ -172,6 +172,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-comments", dest="no_comments", action="store_true",
         help="do not carry PSS comments into the generated code",
     )
+    # Detached (orphan) comments in a procedural body: a block of comment a
+    # blank line cuts off from the statement below it, or one after a
+    # block's last statement. Dropped by default, which is how an author
+    # suppresses a comment. Unset (None) leaves the choice to the target
+    # (`keep_detached_comments` on its class).
+    c.add_argument(
+        "--keep-detached-comments", dest="keep_detached_comments",
+        action="store_true", default=None,
+        help="also carry the comments a blank line detaches from a statement "
+        "in a function or exec body; file-scope and declaration comments "
+        "stay dropped",
+    )
     # Shared across the SV export targets (sv-native oo_api, sv-dpi-bridge):
     # which actions to expose as entry points. Added once here so multiple
     # targets can consume it without colliding in the single compile parser.
@@ -287,7 +299,10 @@ def _cmd_compile(args: argparse.Namespace) -> int:
 
 
 def _cmd_parse(args: argparse.Namespace) -> int:
-    ctx = driver.translate(args.sources)
+    # No target, but the installed `pssc.preludes` contributions: a model
+    # that compiles must also parse.
+    ctx = driver.translate(args.sources,
+                           prelude=driver.prelude_units(None, args))
     if ctx.errors:
         raise driver.CompileError(
             f"PSS translation failed with {len(ctx.errors)} error(s)", ctx.errors
