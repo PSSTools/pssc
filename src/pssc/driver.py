@@ -19,6 +19,7 @@ from .ir import to_core_context
 from . import diag as _diag
 from . import reg_rmw as _reg_rmw
 from . import targets as _targets
+from . import preludes as _preludes
 
 PathLike = Union[str, os.PathLike]
 
@@ -90,6 +91,60 @@ def _parse_error(e: ParseException,
         "PSS parse failed with %d error(s)" % len(rendered), rendered)
 
 
+def source_list(sources: Union[PathLike, Sequence[PathLike]]) -> List[str]:
+    """``sources`` as the list of path strings a compile reads: one path or a
+    sequence of them, each as given (never resolved)."""
+    if isinstance(sources, (str, os.PathLike)):
+        sources = [sources]
+    return [os.fspath(s) for s in sources]
+
+
+def _source_bytes(paths: Sequence[str]) -> List[bytes]:
+    out = []
+    for p in paths:
+        try:
+            out.append(Path(p).read_bytes())
+        except OSError:
+            # The parser reports a missing source, with its own words; a
+            # prelude unit cannot be a copy of a file nobody can read.
+            pass
+    return out
+
+
+def prelude_units(tgt: Any, opts: argparse.Namespace,
+                  own: Optional[Sequence[tuple]] = None) -> List[tuple]:
+    """The ``(name, text)`` units a compile processes ahead of its sources.
+
+    The target's own prelude (``tgt.prelude(opts)``, or ``own`` in its place
+    -- `pssc.Check` names no target and builds its own), then every
+    ``pssc.preludes`` contribution (`pssc.preludes`), then the duplicates
+    dropped: a unit whose text is byte-identical to a source file's
+    (``opts.sources``) or to an earlier unit's. By CONTENT, never by name: a
+    package passed explicitly as well as contributed is one package, and a
+    modified copy is a different one, which the parser then reports.
+
+    The one place this is decided, so `compile`, `pssc.testing` and
+    `pssc.Check` cannot disagree. A ``ValueError`` from the target's prelude
+    propagates; a failing contributor is skipped and reported by
+    `pssc.preludes.prelude_errors`.
+    """
+    if own is None:
+        own = tgt.prelude(opts) if tgt is not None else []
+    _preludes.discover()
+    units = list(own or []) + _preludes.contributions(
+        getattr(tgt, "name", None), opts)
+
+    seen = set(_source_bytes(getattr(opts, "sources", None) or ()))
+    out = []
+    for name, text in units:
+        key = text.encode("utf-8")
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((name, text))
+    return out
+
+
 def translate(sources: Union[PathLike, Sequence[PathLike]],
               reg_rmw: str = "native",
               prelude: Sequence[tuple] = (),
@@ -110,9 +165,7 @@ def translate(sources: Union[PathLike, Sequence[PathLike]],
     selected target; callers that translate without a target (``pssc.Check``)
     pass nothing and the model takes its own defaults.
     """
-    if isinstance(sources, (str, os.PathLike)):
-        sources = [sources]
-    paths = [str(s) for s in sources]
+    paths = source_list(sources)
 
     parser = Parser(collect_comments=comments)
     # A syntax or resolution error in the user's PSS is a USER error, not a
@@ -155,6 +208,10 @@ def compile(
     :class:`CompileError`; otherwise they are returned in ``CompileResult.errors``.
     """
     opts = _normalize_opts(opts, output_dir, overrides)
+    # Normalized ONCE: the prelude sees exactly the list that is translated
+    # (`opts.sources` is the documented input to `Target.prelude`).
+    paths = source_list(sources)
+    opts.sources = paths
 
     # Resolve the target first so a bad name fails fast and clearly.
     _targets.discover()
@@ -182,9 +239,10 @@ def compile(
             return CompileResult(target=target, errors=[str(e)])
 
     # The target speaks first. Its prelude (typically `target_cfg_pkg`) must be
-    # processed ahead of the user's sources -- see `translate`.
+    # processed ahead of the user's sources -- see `translate` -- and the
+    # installed contributions follow it (`prelude_units`).
     try:
-        prelude = tgt.prelude(opts)
+        prelude = prelude_units(tgt, opts)
     except ValueError as e:
         if raise_on_error:
             raise CompileError(str(e)) from None
@@ -194,7 +252,7 @@ def compile(
     # than as an exception. A parse failure is an error like any other, so it
     # honours that promise too -- before, it was the one error that escaped.
     try:
-        ctx = translate(sources, reg_rmw=getattr(opts, "reg_rmw", "native"),
+        ctx = translate(paths, reg_rmw=getattr(opts, "reg_rmw", "native"),
                         comments=not getattr(opts, "no_comments", False),
                         prelude=prelude)
     except CompileError as e:

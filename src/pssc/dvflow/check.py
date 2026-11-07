@@ -94,6 +94,17 @@ def _prelude(target_cfg) -> List[Tuple[str, str]]:
     return [(_tc.source_name("check"), _tc.render("check", cfg))]
 
 
+def _prelude_units(sources: List[str], target_cfg) -> List[Tuple[str, str]]:
+    """What a compile would put ahead of ``sources``: the check's own
+    `target_cfg_pkg`, then the installed `pssc.preludes` contributions, with
+    the duplicates dropped -- `pssc.driver.prelude_units`, the same function a
+    compile uses, asked with no target."""
+    import argparse
+    from ..driver import prelude_units
+    return prelude_units(None, argparse.Namespace(sources=list(sources)),
+                         own=_prelude(target_cfg))
+
+
 def _link(sources: List[str], prelude=()) -> Tuple[Any, List[str]]:
     """Parse + elaborate ``sources``; return ``(ir_context, errors)``."""
     from ..driver import translate
@@ -122,10 +133,13 @@ def evaluate(sources: List[str], target_cfg=None,
         return {"status": status, "markers": markers}
 
     try:
-        prelude = _prelude(target_cfg)
+        prelude = _prelude_units(sources, target_cfg)
     except ValueError as e:
         error(str(e))
         return done(1)
+    from ..preludes import prelude_error_report
+    for line in prelude_error_report():
+        markers.append(["info", "pssc.Check: " + line.strip()])
 
     try:
         context, errors = _link(sources, prelude)

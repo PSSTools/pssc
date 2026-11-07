@@ -237,8 +237,9 @@ def generated_sections(target: str, *, sources: Optional[Sequence[str]] = None,
     ns = argparse.Namespace(**dict(opts))
     ns.progseq_root = getattr(ns, "progseq_root", None) or root or op_model_root
     ns.output_dir = getattr(ns, "output_dir", None) or "."
-    ctx = driver.translate(list(sources or op_model_sources()),
-                           prelude=tgt.prelude(ns))
+    ns.sources = driver.source_list(list(sources or op_model_sources()))
+    ctx = driver.translate(ns.sources,
+                           prelude=driver.prelude_units(tgt, ns))
     return dict(tgt.sections(tgt.build_model(ctx, ns), ns))
 
 

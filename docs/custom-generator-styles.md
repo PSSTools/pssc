@@ -4,7 +4,8 @@
 **`pssc.styles`** and **`pssc.targets`**. Your code lives in your own package,
 installs alongside `pssc`, and appears in `pssc targets` and in dv-flow exactly
 the way the built-ins do. You do not fork `pssc`, and you do not patch its
-source.
+source. A third group, **`pssc.preludes`**, puts PSS source (a package of
+annotation types, say) in scope on every target; see [Prelude](#prelude).
 
 Pick the smallest level that does what you need.
 
@@ -838,6 +839,97 @@ party posts an event?* It does not ask whether a caller may spin — every targe
 can spin. Answer the question that is asked; `pssc targets` prints what each
 target claims. Private flags go in `target_cfg_ext` and are `X_`-prefixed by
 rule.
+
+---
+
+## Prelude
+
+A target's **prelude** is PSS source processed ahead of the user's files:
+`Target.prelude(opts)` returns `(name, text)` units, and the default renders
+`target_cfg` as `target_cfg_pkg`. Override it to put anything else your target
+needs in scope first, such as the package of annotation types your backend
+reads. `name` is what a diagnostic pointing into the unit reports; it is not a
+path.
+
+`opts.sources` is the compile's sources, a `list` of path strings as they were
+given, set before `prelude(opts)` is called, whether the compile came from
+`pssc compile`, `pssc.compile(path)` or `pssc.compile([paths])`:
+
+```python
+# tests/unit/test_prelude_sources.py
+def test_the_prelude_sees_a_list_of_sources(recorder, contributors, tmp_path):
+    f = _files(tmp_path, lib=LIB, m=MODEL)
+    driver.compile([f["lib"], f["m"]], target=recorder.name)
+    assert recorder.seen == [[f["lib"], f["m"]]]
+```
+
+You rarely need to look, because the driver **drops a prelude unit whose text
+is byte-identical** to a source file's or to an earlier unit's. A user who
+passes your annotation package explicitly as well gets one package, not a
+duplicate declaration. The comparison is by content, never by name: a modified
+copy is a different package, and the parser reports the clash.
+
+```python
+# src/pssc/driver.py
+    seen = set(_source_bytes(getattr(opts, "sources", None) or ()))
+    out = []
+    for name, text in units:
+        key = text.encode("utf-8")
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((name, text))
+    return out
+```
+
+### PSS for every target: `pssc.preludes`
+
+A target's own prelude is in scope for that target alone. The same annotated
+model also has to compile on `op-model-c`, `op-model-sv` and every other target,
+and there your package is an `unknown type`. An entry point in the
+**`pssc.preludes`** group contributes units to every compile, on every target:
+
+```toml
+# tests/plugins/pssc_fixture_plugin/pyproject.toml
+[project.entry-points."pssc.preludes"]
+annotations = "pssc_fixture_plugin.prelude:contribute"
+broken = "pssc_fixture_plugin.broken:contribute"
+```
+
+The entry point names a callable `(target_name, opts) -> list[(name, text)]`.
+`target_name` is the selected target (`None` for `pssc.Check`, which names no
+target), and `opts` carries `opts.sources`:
+
+```python
+# tests/plugins/pssc_fixture_plugin/pssc_fixture_plugin/prelude.py
+def contribute(target_name, opts):
+    text = (resources.files(__package__) / "fixture_ann_pkg.pss").read_text()
+    return [("fixture_ann_pkg.pss", text)]
+```
+
+```pss
+# tests/plugins/pssc_fixture_plugin/pssc_fixture_plugin/fixture_ann_pkg.pss
+package fixture_ann_pkg {
+    annotation api_s { string prefix = ""; }
+    annotation reviewed_s { }
+}
+```
+
+A contributed package is in **every** compile, so declare only annotations and
+types in it: anything else can clash with a user's model. pssc does not check
+this. Ship the `.pss` as package data (`[tool.setuptools.package-data]`).
+
+The contributions follow the target's own units, in entry-point name order, and
+the same byte-identical dedup applies to them. One function,
+`pssc.driver.prelude_units(tgt, opts)`, decides all of it, and `pssc compile`,
+`pssc.testing` and the `pssc.Check` dv-flow task all call it, so none of them
+can see a different prelude.
+
+A contributor that fails to import, raises, or returns anything but a list of
+string pairs contributes nothing and is reported. `pssc targets` lists the
+ones that failed to load, and `pssc compile` prints a warning naming them,
+whether or not the compile succeeds; the other contributors still run.
+`PSSC_NO_PLUGINS=1` skips the group along with the others.
 
 ---
 

@@ -19,6 +19,7 @@ from typing import Dict, Optional
 from .__version__ import version
 from . import diag
 from . import driver
+from . import preludes as _preludes
 from . import targets as _targets
 from .ir import dump_ir
 
@@ -268,8 +269,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_compile(args: argparse.Namespace) -> int:
-    res = driver.compile(args.sources, target=args.target, opts=args,
-                         raise_on_error=True)
+    try:
+        res = driver.compile(args.sources, target=args.target, opts=args,
+                             raise_on_error=True)
+    finally:
+        # A warning, not an error, and printed whether or not the compile
+        # succeeded: a missing contribution matters only to a model that uses
+        # it, and that model's `unknown type` should have its cause beside it.
+        for line in _preludes.prelude_error_report():
+            print(f"pssc: warning: {line}", file=sys.stderr)
     if args.dump_ir:
         Path(args.dump_ir).write_text(dump_ir(res.context))
     if not args.quiet:
@@ -332,6 +340,10 @@ def _cmd_targets(args: argparse.Namespace) -> int:
             f"{n} style{'' if n == 1 else 's'} failed to load "
             f"(they cannot be selected with --style):"]
         report += [f"  {e}" for e in errs]
+    # Contributors that failed to LOAD. Asked with no compile, so a failure
+    # inside a contributor's call shows only on `pssc compile`.
+    _preludes.discover()
+    report = report + _preludes.prelude_error_report()
     if report:
         print("", file=sys.stderr)
         for line in report:

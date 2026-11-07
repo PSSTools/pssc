@@ -1,0 +1,7 @@
+// The annotation types the fixture's targets read. Contributed to EVERY
+// compile (`pssc.preludes`), so a model annotated for them compiles on any
+// target. Annotations and types only: whatever is here is in every model.
+package fixture_ann_pkg {
+    annotation api_s { string prefix = ""; }
+    annotation reviewed_s { }
+}

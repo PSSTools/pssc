@@ -110,9 +110,11 @@ def installed_plugin(tmp_path_factory):
 def discovering(prefix: Path, monkeypatch):
     """Put a plugin installed at ``prefix`` on this process's path, rerun
     discovery, and put every registry back afterwards."""
-    from pssc import targets
+    from pssc import preludes, targets
     from pssc.targets import call_legality as _cl
 
+    saved_preludes = (list(preludes._CONTRIBUTORS), list(preludes._LOAD_ERRORS),
+                      list(preludes._CALL_ERRORS), preludes._discovered)
     saved = dict(targets._REGISTRY)
     saved_errors = list(targets._PLUGIN_ERRORS)
     saved_latch = targets._discovered
@@ -129,9 +131,14 @@ def discovering(prefix: Path, monkeypatch):
     import importlib
     importlib.invalidate_caches()
     targets.discover(force=True)
+    preludes.discover(force=True)
     try:
         yield targets
     finally:
+        preludes._CONTRIBUTORS[:] = saved_preludes[0]
+        preludes._LOAD_ERRORS[:] = saved_preludes[1]
+        preludes._CALL_ERRORS[:] = saved_preludes[2]
+        preludes._discovered = saved_preludes[3]
         targets._REGISTRY.clear()
         targets._REGISTRY.update(saved)
         targets._PLUGIN_ERRORS.clear()
@@ -444,3 +451,87 @@ def test_tier_3_target_inherits_options_and_legality_from_its_ancestor(discovere
         assert " | mem_to_mem_copy(" in out.read("api_listing.txt")
     testing.assert_common_tier("api-listing")
     testing.assert_deterministic("api-listing")
+
+
+# -- a prelude contributed by a plugin (P6) ----------------------------------
+#
+# The fixture's `pssc.preludes` entry point puts its annotation package in
+# every compile, so a model annotated for it compiles on targets the plugin
+# does not own. Its `broken` entry point fails on import and must cost only
+# itself.
+
+_ANN_LIB = _PLUGIN_SRC / "pssc_fixture_plugin" / "fixture_ann_pkg.pss"
+
+_ANNOTATED = """\
+import fixture_ann_pkg::*;
+
+@fixture_ann_pkg::api_s {.prefix = "dev"}
+component dev_c {
+    @fixture_ann_pkg::reviewed_s
+    function bit[32] twice(bit[32] x) { return x * 2; }
+    export target function twice;
+}
+"""
+
+
+@pytest.fixture
+def annotated(tmp_path):
+    p = tmp_path / "annotated.pss"
+    p.write_text(_ANNOTATED)
+    return p
+
+
+@pytest.mark.parametrize("target", ["op-model-c", "op-model-sv"])
+def test_a_contributed_package_is_in_scope_on_a_builtin_target(
+        discovered, annotated, tmp_path, target):
+    from pssc import driver
+    res = driver.compile([str(annotated)], target=target, progseq_root="dev_c",
+                         output_dir=str(tmp_path / "out"))
+    assert res.ok and res.outputs
+
+
+def test_a_contributed_package_passed_explicitly_too_is_one_package(
+        discovered, annotated, tmp_path):
+    """The installed copy and the source tree's are the same bytes, so the
+    driver keeps one (P5)."""
+    from pssc import driver
+    res = driver.compile([str(_ANN_LIB), str(annotated)], target="op-model-c",
+                         progseq_root="dev_c", output_dir=str(tmp_path / "out"))
+    assert res.ok
+
+
+def test_the_broken_contributor_is_reported_not_fatal(discovered):
+    from pssc import preludes
+    errs = {e.entry_point: e for e in preludes.prelude_errors()}
+    assert "broken" in errs and "the_vendor_sdk" in str(errs["broken"])
+    assert "pssc-fixture-plugin 0.1.0" in str(errs["broken"])
+    assert [c.name for c in preludes.contributors()] == ["annotations"]
+
+
+def test_cli_compiles_an_annotated_model_and_warns_of_the_broken_one(
+        installed_plugin, annotated, tmp_path):
+    proc = _run_cli(installed_plugin, "compile", "-t", "op-model-c", "-q",
+                    "--root", "dev_c", "-o", str(tmp_path / "out"),
+                    str(annotated))
+    assert proc.returncode == 0, proc.stderr
+    assert "pssc: warning: 1 prelude contributor failed" in proc.stderr
+    assert "broken" in proc.stderr and "Traceback" not in proc.stderr
+
+    listing = _run_cli(installed_plugin, "targets")
+    assert "prelude contributor failed" in listing.stderr
+
+
+def test_cli_no_plugins_env_takes_the_contribution_away(
+        installed_plugin, annotated, tmp_path):
+    import pssc.targets as _t
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(installed_plugin), str(_PSSC_SRC), env.get("PYTHONPATH", "")])
+    env[_t.NO_PLUGINS_ENV] = "1"
+    proc = subprocess.run(
+        [sys.executable, "-m", "pssc", "compile", "-t", "op-model-c", "-q",
+         "--root", "dev_c", "-o", str(tmp_path / "out"), str(annotated)],
+        capture_output=True, text=True, env=env)
+    assert proc.returncode == 1
+    assert "unknown type 'fixture_ann_pkg'" in proc.stderr
+    assert "prelude contributor" not in proc.stderr

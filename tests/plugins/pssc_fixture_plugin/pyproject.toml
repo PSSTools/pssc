@@ -38,5 +38,14 @@ api-listing = "pssc_fixture_plugin.listing:ApiListingTarget"
 [project.entry-points."pssc.styles"]
 acme = "pssc_fixture_plugin.style:AcmeStyle"
 
+# PSS in scope for EVERY target: the fixture's annotation package. `broken`
+# fails on import, as its target does, and must not stop the other.
+[project.entry-points."pssc.preludes"]
+annotations = "pssc_fixture_plugin.prelude:contribute"
+broken = "pssc_fixture_plugin.broken:contribute"
+
 [tool.setuptools]
 packages = ["pssc_fixture_plugin"]
+
+[tool.setuptools.package-data]
+pssc_fixture_plugin = ["*.pss"]
