@@ -1,8 +1,10 @@
 # pssc release notes
 
-## Unreleased
+## 0.3.0
 
-pssc now needs pssparser 3.6.
+pssc now needs pssparser 3.6. 0.2.0 was never tagged or published, so
+0.3.0 is the first release after 0.1.0 on PyPI and also carries the 0.2.0
+changes below.
 
 ### Output changes
 
@@ -66,7 +68,7 @@ pssc now needs pssparser 3.6.
 - **Packaging:** the pssparser floor is 3.6. 3.5 lacks `FunctionAccess`,
   which the op-model API reads.
 
-## 0.2.0
+## 0.2.0 (not published)
 
 pssc 0.2.0 includes the bc backend and needs pssparser 3.5 and
 zuspec-ir-core 0.3. The entries below are the changes a user of 0.1.0's
