@@ -67,3 +67,8 @@ src/.antlr
 .codex/
 .cursor/
 
+
+# Run outputs of pssc test / pssc cov, and the packet-local node_modules link
+pssunit-ctrf.json
+examples/op_model/tests/cov.json
+/node_modules
