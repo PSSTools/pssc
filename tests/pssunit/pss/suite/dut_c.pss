@@ -1,0 +1,7 @@
+import std_pkg::*;
+// A device with one callable behaviour, so a test has something to drive.
+component dut_c {
+    target function void doit(int a) {
+        message(LOW, "doit: %d", a);
+    }
+}

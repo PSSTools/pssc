@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pssc.trace-slice/1",
+  "title": "pssc trace slice --json",
+  "description": "Every access to one register in a test trace (access events with that reg, debug images), in trace order, each with the statement that made it. Fields not listed here may be added; readers ignore them.",
+  "type": "object",
+  "required": ["schema", "trace", "test", "seed", "reg", "accesses"],
+  "$defs": {
+    "loc": {
+      "type": "object",
+      "properties": {
+        "index": {"type": "integer", "description": "The event's index (seq) in the trace."},
+        "file": {"type": ["string", "null"]},
+        "line": {"type": ["integer", "null"]},
+        "text": {"type": ["string", "null"], "description": "The source line, when the file is found."}
+      }
+    }
+  },
+  "properties": {
+    "schema": {"const": "pssc.trace-slice/1"},
+    "trace": {"type": "string", "description": "The trace path as given."},
+    "test": {"type": ["string", "null"]},
+    "seed": {"type": ["integer", "null"]},
+    "reg": {"type": "string", "description": "The register path asked for."},
+    "accesses": {
+      "type": "array",
+      "items": {
+        "allOf": [{"$ref": "#/$defs/loc"}],
+        "required": ["index", "rw", "coro", "stmt"],
+        "properties": {
+          "rw": {"enum": ["r", "w"]},
+          "addr": {"type": ["integer", "null"]},
+          "data": {"type": ["integer", "null"]},
+          "fields": {"type": "object", "additionalProperties": {"type": "integer"},
+                     "description": "The register's field values in data."},
+          "coro": {"type": "integer"},
+          "stmt": {"description": "The statement that made the access: the frame's last stmt event before it; null in a trace without stmt events (C engine, simulation).",
+                   "oneOf": [{"type": "null"}, {"$ref": "#/$defs/loc"}]}
+        }
+      }
+    }
+  }
+}

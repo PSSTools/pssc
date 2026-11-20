@@ -29,7 +29,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..diag import Refusal
 from ..reg_field_resolve import field_width
 from .progseq_model import (OffsetFoldError, _dt_name, array_element_type,
-                            array_base_stride, field_is_array, field_is_reg_group,
+                            array_base_stride, array_size, field_is_array,
+                            field_is_reg_group,
                             field_is_register, scalar_offset)
 
 __all__ = ["RegAccess", "RegAccessor", "access_path", "collect_accessors",
@@ -149,6 +150,12 @@ class RegAccessor:
     #: backend can read annotations on it: ``annotations.of(acc.decl, q)``.
     #: Not part of the accessor's identity.
     decl: Any = dc.field(default=None, compare=False, repr=False)
+    #: One element count per entry of ``strides`` (the arrays' sizes), so a
+    #: reader can enumerate every instance (`pssc model regs`).
+    counts: Tuple[int, ...] = dc.field(default=(), compare=False)
+    #: For each of those arrays, the index in :attr:`path` of the segment it
+    #: indexes (``regs.bank[i].csr``: 1).
+    array_at: Tuple[int, ...] = dc.field(default=(), compare=False)
 
     @property
     def strided(self) -> bool:
@@ -199,10 +206,11 @@ def collect_accessors(comp_dtype) -> List[RegAccessor]:
     """
     accs: List[RegAccessor] = []
 
-    def visit(group_dt, segs: List[str], const_off: int, strides: List[int]):
+    def visit(group_dt, segs: List[str], const_off: int, strides: List[int],
+              counts: List[int]):
         for f in group_dt.fields:
             try:
-                field(group_dt, f, segs, const_off, strides)
+                field(group_dt, f, segs, const_off, strides, counts)
             except OffsetFoldError as e:
                 # The innermost declaration whose offset failed: where a
                 # refusal points (`OpModelTarget.check_register_offsets`).
@@ -210,34 +218,37 @@ def collect_accessors(comp_dtype) -> List[RegAccessor]:
                     e.node = f
                 raise
 
-    def field(group_dt, f, segs, const_off, strides):
+    def field(group_dt, f, segs, const_off, strides, counts):
         if is_reserved(f):
             return
         if field_is_register(f):
             accs.append(_mk(segs, f.name, f.datatype,
                             const_off + scalar_offset(group_dt, f.name),
-                            strides, f))
+                            strides, f, counts=counts))
         elif field_is_reg_group(f):
             visit(f.datatype, segs + [f.name],
-                  const_off + scalar_offset(group_dt, f.name), strides)
+                  const_off + scalar_offset(group_dt, f.name), strides, counts)
         elif field_is_array(f):
             elem = array_element_type(f)
             base, stride = array_base_stride(group_dt, f.name)
+            n = counts + [(len(segs), array_size(f))]
             if _dt_name(elem) == _DT_REGISTER:
                 accs.append(_mk(segs, f.name, elem, const_off + base,
-                                strides + [stride], f, elem_stride=stride))
+                                strides + [stride], f, elem_stride=stride,
+                                counts=n))
             elif _dt_name(elem) == _DT_REGISTER_GROUP:
                 visit(elem, segs + [f.name], const_off + base,
-                      strides + [stride])
+                      strides + [stride], n)
 
     for f in getattr(comp_dtype, "fields", []) or []:
         try:
             if field_is_reg_group(f):
-                visit(f.datatype, [f.name], 0, [])
+                visit(f.datatype, [f.name], 0, [], [])
             elif (field_is_array(f)
                     and _dt_name(array_element_type(f)) == _DT_REGISTER_GROUP):
                 base, stride = array_base_stride(comp_dtype, f.name)
-                visit(array_element_type(f), [f.name], base, [stride])
+                visit(array_element_type(f), [f.name], base, [stride],
+                      [(0, array_size(f))])
         except OffsetFoldError as e:
             if getattr(e, "node", None) is None:
                 e.node = f
@@ -246,7 +257,7 @@ def collect_accessors(comp_dtype) -> List[RegAccessor]:
 
 
 def _mk(segs, name, reg_dtype, const_off, strides, decl=None,
-        elem_stride: Optional[int] = None) -> RegAccessor:
+        elem_stride: Optional[int] = None, counts=()) -> RegAccessor:
     bits = value_bits(reg_dtype)
     if bits > 64:
         # The register's size selects its primitive (LRM 21.14.5 a), and the
@@ -270,6 +281,8 @@ def _mk(segs, name, reg_dtype, const_off, strides, decl=None,
         strides=tuple(strides),
         elem_stride=elem_stride,
         decl=decl,
+        counts=tuple(n for _, n in counts),
+        array_at=tuple(k for k, _ in counts),
     )
 
 

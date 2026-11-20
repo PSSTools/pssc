@@ -1,0 +1,106 @@
+// MAINTAINER NOTE, not documentation.
+//
+// ONE FILE because these three actions appear and disappear together and no
+// build wants a subset -- and because a `compile if` DECLARATION is invisible to
+// every later source file (pssparser defect 4), so the gate has to enclose all
+// three rather than being repeated one per file.
+//
+// WHY THE GATE IS THE SOLVER, NOT THE WAIT. These are the only things in this
+// tree with `rand` fields and constraints, and a target with no solver in the
+// image has nothing to populate them with. That is the whole dependency, and it
+// is unrelated to how the operations underneath them wait -- those exist on
+// every profile. Presenting tests/pss to a solverless profile is a hard error
+// rather than a quiet loss of actions; see the compile assert in
+// tests/pss/pss_top.pss.
+import addr_reg_pkg::*;
+import std_pkg::*;
+import wb_dma_cfg_pkg::*;
+import wb_dma_types_pkg::*;
+
+extend component wb_dma_ch_c {
+
+  compile if (wb_dma_cfg_pkg::HAS_SOLVER) {
+
+    // Run one transfer on a channel and check how it ended.
+    //
+    // The operation model proper is the FUNCTIONS; this and its siblings exist
+    // so a scenario can COMPOSE operations, and composition is where this
+    // device's concurrency lives. Multi-channel activity is parallel
+    // composition of these -- ``arb``, ``hol`` and any bandwidth or priority
+    // scenario are N of these issued in parallel, and nothing in the operation
+    // model changes with channel count.
+    //
+    // :realizes:  transfer_single()
+    // :exec body: runs the transfer and reports an unexpected ERROR
+    action transfer_single_a {
+        rand wb_dma_ch_cfg_s    cfg;
+
+        // Set when the scenario expects the transfer to be aborted or to hit a
+        // bus error, so an ERROR return is the intended outcome rather than a
+        // failure. Reaching an error at all requires a second model driving
+        // err_i, or a concurrent stop_channel_a (§5.1).
+        rand bool               expect_error;
+
+        constraint default expect_error == false;
+
+        exec body {
+            wb_dma_status_e status;
+
+            status = comp.transfer_single(cfg);
+
+            if (status == WB_DMA_ERROR && expect_error == false) {
+                message(LOW, "wb_dma: transfer_single completed with ERROR");
+            }
+        }
+    }
+
+    // Run a descriptor chain on a channel and check how it ended.
+    //
+    // Depends on a prior ``configure_channel`` -- for CHK_SZ, mode, priority and
+    // the address masks, none of which a descriptor carries -- and on a
+    // descriptor list already in memory. Neither dependency is expressed as a
+    // flow object in this pass: the operation model stops at operations, and the
+    // precondition layer is future work (§6).
+    //
+    // :realizes:  transfer_list()
+    // :exec body: runs the chain and reports an unexpected ERROR
+    action transfer_list_a {
+        // Head of the descriptor chain, as returned when the list was built.
+        // Must be reachable from interface 0.
+        addr_handle_t   head;
+
+        rand bool       expect_error;
+
+        constraint default expect_error == false;
+
+        exec body {
+            wb_dma_status_e status;
+
+            status = comp.transfer_list(head);
+
+            if (status == WB_DMA_ERROR && expect_error == false) {
+                message(LOW, "wb_dma: transfer_list completed with ERROR");
+            }
+        }
+    }
+
+    // Abort a running transfer on a channel.
+    //
+    // By definition this runs CONCURRENTLY with the ``transfer_single_a`` it
+    // aborts -- it is not a sequential step after one. Traversing it on its own,
+    // against an idle channel, is legal but meaningless.
+    //
+    // Both end-to-end operations complete off the one event: this returns, and
+    // so does the aborted transfer, with status ``WB_DMA_ERROR``.
+    //
+    // :realizes:  stop_channel()
+    // :exec body: writes STOP and waits for the abort to land
+    action stop_channel_a {
+        exec body {
+            wb_dma_status_e status;
+            status = comp.stop_channel();
+        }
+    }
+
+  }
+}

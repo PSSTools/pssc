@@ -312,3 +312,14 @@ def test_element_in_a_body_that_cannot_hold_it(src, pattern):
     _, ctx = _translate(src)
     assert any(e.startswith(f"line {_LINE}: ") and re.search(pattern, e)
                for e in ctx.errors), ctx.errors
+
+
+def test_function_in_an_action_is_on_the_action():
+    # A pssc extension (pssparser LINT412): the function lands on the action's
+    # type, and its body reads the action's fields through `self`.
+    _, ctx = _translate("component pss_top { action A { rand int x; "
+                        "function void set() { x = 1; } } }")
+    assert not ctx.errors, ctx.errors
+    f = next(f for f in _action(ctx).functions if f.name == "set")
+    assert f.body[0].targets[0].value.__class__.__name__ == "TypeExprRefSelf"
+    assert not any(f.name == "set" for f in _comp(ctx).functions)

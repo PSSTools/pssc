@@ -66,6 +66,9 @@ class CSettings:
     #: `--fold-constants`: every named constant is its value, as before
     #: user ruling, 2026-11-06; no `constants` section.
     fold_constants: bool = False
+    #: `--line-directives`: a `#line` naming the PSS source line before each
+    #: body statement, for gdb and gcov. Not in the banner: it moves no API.
+    line_directives: bool = False
 
 
 def pssc_version() -> str:

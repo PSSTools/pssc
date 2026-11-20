@@ -30,8 +30,9 @@ Design: docs/design/generator-style-extensions-design.md I6; plan Phase 7.
 from __future__ import annotations
 
 import dataclasses as dc
+import os
 import re
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from ..diag import Refusal
 from .comments import LINE, append_trailing, comment_lines, is_comment_only
@@ -382,6 +383,27 @@ def scan_output_locals(node, is_output_call: Callable[[object], bool],
     return found
 
 
+def source_loc(s) -> Optional[Tuple[str, int]]:
+    """``(absolute path, line)`` of *s* in a PSS file on disk, else None.
+
+    The path is absolute so a debugger finds the file from any directory. A
+    statement with no position (made by a lowering) or one whose file is not
+    on disk (a built-in prelude) has none: a directive naming a file the
+    debugger cannot open is worse than none."""
+    loc = getattr(s, "loc", None)
+    if loc is None or not getattr(loc, "file", None) or not loc.line:
+        return None
+    path = os.path.abspath(loc.file)
+    if not os.path.isfile(path):
+        return None
+    return path, loc.line
+
+
+def c_line_directive(path: str, line: int) -> str:
+    """``#line N "path"``, the C and C++ preprocessor's line directive."""
+    return '#line %d "%s"' % (line, path.replace("\\", "\\\\").replace('"', '\\"'))
+
+
 # -- the walk ----------------------------------------------------------------
 
 class BodyWalker:
@@ -407,6 +429,11 @@ class BodyWalker:
 
     #: How `comments.py` should render an attached comment.
     comment_style = LINE
+
+    #: Precede each statement with the language's line directive naming its
+    #: PSS source line (`--line-directives`). Set on the instance by whoever
+    #: builds the renderer; off, the output is unchanged.
+    line_directives = False
 
     # -- entry points --------------------------------------------------------
 
@@ -455,8 +482,25 @@ class BodyWalker:
 
         return comment_lines(getattr(s, "comment", None), pad,
                              self.comment_style) + \
+            self.source_line(s, pad) + \
             append_trailing(lines, getattr(s, "comment_trailing", None),
                             self.comment_style)
+
+    def source_line(self, s, pad: str) -> List[str]:
+        """The lines that name *s*'s PSS source position, when
+        `line_directives` is on and *s* has a position in a real file.
+        Synthesized statements (no `loc`) and prelude text get none."""
+        if not self.line_directives:
+            return []
+        loc = source_loc(s)
+        if loc is None:
+            return []
+        return self.line_directive(loc[0], loc[1], pad)
+
+    def line_directive(self, path: str, line: int, pad: str) -> List[str]:
+        """The language's spelling of "what follows is *path*:*line*". A
+        renderer that supports `line_directives` overrides this."""
+        return []
 
     def stmt_pass(self, s, ind: int) -> List[str]:
         """The empty statement lowers to nothing. ast2ir makes one only to

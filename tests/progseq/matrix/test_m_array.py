@@ -6,6 +6,7 @@ See `_matrix` for what a case is and how it is run.
 from __future__ import annotations
 
 from ._matrix import Case, define_tests, ERROR, on, ONE, Refused
+from ._matrix import pyvm_xfail, BC_ARRAY, BC_IN, BC_SELECT
 
 W65 = ("W65: the bounds check of an index narrower than the array's size "
        "(bit[1], bit[2] for 4) fails the build with -Werror=type-limits")
@@ -470,5 +471,31 @@ component pss_top {""" + ONE + """
                    Refused([r"pss_top::tot: an array parameter 'p'"])),
         covers=("ST-FOREACH.14", "FN-PARAM")),
 }
+
+pyvm_xfail(CASES, BC_ARRAY,
+           'a negative array index',
+           'a static const array',
+           'an array compared with an array literal',
+           'an array index past the end',
+           'array copies and rows of a two-dimensional array',
+           'array equality',
+           'array indices of every integer type',
+           'array initializers',
+           'foreach over the rows of a two-dimensional array',
+           'foreach with a value iterator, with and without an index',
+           'in over a slice with run-time bounds, some empty',
+           'in over an array',
+           'in over an array slice',
+           'local arrays',
+           'local arrays: enum elements, two dimensions, copied structs',
+           'nested foreach and an index named like a local',
+           'size and sum of an array',
+           'the two array syntaxes are one type')
+pyvm_xfail(CASES, BC_SELECT,
+           'array fields of a component')
+pyvm_xfail(CASES, BC_IN,
+           'in over a value-list literal')
+pyvm_xfail(CASES, None,
+           'size of a foreach row')
 
 test_construct = define_tests(CASES)

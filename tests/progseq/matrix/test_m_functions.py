@@ -5,6 +5,7 @@ See `_matrix` for what a case is and how it is run.
 from __future__ import annotations
 
 from ._matrix import ALL, Case, define_tests, on, ONE, Refused
+from ._matrix import pyvm_xfail, BC_CALL_TARGET, BC_STRUCT_LIT
 
 E26 = "E26: a static const struct: 'unsupported field initializer ExprStructLiteral'"
 E33 = ("E33: a call on a base instance of a function only a derived type "
@@ -409,5 +410,14 @@ component pss_top {""" + ONE + """
   target function void run() { message(LOW, "%d", f(P)); }
 }""", ["7"], xfail=on(("c", "cpp"), E26), covers=("DT-CONST", "DT-CONST.5")),
 }
+
+pyvm_xfail(CASES, 'pyvm: an inherited body calls the shadowing static function, not its own (101, want 2)',
+           'a shadowed static function called from an inherited body')
+pyvm_xfail(CASES, 'pyvm: a static const struct reads as zeros (0, want 7)',
+           'a static const struct passed to a const formal')
+pyvm_xfail(CASES, BC_CALL_TARGET,
+           'a virtual call in a loop and super')
+pyvm_xfail(CASES, BC_STRUCT_LIT,
+           'calls in aggregate literals and mutual recursion')
 
 test_construct = define_tests(CASES)

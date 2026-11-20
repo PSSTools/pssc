@@ -413,6 +413,9 @@ def registered_targets() -> Tuple[str, ...]:
 
 
 register_extension("op-model-sv", _SV_EXT)
+# op-model-sv's API over an engine running the image: the image is compiled
+# from the same model, so what op-model-sv lowers is what it accepts.
+register_extension("op-model-sv-vm", [], inherit="op-model-sv")
 
 register_extension("op-model-c", [
         _e("print", Disposition.UTILITY, BOTH, "21.1.2"),

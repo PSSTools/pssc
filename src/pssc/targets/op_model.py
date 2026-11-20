@@ -982,6 +982,15 @@ class OpModelTarget(Target):
                  "to know what the API contains without parsing generated "
                  "code (see targets/manifest.py)",
         )
+        parser.add_argument(
+            "--line-directives", dest="line_directives", action="store_true",
+            help="op-model: precede each generated statement with a line "
+                 "directive naming its PSS source line (`#line` in C and "
+                 "C++, SystemVerilog's own line directive in SV, a "
+                 "`# file:line` comment in Python), so a debugger or "
+                 "coverage tool reports the PSS source rather than the "
+                 "generated file",
+        )
 
     # -- the run sequence ---------------------------------------------------
 
@@ -1088,7 +1097,7 @@ class OpModelTarget(Target):
         read. Restating it is how the two answers drift.
         """
         from .comp_inherit import complete
-        from .export_action import entry_points
+        from .export_action import ExportActionError, entry_points
         # First: every reader below -- the entry-name clash check included --
         # sees a derived component with what it inherits (`comp_inherit`),
         # and a derived struct with its bases' members.
@@ -1097,7 +1106,7 @@ class OpModelTarget(Target):
         pm.flatten_struct_bases(ctx)
         entries = entry_points(ctx, getattr(opts, "export_actions", None) or [])
         if entries and not self.supports_entries:
-            raise ValueError(
+            raise ExportActionError(
                 f"{self.name} does not yet render exported actions "
                 f"(--export-action {entries[0].action}); op-model-py does")
         root_name = getattr(opts, "progseq_root", None)

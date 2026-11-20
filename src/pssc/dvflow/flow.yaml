@@ -77,6 +77,8 @@ package:
             `pssc.OpModelPy` -> programming APIs from a component tree
             (require `root:`)
           - `pssc.PySource`   -> live Python classes
+          - `pssc.Image`      -> the .zbc image pyvm or a simulation loads
+            (`pssVmImage`); `pssc.Test` runs its tests in pyvm
 
           All build tasks accept `export_action` and `args`.
 
@@ -543,3 +545,65 @@ package:
       namespace:     { type: str, value: "" }
       dispatch:      { type: str, value: "virtual" }
       core_copy:     { type: bool, value: true }
+
+  # --- pyvm image and test run ----------------------------------------------
+  - name: Image
+    shell: pytask
+    run: pssc.dvflow.devenv.Image
+    consumes:
+    - filetype: pssSource
+    - type: pssc.PsscArgs
+    desc: Build the image a test run or a simulation loads (pssc build --image)
+    doc: |
+      Emits `<image>.zbc` as a `pssVmImage` fileset. A simulation's run step
+      needs it; its build step needs only SystemVerilog (the op-model-sv-vm
+      facade, or the TB), so a PSS edit rebuilds the image and reruns the
+      simulation without recompiling it. The output is unchanged (and nothing
+      downstream reruns) when the new image has the same bytes as the last.
+    with:
+      root:
+        doc: Root component (suite or fixture); needed when the sources have several
+        type: str
+        value: ""
+      api:
+        doc: Give every function under `root` an entry, for an op-model-sv-vm facade
+        type: bool
+        value: false
+      sources_in_image:
+        doc: Keep the PSS sources in the image (for the debugger)
+        type: bool
+        value: true
+      image:
+        doc: "Image file name, without .zbc (default: the task name)"
+        type: str
+        value: ""
+      args:
+        doc: Extra `pssc build` options
+        type: list
+
+  - name: Test
+    shell: pytask
+    run: pssc.dvflow.devenv.Test
+    consumes:
+    - filetype: pssVmImage
+    - type: pssc.PsscArgs
+    desc: Run an image's tests in pyvm (pssc test --image); fails when one fails
+    doc: |
+      Needs one `pssc.Image`. Writes `pssc_test.log` and
+      `pssunit-ctrf.json` (a `ctrfJson` fileset) to its run directory.
+    with:
+      k:
+        doc: Run only tests whose name matches (pssc test -k)
+        type: str
+        value: ""
+      platform:
+        doc: "Platform: fake, py:MOD[:CLASS] or sim:S (default: none)"
+        type: str
+        value: ""
+      seed:
+        doc: Seed (0 = random)
+        type: int
+        value: 0
+      args:
+        doc: Extra `pssc test` options
+        type: list

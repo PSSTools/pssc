@@ -1,0 +1,46 @@
+import pssunit_pkg::*;
+import wb_dma_types_pkg::*;
+
+extend component wb_dma_routed_fx_c {
+    // Four transfers at distinct priorities, as the companion example's
+    // ``arb_a`` composes them. The fake has no engine to arbitrate, so the
+    // transfers run one after another; what is checked is that each channel
+    // was programmed with its own priority and completes.
+    function void arb() {
+        wb_dma_ch_cfg_s cfg;
+        cfg.src = 0x1000;
+        cfg.dst = 0x2000;
+        cfg.tot_sz = 16;
+        cfg.inc_src = 1;
+        cfg.inc_dst = 1;
+        cfg.mode = WB_DMA_SOFTWARE;
+        check_reg("dma.regs.int_msk_a", 0xf, "all channels routed to bank A");
+
+        status_sequence("dma.ch[0].regs.csr", "done", 0);
+        status_sequence("dma.ch[0].regs.csr", "done", 1);
+        status_sequence("dma.ch[1].regs.csr", "done", 0);
+        status_sequence("dma.ch[1].regs.csr", "done", 1);
+        status_sequence("dma.ch[2].regs.csr", "done", 0);
+        status_sequence("dma.ch[2].regs.csr", "done", 1);
+        status_sequence("dma.ch[3].regs.csr", "done", 0);
+        status_sequence("dma.ch[3].regs.csr", "done", 1);
+
+        cfg.prio = 3;
+        check(dma.ch[0].transfer_single(cfg) == WB_DMA_DONE, "ch0 completes");
+        cfg.prio = 2;
+        check(dma.ch[1].transfer_single(cfg) == WB_DMA_DONE, "ch1 completes");
+        cfg.prio = 1;
+        check(dma.ch[2].transfer_single(cfg) == WB_DMA_DONE, "ch2 completes");
+        cfg.prio = 0;
+        check(dma.ch[3].transfer_single(cfg) == WB_DMA_DONE, "ch3 completes");
+
+        check_field("dma.ch[0].regs.csr", "prio", 3, "ch0 priority");
+        check_field("dma.ch[1].regs.csr", "prio", 2, "ch1 priority");
+        check_field("dma.ch[2].regs.csr", "prio", 1, "ch2 priority");
+        check_field("dma.ch[3].regs.csr", "prio", 0, "ch3 priority");
+    }
+
+    action arb_a : test_a {
+        exec body { comp.arb(); }
+    }
+}

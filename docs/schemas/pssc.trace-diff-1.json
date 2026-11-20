@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pssc.trace-diff/1",
+  "title": "pssc trace diff --json",
+  "description": "The first step where two test traces differ. A step is what a replay checks: each bus access (rw, width, addr, data; read data included here) and each user import (by name). The command exits 1 when the traces differ. Fields not listed here may be added; readers ignore them.",
+  "type": "object",
+  "required": ["schema", "a", "b", "divergence"],
+  "$defs": {
+    "side": {
+      "type": "object",
+      "required": ["trace", "steps"],
+      "properties": {
+        "trace": {"type": "string"},
+        "test": {"type": ["string", "null"]},
+        "seed": {"type": ["integer", "null"]},
+        "steps": {"type": "integer", "description": "Accesses and user imports in the trace."}
+      }
+    },
+    "step": {
+      "description": "One side's step; null when that run ended first.",
+      "oneOf": [{"type": "null"}, {
+        "type": "object",
+        "required": ["kind", "index"],
+        "properties": {
+          "kind": {"enum": ["access", "import"]},
+          "index": {"type": ["integer", "null"], "description": "The event's index (seq) in its trace."},
+          "rw": {"enum": ["r", "w"]}, "width": {"type": "integer"},
+          "addr": {"type": "integer"}, "data": {"type": ["integer", "null"]},
+          "reg": {"type": "string"}, "fields": {"type": "object"},
+          "name": {"type": "string"}, "ret": {},
+          "file": {"type": ["string", "null"]}, "line": {"type": ["integer", "null"]},
+          "text": {"type": ["string", "null"]}
+        }
+      }]
+    }
+  },
+  "properties": {
+    "schema": {"const": "pssc.trace-diff/1"},
+    "a": {"$ref": "#/$defs/side"},
+    "b": {"$ref": "#/$defs/side"},
+    "divergence": {
+      "description": "null when every step is the same.",
+      "oneOf": [{"type": "null"}, {
+        "type": "object",
+        "required": ["step", "a", "b"],
+        "properties": {
+          "step": {"type": "integer", "description": "1-based step number, the same on both sides."},
+          "a": {"$ref": "#/$defs/step"},
+          "b": {"$ref": "#/$defs/step"}
+        }
+      }]
+    }
+  }
+}

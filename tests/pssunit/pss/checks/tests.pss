@@ -1,0 +1,27 @@
+extend component checks_c {
+
+    // Passes on its checks, not merely by not raising.
+    action checked_pass_a : pssunit_pkg::test_a {
+        exec body {
+            comp.rt.enter("checked_pass_a");
+            comp.rt.check_eq_int(2 + 2, 4, "arithmetic");
+            comp.rt.check_true(true, "truth");
+            comp.rt.check_in_range(5, 1, 10, "in range");
+        }
+    }
+
+    // Runs to completion without raising, and still fails: the model produced
+    // a wrong value. This is the case "did not raise" cannot express.
+    action checked_fail_a : pssunit_pkg::test_a {
+        exec body {
+            comp.rt.enter("checked_fail_a");
+            comp.rt.check_eq_int(2 + 2, 4, "this one holds");
+            comp.rt.check_eq_int(2 + 2, 5, "this one does not");
+        }
+    }
+
+    // Asserts nothing: passes by default, fails under --strict.
+    action unchecked_a : pssunit_pkg::test_a {
+        exec body { }
+    }
+}

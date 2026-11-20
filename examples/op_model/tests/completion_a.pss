@@ -1,0 +1,36 @@
+import pssunit_pkg::*;
+import wb_dma_types_pkg::*;
+
+extend component wb_dma_fx_c {
+    // Completion comes from the device, not from the driver: a copy the
+    // device fails is an error, and a channel still busy is pending.
+
+
+    @pssunit_pkg::test
+    function void t_copy_error() {
+        wb_dma_ch_cfg_s cfg;
+        cfg.src = 0x1000;
+        cfg.dst = 0x2000;
+        cfg.tot_sz = 16;
+        cfg.mode = WB_DMA_SOFTWARE;
+        // The arming read-modify-write, then a poll that sees ERR.
+        status_sequence("dma.ch[2].regs.csr", "err", 0);
+        status_sequence("dma.ch[2].regs.csr", "err", 1);
+        check(dma.ch[2].transfer_single(cfg) == WB_DMA_ERROR, "a failed copy is an error");
+    }
+
+    @pssunit_pkg::test
+    function void t_poll_pending() {
+        wb_dma_ch_cfg_s cfg;
+        cfg.src = 0x1000;
+        cfg.dst = 0x2000;
+        cfg.tot_sz = 16;
+        cfg.mode = WB_DMA_SOFTWARE;
+        status_sequence("dma.ch[2].regs.csr", "done", 0);
+        status_sequence("dma.ch[2].regs.csr", "done", 0);
+        status_sequence("dma.ch[2].regs.csr", "done", 1);
+        dma.ch[2].transfer_single_start(cfg);
+        check(dma.ch[2].check_completion() == WB_DMA_PENDING, "busy channel is pending");
+        check(dma.ch[2].check_completion() == WB_DMA_DONE, "then done");
+    }
+}

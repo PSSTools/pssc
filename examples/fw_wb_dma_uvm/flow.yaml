@@ -1,0 +1,184 @@
+# yaml-language-server: $schema=https://dv-flow.github.io/flow.dv.schema.json
+package:
+  name: fw-wb-dma
+  with:
+    sim:
+      type: str
+      value: vlt
+    # DUT views the regression runs the UNIVERSAL tests on. Default: all three.
+    # Select a subset from the CLI (comma-separated, no quoting needed):
+    #   dfm run tests -D images=tlm          # TLM only (dev)
+    #   dfm run tests -D images=rtl          # RTL only
+    #   dfm run tests -D images=tlm,rtl
+    # (`dfm run tests --views tlm` prunes the same suite from the consumer side.)
+    images:
+      type: list
+      value: [tlm, wb, rtl]
+      values: [tlm, wb, rtl]
+      cli: true
+      desc: DUT views the regression runs the universal tests on
+    # Project-wide BUILD VARIANT. One knob moves the env library, every
+    # simulation image, and the run flags together:
+    #   dfm run tests -D build=dbg
+    # This was a `-c debug` config. A config is global, so it could not express
+    # "the RTL image in debug, the TLM image optimized"; as an axis of the
+    # sim-img family (tests/uvm/flow.yaml) that is just two cells.
+    build:
+      type: str
+      value: opt
+      cli: true
+      desc: Build variant for every image and run in this project
+      values:
+      - {value: opt, desc: "optimized -- the regression default"}
+      - {value: dbg, desc: "-O0, tracing, UVM_HIGH"}
+      - {value: native, desc: "opt, model package for pssc's C engine (uvm.tests-native)"}
+    # Observable-events depth for `dfm run uvm-trace` (tests/uvm/flow.yaml).
+    # This is DEMAND, not a filter: it is the level the text sink subscribes to,
+    # and a site nothing subscribes to never evaluates its arguments.
+    #   dfm run uvm-trace                      # 3 = arbitration, arming, waits
+    #   dfm run uvm-trace -D dbg_level=5       # + every register access
+    #   dfm run uvm-trace -D dbg_clamp=dut.de:5   # deep on the engine only
+    dbg_test:
+      type: str
+      value: wb_dma_arb_test
+      cli: true
+      desc: "UVM test uvm-trace runs (e.g. wb_dma_err_test to see de.berr_rd)"
+    dbg_level:
+      type: str
+      value: "3"
+      cli: true
+      desc: "Event depth for uvm-trace (0 off .. 5 trace; 3 = OP)"
+    dbg_clamp:
+      type: str
+      value: ""
+      cli: true
+      desc: "Narrow one context to a level, e.g. dut.de:5 (everything else drops to VITAL)"
+    # The other two axes. A context path is the wrong granularity for the sites
+    # that actually flood a trace: de.arb fires every arbitration round, from
+    # one place, about a different channel each time. `dbg_mute` cuts by site
+    # NAME, `dbg_subj` by the ENDPOINT the event is about.
+    #   dfm run uvm-trace -D dbg_mute=de.arb                # keep the engine, drop arbitration
+    #   dfm run uvm-trace -D dbg_subj=de.arb:1,2            # arbitration, but only for ch1/ch2
+    #   dfm run uvm-trace -D dbg_subj=2                     # everything, but only about ch2
+    dbg_mute:
+      type: str
+      value: ""
+      cli: true
+      desc: "Silence sites by name, comma-separated globs (e.g. de.arb,rf.int_level_stable)"
+    dbg_catalog:
+      type: str
+      value: ""
+      cli: true
+      desc: "Set to fw_dbg_catalog to dump the site catalog + field schema"
+    dbg_subj:
+      type: str
+      value: ""
+      cli: true
+      desc: "Keep only events about these endpoints: [<site-glob>:]<list>, e.g. de.arb:1,2 or 0-2"
+    # Wall-clock seconds each UVM perf run lasts (`dfm run bench.bench`).
+    bench_secs:
+      type: str
+      value: "5"
+      cli: true
+      desc: "Seconds per UVM perf run (tests/bench)"
+    # Transfers the bench's core case runs (4000 words each).
+    bench_core_iters:
+      type: str
+      value: "5000"
+      cli: true
+      desc: "Transfers in the bench core case (tests/bench)"
+    # Per-view image recipe, read by the sim-img family's single body
+    # (tests/uvm/flow.yaml). Adding a DUT view is an entry in each of these
+    # three maps plus a value on the `view` axis -- no new image task.
+    view_tb:
+      type: map
+      value:
+        tlm: [hdl_top_spl.sv, hvl_top_spl.sv]
+        wb:  [hdl_top_spl_wb.sv, hvl_top_spl_wb.sv]
+        rtl: [hdl_top_rtl.sv, hvl_top_rtl.sv]
+    view_top:
+      type: map
+      value:
+        tlm: [hvl_top_spl]
+        wb:  [hvl_top_spl_wb]
+        rtl: [hvl_top_rtl]
+    # RTL only: .v -> Verilog-2001 (the RTL uses `int` as a port name, reserved
+    # in SV); --no-assert because the RTL's parallel_case/full_case pragmas trip
+    # Verilator's $stop on the all-zero t=0 state before the first clocked reset
+    # load.
+    view_sim_args:
+      type: map
+      value:
+        tlm: []
+        wb:  []
+        rtl: ["+1364-2001ext+v", "--no-assert"]
+    # pssc-debug: the model package each build compiles (`native`: the one
+    # built for pssc's C engine, no pyhdl-if).
+    pss_model_sv:
+      type: map
+      value:
+        opt: pss.op-model-sv
+        dbg: pss.op-model-sv
+        native: pss.op-model-sv-native
+  uses: uvm-dv-project
+
+  # IVPM-generated map (name -> flow file, rooted at packages/) resolves the
+  # imports below by NAME, so we no longer hardcode ${{ env.IVPM_PACKAGES }}/<dir>
+  # paths. Imports still list what's brought into scope (the map only resolves the
+  # names); dropping a name here removes it from `needs` scope.
+  package-map: packages/dv-flow-package-map.yaml
+
+  imports:
+  - uvm-dv-project.yaml     # local base project (src-*/run-* API, sv-*) + dv.* capabilities
+  - rdl                     # PeakRDL integration (dv-flow-librdl): rdl.FwHdl et al
+  - fw-hdl                  # fw_hdl_pkg + fw_std_pkg / fw_mem_if
+  - fw.proto.wb             # Wishbone transactors + adapters
+  - fw.proto.gpio           # GPIO transactors
+  - org.fwvip.gpio          # GPIO UVM VIP
+  - org.fwvip.wb            # Wishbone UVM VIP (reg-access agent)
+
+  tasks:
+  - override: src-rtl
+    needs:
+    - rtl
+
+  - override: tests
+    # The SUITES themselves, not the `uvm-tests` gate that wraps them: `tests`
+    # IS the gate (uses hdlsim.SimSuiteReport), and command-line selection
+    # prunes its needs at graph build. Depending on `uvm-tests` instead would
+    # hand it a single opaque need with nothing selectable inside.
+    # These live in the `uvm` fragment namespace -> qualify them (a package-root
+    # override can't reach a sub-namespace task by short name).
+    needs: [uvm.uvm-universal, uvm.uvm-hs-only]
+
+  # Tool/flag wiring lives in the LEAF (not the common base project or the dv.*
+  # capability packages): the leaf owns the opt-vs-debug choice and injects the
+  # flag DataItems into the dv.uvm compounds via each instantiation's `needs:`.
+  #
+  # ONE HOLDER PER (stage, variant). A select cell picks its own by name --
+  # `needs: ["flags-comp-${{ this.build }}"]` -- so adding a variant is adding
+  # three tasks here and one axis value, not editing every image's needs list.
+  # That is what retires the `debug` config: a config swapped these three tasks
+  # globally, which meant two images in one run could not differ.
+  - { name: flags-comp-opt, uses: hdlsim.SimCompArgsOpt, with: { sim: "${{ sim }}" } }
+  - { name: flags-comp-dbg, uses: hdlsim.SimCompArgsDbg, with: { sim: "${{ sim }}" } }
+  - { name: flags-elab-opt, uses: hdlsim.SimElabArgsOpt, with: { sim: "${{ sim }}" } }
+  - { name: flags-elab-dbg, uses: hdlsim.SimElabArgsDbg, with: { sim: "${{ sim }}" } }
+  # The run-flag holders were previously declared and wired into NOTHING
+  # (docs/dfm_positioning.md 7.1). They now reach the cases through the suite's
+  # own `needs:`, which is where run flags belong.
+  - { name: flags-run-opt,  uses: hdlsim.SimRunArgsOpt,  with: { sim: "${{ sim }}" } }
+  - { name: flags-run-dbg,  uses: hdlsim.SimRunArgsDbg,  with: { sim: "${{ sim }}" } }
+  # pssc-debug: the `native` build (model on pssc's C engine, uvm.tests-native)
+  # compiles and runs with the opt flags.
+  - { name: flags-comp-native, uses: hdlsim.SimCompArgsOpt, with: { sim: "${{ sim }}" } }
+  - { name: flags-elab-native, uses: hdlsim.SimElabArgsOpt, with: { sim: "${{ sim }}" } }
+  - { name: flags-run-native,  uses: hdlsim.SimRunArgsOpt,  with: { sim: "${{ sim }}" } }
+
+  fragments:
+  - src/rdl/flow.yaml
+  - src/pss/flow.yaml
+  - src/spl/flow.yaml
+  - src/spl-rtl/flow.yaml
+  - src/rtl/flow.yaml
+  - tests/uvm/flow.yaml

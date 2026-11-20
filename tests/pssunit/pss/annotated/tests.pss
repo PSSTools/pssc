@@ -1,0 +1,69 @@
+extend component annotated_c {
+
+    // Unannotated: the baseline every other test here is compared against.
+    // A test with no annotation and one with a bare `@pssunit_pkg::test` must
+    // behave identically, which is what folding the declaration's defaults in
+    // the front end buys.
+    action plain_a : pssunit_pkg::test_a {
+        exec body {
+            comp.rt.enter("plain_a");
+            comp.rt.check_true(true, "runs");
+        }
+    }
+
+    @pssunit_pkg::test{.group = "io"}
+    action io_one_a : pssunit_pkg::test_a {
+        exec body {
+            comp.rt.enter("io_one_a");
+            comp.rt.check_true(true, "runs");
+        }
+    }
+
+    @pssunit_pkg::test{.group = "io"}
+    action io_two_a : pssunit_pkg::test_a {
+        exec body {
+            comp.rt.enter("io_two_a");
+            comp.rt.check_true(true, "runs");
+        }
+    }
+
+    @pssunit_pkg::test{.group = "mem"}
+    action mem_one_a : pssunit_pkg::test_a {
+        exec body {
+            comp.rt.enter("mem_one_a");
+            comp.rt.check_true(true, "runs");
+        }
+    }
+
+    // Skipped. Its body would fail a check if it ran, so a skip that does not
+    // actually withhold the test is visible as a failure rather than as an
+    // identical green line.
+    @pssunit_pkg::test{.skip = true, .reason = "waiting on the DMA model"}
+    action skipped_a : pssunit_pkg::test_a {
+        exec body {
+            comp.rt.enter("skipped_a");
+            comp.rt.check_true(false, "should not have run");
+        }
+    }
+
+    // Expected to fail, and does: a known-broken case kept in the suite rather
+    // than deleted, which is the whole reason xfail exists.
+    @pssunit_pkg::test{.xfail = true, .reason = "known wrong until the fix lands"}
+    action xfail_a : pssunit_pkg::test_a {
+        exec body {
+            comp.rt.enter("xfail_a");
+            comp.rt.check_eq_int(2 + 2, 5, "known wrong");
+        }
+    }
+
+    // Expected to fail, and does not. A stale annotation, and reported red on
+    // purpose: accepting it silently is how a suite accumulates marks nobody
+    // ever removes.
+    @pssunit_pkg::test{.xfail = true, .reason = "stale"}
+    action xpass_a : pssunit_pkg::test_a {
+        exec body {
+            comp.rt.enter("xpass_a");
+            comp.rt.check_true(true, "actually holds");
+        }
+    }
+}

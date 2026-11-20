@@ -1,0 +1,459 @@
+// pssunit_pkg.pss -- the PSS side of the pssunit test framework.
+//
+// Shipped inside pssc and injected ahead of the user's sources by `pssc test`,
+// so a suite needs nothing installed and names no framework file.
+//
+// One file rather than one-type-per-file (the convention the normative copy in
+// the pssunit repo follows) because that is what std_libs/ is: flat, one file
+// per package, matched by a package-data glob that does not cross directories.
+// `message` and its verbosities: this front end applies an import only to its
+// own file (18.1.3), so the package imports what it calls.
+import std_pkg::*;
+import addr_reg_pkg::*;
+
+package pssunit_pkg {
+
+    /**
+     * Base action for a unit test.
+     *
+     * Deriving from this is what makes an action a test: `pssc test` discovers
+     * a test by walking the super chain to this type, and it is what will carry
+     * the result ledger (`rt_c`) once checks land.
+     */
+    abstract action test_a {
+
+    }
+
+    /**
+     * Metadata about a test: how it should be grouped, and how it should run.
+     *
+     * Optional and additive -- `test_a` is what makes an action a test, and an
+     * un-annotated test runs with the defaults below. Every attribute has a
+     * default so a bare `@pssunit_pkg::test` is legal and a consumer never has
+     * to distinguish "absent" from "unset".
+     *
+     * A tool that has never heard of this annotation must ignore it (LRM
+     * 7.13), which is what keeps an annotated suite portable.
+     */
+    annotation test {
+        string group   = "";
+        bool   skip    = false;
+        bool   xfail   = false;
+        string reason  = "";
+        int    samples = 1;
+        /** Comma-separated tags, as `@pssunit_pkg::tag` gives one at a time. */
+        string tags    = "";
+    }
+
+    /**
+     * The outcome of a test, or of a single check within one.
+     *
+     * ERROR is distinct from FAIL on purpose: a failed check means the model
+     * said something untrue, while an error means the test never got far
+     * enough to say anything.
+     */
+    enum status_e {
+        PASS,
+        FAIL,
+        ERROR,
+        SKIP
+    }
+
+    /**
+     * The result ledger: what a test actually asserted.
+     *
+     * Declare one in the component that owns your tests and reach it as
+     * `comp.rt`. It is a component, not a struct, because it holds state that
+     * must survive across calls within a test -- a check records into it and
+     * the runner reads the counts afterwards to decide the verdict.
+     *
+     * Without this a test can only fail by raising, which cannot express
+     * "the design produced the wrong value". The counts are what turn
+     * `pssc test` from "did it run" into "did it hold".
+     *
+     * Each check reports its own failure as it happens rather than the ledger
+     * replaying them at the end, so a failing check names itself at the point
+     * the values are known -- and so a test that later errors out still leaves
+     * the checks it did run on the record.
+     */
+    component rt_c {
+        int    n_pass;
+        int    n_fail;
+        int    n_skip;
+        string cur_test;
+
+        /** Name the test the following checks belong to. */
+        function void enter(string t) {
+            cur_test = t;
+        }
+
+        /**
+         * Record one check outcome.
+         *
+         * The TAP-ish `ok` / `not ok` shape is deliberate: it is greppable, it
+         * carries the test and check names on the same line, and a failure is
+         * legible without the report that wraps it.
+         */
+        function void record(bool ok, string what) {
+            if (ok) {
+                n_pass = n_pass + 1;
+            } else {
+                n_fail = n_fail + 1;
+                message(NONE, "not ok %s :: %s", cur_test, what);
+            }
+        }
+
+        /** Record a check that was deliberately not run. */
+        function void record_skip(string what, string reason) {
+            n_skip = n_skip + 1;
+            message(LOW, "ok %s :: %s # SKIP %s", cur_test, what, reason);
+        }
+
+        // ---- the check family -------------------------------------------
+        //
+        // Methods on the ledger, written in PSS, so a suite that declares an
+        // `rt_c` runs anywhere PSS does. The import checks further down are
+        // the other family: the runner implements them and holds the ledger.
+
+        function void check_true(bool cond, string what) {
+            record(cond, what);
+        }
+
+        function void check_false(bool cond, string what) {
+            record(!cond, what);
+        }
+
+        function void check_eq_int(int a, int b, string what) {
+            record(a == b, what);
+        }
+
+        function void check_ne_int(int a, int b, string what) {
+            record(a != b, what);
+        }
+
+        function void check_eq_str(string a, string b, string what) {
+            record(a == b, what);
+        }
+
+        function void check_in_range(int v, int lo, int hi, string what) {
+            record(v >= lo && v <= hi, what);
+        }
+
+        function void skip(string what, string reason) {
+            record_skip(what, reason);
+        }
+    }
+
+    // ---- fixtures and doubles -------------------------------------------
+
+    /**
+     * Base component for a fixture: the root a test runs under.
+     *
+     * A fixture instantiates the model under test, and its test actions are
+     * the tests. A component derived from a fixture inherits every test in
+     * it, which is how one test set runs against several variants of an IP.
+     */
+    component fixture_c {
+
+    }
+
+    /**
+     * Base component for a PSS reaction hook: a double that answers the
+     * model's accesses. Its `on_write`/`on_read`/`on_event` target functions
+     * are the hooks; a fixture composes it as an instance.
+     */
+    component mock_c {
+
+    }
+
+    /** One bus access, as the platform double logs it. */
+    struct access_s {
+        bit[64] addr;
+        int     width;
+        bit[64] data;
+        bool    is_write;
+        int     index;      // the register's (first) array index, or -1
+    }
+
+    /** How a register field behaves when the bus touches it. */
+    enum access_kind_e {
+        RO,
+        WO,
+        RW,
+        RC,        // read clears
+        W1C,       // write one to clear
+        W1S,       // write one to set
+        VOLATILE   // changes without a bus write
+    }
+
+    // ---- annotations ----------------------------------------------------
+    //
+    // Like `test`, every attribute an author may omit has a default, and a
+    // tool that has never heard of one ignores it (LRM 7.13).
+
+    /** A property test: the action's `rand` attributes are solved per run. */
+    annotation property {
+        int runs = 100;
+    }
+
+    /** The test passes only if it fails with an error containing `text`. */
+    annotation expect_error {
+        string text;
+    }
+
+    /** One tag, for selection; may be applied more than once. */
+    annotation tag {
+        string name;
+    }
+
+    /** The component type whose code coverage counts for this fixture. */
+    annotation under_test {
+        string comp;
+    }
+
+    /**
+     * Leave this function, action or component out of code coverage
+     * (`pssc test --cov`): a debug helper, a diagnostic path.
+     */
+    annotation nocover {
+    }
+
+    /**
+     * On an operation (a public function): cross these points of its
+     * envelope coverage (`pssc test --cov`), a comma list of parameter
+     * names and `result`. May be applied more than once.
+     */
+    annotation cover_cross {
+        string params = "";
+    }
+
+    /** The least platform tier the test can run on, e.g. "fake" or "sim". */
+    annotation platform {
+        string min;
+    }
+
+    /**
+     * How a register field behaves, where the model's own types cannot say.
+     * On a register, `reg` is empty; on a register group, it names one.
+     */
+    annotation field_access {
+        string        reg = "";
+        string        field;
+        access_kind_e kind;
+    }
+
+    /** Switch off one sanitizer for this test, by name. */
+    annotation allow {
+        string what;
+    }
+
+    /**
+     * On a `target function` of a `mock_c`: run it after each write to
+     * register `reg` (an instance path from the fixture, "dma.ch[0].regs.csr";
+     * the same without indices, "dma.ch.regs.csr"; or "<group type>.<reg>").
+     * With `field`, only a write whose data has that field non-zero.
+     */
+    annotation on_write {
+        string reg;
+        string field = "";
+    }
+
+    /** On a `target function` of a `mock_c`: run it before each read of `reg`. */
+    annotation on_read {
+        string reg;
+    }
+
+    /** On a `target function` of a `mock_c`: run it when event `name` fires. */
+    annotation on_event {
+        string name;
+    }
+
+    /** A fixture function run before each test. */
+    annotation setup {
+
+    }
+
+    /** A fixture function run after each test, whatever it did. */
+    annotation teardown {
+
+    }
+
+    /**
+     * A fixture function that boots the DUT once per simulation: the tests
+     * of the component then share it, with no platform `reset()` between
+     * them. On a fake, where every test has a fresh tree, it runs before
+     * each test's `setup`.
+     */
+    annotation session {
+
+    }
+
+    // ---- checks ---------------------------------------------------------
+    //
+    // Import functions, implemented by the runner on every engine
+    // (pssc.testing.imports), so that a test also runs on generated code.
+    // The runner holds the ledger, so these need no `rt_c` handle. A register
+    // is named by its path from the fixture ("dma.ch[0].regs.csr"): an import
+    // cannot take a component (LRM 20.4.1).
+
+    /** Record a failure if `e` is false, and go on. */
+    function void check(bool e, string what = "");
+    import target function check;
+
+    /** End the test, failed, if `e` is false. */
+    function void require(bool e, string what = "");
+    import target function require;
+
+    function void check_eq(int[64] a, int[64] b, string what = "");
+    import target function check_eq;
+
+    function void check_ne(int[64] a, int[64] b, string what = "");
+    import target function check_ne;
+
+    function void check_lt(int[64] a, int[64] b, string what = "");
+    import target function check_lt;
+
+    function void check_le(int[64] a, int[64] b, string what = "");
+    import target function check_le;
+
+    function void check_gt(int[64] a, int[64] b, string what = "");
+    import target function check_gt;
+
+    function void check_ge(int[64] a, int[64] b, string what = "");
+    import target function check_ge;
+
+    /** Compare a register's value, read through the back door (no access). */
+    function void check_reg(string reg, bit[64] v, string what = "");
+    import target function check_reg;
+
+    /** Compare one field of a register, read through the back door. */
+    function void check_field(string reg, string field, bit[64] v, string what = "");
+    import target function check_field;
+
+    /** Check that the test's last write to the register set `field` to `v`. */
+    function void check_written(string reg, string field, bit[64] v, string what = "");
+    import target function check_written;
+
+    /** Check that the test never read or wrote the register. */
+    function void check_not_accessed(string reg, string what = "");
+    import target function check_not_accessed;
+
+    // ---- expected sequences (opt-in) --------------------------------------
+    //
+    // Queue the accesses a test expects, then `check_seq` matches them, in
+    // order, against the accesses since the last `check_seq` (or the test's
+    // start). Expectations no `check_seq` checks fail the test at its end.
+
+    /** Expect a write to `reg` that sets `field` to `v` ("" : the whole value). */
+    function void expect_write(string reg, string field, bit[64] v);
+    import target function expect_write;
+
+    /** Expect a read of `reg`. */
+    function void expect_read(string reg);
+    import target function expect_read;
+
+    /** The expected accesses happened, in order; others may come between. */
+    function void check_seq(string what = "");
+    import target function check_seq;
+
+    /** The accesses were exactly the expected ones, in order. */
+    function void check_seq_strict(string what = "");
+    import target function check_seq_strict;
+
+    /** Fail the test, unconditionally. */
+    function void fail(string msg);
+    import target function fail;
+
+    /**
+     * Not for tests to call. pssc rewrites each check above into temporaries
+     * and calls of these two (pssc.testing.check_rewrite): one
+     * `check_operand` per captured operand, in order, then `check_capture`.
+     * `id` names the check's site in the model's check table (its text,
+     * operands and string arguments), and `ok` is its outcome where the
+     * model decides it. Only scalars cross, at most two per call, so they
+     * run on bc.
+     */
+    function void check_operand(int[64] v);
+    import target function check_operand;
+
+    function void check_capture(int[32] id, bool ok);
+    import target function check_capture;
+
+    /**
+     * Not for tests to call either. Each call of a platform-double function
+     * below whose register names are literal strings becomes one of these:
+     * `id` names its site (the function and the strings), `v` is its scalar
+     * argument (0 when it has none). `double_handle` is `base`'s.
+     */
+    function bit[64] double_call(int[32] id, bit[64] v);
+    import target function double_call;
+
+    function addr_handle_t double_handle(int[32] id);
+    import target function double_handle;
+
+    // ---- the platform double --------------------------------------------
+
+    /** The base address the platform gives the named block. */
+    function addr_handle_t base(string name);
+    import target function base;
+
+    /** Set a register's value through the back door: no access is logged. */
+    function void poke_reg(string reg, bit[64] v);
+    import target function poke_reg;
+
+    /** Set one field of a register through the back door. */
+    function void poke_field(string reg, string field, bit[64] v);
+    import target function poke_field;
+
+    /** Write `size` bytes of memory, little-endian, without a bus access. */
+    function void mem_poke(bit[64] addr, bit[64] data, int size = 4);
+    import target function mem_poke;
+
+    /** Read `size` bytes of memory, little-endian, without a bus access. */
+    function bit[64] mem_peek(bit[64] addr, int size = 4);
+    import target function mem_peek;
+
+    /** Clear `field` after the register has been read `reads` times. */
+    function void complete_after(string reg, string field, int reads);
+    import target function complete_after;
+
+    /**
+     * Queue `v` as the next value `field` reads as. Call once per value;
+     * when the queue is empty the field reads as stored.
+     */
+    function void status_sequence(string reg, string field, bit[64] v);
+    import target function status_sequence;
+
+    /** Fail the test if the model reads or writes the register. */
+    function void fail_on_access(string reg);
+    import target function fail_on_access;
+
+    // ---- the hook library: for the hooks of a `mock_c` --------------------
+
+    /**
+     * `poke_field` of the instance of `reg` whose (first) array index is
+     * `index`: the register named without its indices, e.g.
+     * `poke_field_at(a.index, "wb_dma_ch_regs_c.csr", "done", 1)`.
+     */
+    function void poke_field_at(int index, string reg, string field, bit[64] v);
+    import target function poke_field_at;
+
+    /** Raise interrupt `irq`, as the platform would. */
+    function void raise_irq(int irq = 0);
+    import target function raise_irq;
+
+    /** A mock's state: the value last set under `key` in this test (0 if none). */
+    function bit[64] state_get(string key);
+    import target function state_get;
+
+    function void state_set(string key, bit[64] v);
+    import target function state_set;
+
+    /**
+     * Run the `on_event` hooks named `name` `delay` ticks from now, each as
+     * a thread of its own; a hook with an `int` parameter is given `arg`.
+     */
+    function void schedule_after(int delay, string name, int arg);
+    import target function schedule_after;
+
+}

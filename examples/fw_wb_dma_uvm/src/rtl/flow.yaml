@@ -1,0 +1,16 @@
+# yaml-language-server: $schema=https://dv-flow.github.io/flow.dv.schema.json
+fragment:
+  # OpenCores WISHBONE DMA/Bridge RTL (the reference design the SPL model mirrors).
+  # These are the freecores/wb_dma Verilog sources; every module `include`s
+  # wb_dma_defines.v, so the source directory itself is an incdir. This FileSet is
+  # the DUT for the RTL signal-level UVM path (same env + tests as TLM / SPL-wb).
+  tasks:
+  - export: rtl
+    uses: std.FileSet
+    with:
+      type: systemVerilogSource
+      base: "${{ env.IVPM_PACKAGES }}/wb_dma/rtl/verilog"
+      incdirs:
+      - .
+      include:
+      - "*.v"

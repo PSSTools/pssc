@@ -1,0 +1,8 @@
+// The execution target as the WB DMA suite runs it: the register fake raises
+// no interrupt, so a caller cannot suspend on one; wait_hint() polls instead.
+// (pssc test injects no target_cfg_pkg of its own; model.f lists this first.)
+package target_cfg_pkg {
+    static const int  TARGET_CFG_VERSION  = 2;
+    static const bool HAVE_EVENT_WAIT     = false;
+    static const bool HAVE_RUNTIME_SOLVER = false;
+}

@@ -1,0 +1,301 @@
+// One DMA channel's MMIO register bank: eight 32-bit registers at stride 4,
+// spanning 0x20 bytes (docs/dma_doc.md §4.4).
+//
+// Cross-checked against the executable SPL model (src/spl/wb_dma_ch.svh,
+// src/spl/wb_dma_rf.svh). Where the OpenCores datasheet and the implemented
+// model disagree, the model wins and the divergence is recorded in the field's
+// `desc`.
+//
+// This file feeds TWO projections -- peakrdl-fw-hdl for src/spl and
+// peakrdl-pss for src/pss -- so a change here reaches the SystemVerilog model
+// and the operation model together. That is the point: the PSS register
+// package used to be a hand-written peer of this file, and a peer can drift.
+//
+// NAMING IS LOAD-BEARING, now in two languages. Every register type is a NAMED
+// type at root scope and every instance carries the name the models already
+// use, because both exporters derive their identifiers from them: a root-scope
+// `reg wb_dma_csr` becomes `wb_dma_csr_t` in SystemVerilog and `wb_dma_csr_s`
+// in PSS, and the instance name becomes the member name in both. Renaming
+// anything here renames generated code that src/spl and src/pss compile
+// against -- and a type name must not collide with a hand-written type in a
+// package the PSS side imports alongside it (see `wb_dma_descptr` below). For
+// the same reason there are no per-instance property overrides
+// (`inst->name = ...`): a dynamic assignment
+// makes the instance a distinct lexical type, and the exporter then mangles a
+// hash into the struct name.
+
+// ---------------------------------------------------------------------------
+// CHn_CSR -- control / status (bank offset 0x00, §4.4.1 Table 6)
+// ---------------------------------------------------------------------------
+reg wb_dma_csr {
+    name = "Channel Control/Status Register";
+    regwidth = 32;
+
+    field {
+        name = "CH_EN";
+        desc = "Channel enable. Software sets this to arm/start the channel;
+                hardware clears it when the transfer completes or errors out.";
+        sw = rw; hw = r; hwclr;
+    } ch_en[0:0] = 0;
+
+    field {
+        name = "DST_SEL";
+        desc = "Destination interface select: 0 = interface 0, 1 = interface 1.";
+        sw = rw; hw = r;
+    } dst_sel[1:1] = 0;
+
+    field {
+        name = "SRC_SEL";
+        desc = "Source interface select: 0 = interface 0, 1 = interface 1.";
+        sw = rw; hw = r;
+    } src_sel[2:2] = 0;
+
+    field {
+        name = "INC_DST";
+        desc = "Increment the destination address (Address 1) between transfers.";
+        sw = rw; hw = r;
+    } inc_dst[3:3] = 0;
+
+    field {
+        name = "INC_SRC";
+        desc = "Increment the source address (Address 0) between transfers.";
+        sw = rw; hw = r;
+    } inc_src[4:4] = 0;
+
+    field {
+        name = "MODE";
+        desc = "0 = normal mode, 1 = hardware handshake mode.";
+        sw = rw; hw = r;
+    } mode[5:5] = 0;
+
+    field {
+        name = "ARS";
+        desc = "Auto restart: reload the programmed channel registers and restart
+                the transfer once TOT_SZ has been moved. DONE is not reported
+                while ARS is set.";
+        sw = rw; hw = r;
+    } ars[6:6] = 0;
+
+    field {
+        name = "USE_ED";
+        desc = "Use the external descriptor linked list pointed to by CHn_DESC.";
+        sw = rw; hw = r;
+    } use_ed[7:7] = 0;
+
+    field {
+        name = "SZ_WB";
+        desc = "Write the remaining size back into DESC_CSR when USE_ED is set and
+                DMA_ND_I was asserted with DMA_REQ_I (§3.9).";
+        sw = rw; hw = r;
+    } sz_wb[8:8] = 0;
+
+    // The datasheet calls STOP write-only. fw-hdl has no write-only concept
+    // (FWH-WRITEONLY), and the SPL agrees with the generated behaviour: STOP is
+    // in both the sw and hw write masks, hardware clearing the pulse on
+    // done/err/abort. `hwclr` -- not `singlepulse` -- is what expresses that in
+    // a form the exporter can carry.
+    field {
+        name = "STOP";
+        desc = "Abort pulse. Writing 1 stops the current transfer and sets ERR.
+                Hardware clears the bit once the abort has been taken.";
+        sw = w; hw = r; hwclr;
+    } stop[9:9] = 0;
+
+    field {
+        name = "BUSY";
+        desc = "The arbiter is currently servicing this channel. NOTE: this is not
+                an 'armed' indication and not a completion indicator.";
+        sw = r; hw = w;
+    } busy[10:10];
+
+    field {
+        name = "DONE";
+        desc = "Transfer complete. Not set while ARS is set.";
+        sw = r; hw = w;
+    } done[11:11];
+
+    field {
+        name = "ERR";
+        desc = "The channel stopped because of an error. The datasheet marks this
+                bit ROC, but the implemented model (src/spl/wb_dma_ch.svh
+                csr_rclr()) clears only the INT_* source bits on a read and leaves
+                ERR intact until the channel is re-armed.";
+        sw = r; hw = w;
+    } err[12:12];
+
+    field {
+        name = "PRIO";
+        desc = "Channel priority; 0 is the lowest.";
+        sw = rw; hw = r;
+    } prio[15:13] = 0;
+
+    field {
+        name = "REST_EN";
+        desc = "Hardware restart enable.";
+        sw = rw; hw = r;
+    } rest_en[16:16] = 0;
+
+    field {
+        name = "INE_ERR";
+        desc = "Interrupt enable: assert the channel interrupt on an error.";
+        sw = rw; hw = r;
+    } ine_err[17:17] = 0;
+
+    field {
+        name = "INE_DONE";
+        desc = "Interrupt enable: assert the channel interrupt when the channel
+                is done.";
+        sw = rw; hw = r;
+    } ine_done[18:18] = 0;
+
+    field {
+        name = "INE_CHK_DONE";
+        desc = "Interrupt enable: assert the channel interrupt after each CHK_SZ
+                chunk has been transferred.";
+        sw = rw; hw = r;
+    } ine_chk_done[19:19] = 0;
+
+    // The three interrupt-source bits are sticky and are cleared as a side effect
+    // of ANY host read of this register (wb_dma_ch_rf: ch_csr_re clears
+    // int_src_r). That is why a completion poll must read this register exactly
+    // once -- the read consumes the event.
+    //
+    // The `intr`/`enable` pair states the aggregation the device performs. The
+    // fw-hdl exporter reports it (FWH-INTR) and models only the field itself; the
+    // OR tree lives in the consumer, which for the SPL is wb_dma_irq.
+    field {
+        name = "INT_ERR";
+        desc = "Interrupt source: error. Cleared by reading CHn_CSR.";
+        sw = r; hw = w; rclr;
+        posedge intr;
+    } int_err[20:20] = 0;
+
+    field {
+        name = "INT_DONE";
+        desc = "Interrupt source: channel done. Cleared by reading CHn_CSR.";
+        sw = r; hw = w; rclr;
+        posedge intr;
+    } int_done[21:21] = 0;
+
+    field {
+        name = "INT_CHK_DONE";
+        desc = "Interrupt source: CHK_SZ transferred. Cleared by reading CHn_CSR.";
+        sw = r; hw = w; rclr;
+        posedge intr;
+    } int_chk_done[22:22] = 0;
+
+    int_err->enable      = ine_err;
+    int_done->enable     = ine_done;
+    int_chk_done->enable = ine_chk_done;
+
+    // 31:23 RESERVED (read as 0)
+};
+
+// ---------------------------------------------------------------------------
+// CHn_SZ -- transfer sizes (bank offset 0x04, §4.4.2 Table 7)
+// ---------------------------------------------------------------------------
+reg wb_dma_sz {
+    name = "Channel Size Register";
+    desc = "Total and chunk transfer sizes. Undefined after reset.";
+    regwidth = 32;
+
+    field {
+        name = "TOT_SZ";
+        desc = "Total transfer size in words (4-byte entities). Maximum 16 KB.";
+        sw = rw; hw = r;
+    } tot_sz[11:0];
+    // 15:12 RESERVED
+
+    field {
+        name = "CHK_SZ";
+        desc = "Chunk transfer size in words. 0 means the engine always performs
+                TOT_SZ transfers. A chunk size larger than TOT_SZ yields one
+                truncated chunk, not a hang. Maximum 2 KB.";
+        sw = rw; hw = r;
+    } chk_sz[24:16];
+    // 31:25 RESERVED
+};
+
+// ---------------------------------------------------------------------------
+// CHn_A0 / CHn_AM0 / CHn_A1 / CHn_AM1 / CHn_DESC (0x08..0x18, §4.4.3-4.4.5)
+// ---------------------------------------------------------------------------
+//
+// Modelled as full 32-bit read/write words, matching the SPL and PSS register
+// models -- a single full-width field makes the exporter emit `fw_reg #(bit
+// [31:0])` rather than a one-member struct. The datasheet marks low-order bits
+// of these registers reserved (Table 8: address 31:2; Table 9: mask 31:4) but
+// then gives the masks a reset value of 0xFFFF_FFFC, which contradicts a 3:0
+// reserved field; the implemented registers hold all 32 bits.
+
+reg wb_dma_addr {
+    name = "Channel Address Register";
+    desc = "Transfer address (A0 = source, A1 = destination). The two low-order
+            bits are word-alignment padding.";
+    regwidth = 32;
+    field { sw = rw; hw = r; } addr[31:0];
+};
+
+reg wb_dma_amask {
+    name = "Channel Address Mask Register";
+    desc = "Increment mask applied to the corresponding address register. Bits
+            held at 0 in the mask do not participate in the increment, which is
+            what makes a circular buffer wrap.";
+    regwidth = 32;
+    field { sw = rw; hw = r; } mask[31:0] = 32'hffff_fffc;
+};
+
+// The type is `descptr`, not `desc`, because this register holds the ADDRESS of
+// a descriptor, not a descriptor. The PSS projection emits one struct per
+// register type into wb_dma_regs_pkg, and the operation model already has a
+// `wb_dma_desc_s` -- the 16-byte descriptor RECORD itself, in
+// src/pss/wb_dma_types_pkg.pss. Two different things cannot both be
+// `wb_dma_desc_s` in scopes a function imports together.
+reg wb_dma_descptr {
+    name = "Linked List Descriptor Pointer";
+    desc = "Address of the external descriptor. Hardware overwrites this register
+            with the descriptor's NEXT pointer once the descriptor has been
+            fetched, so it is hardware-writable as well.";
+    regwidth = 32;
+    field { sw = rw; hw = rw; we; } ptr[31:0];
+};
+
+// ---------------------------------------------------------------------------
+// CHn_SWPTR -- software pointer (offset 0x1c, §4.4.6 Table 11)
+// ---------------------------------------------------------------------------
+reg wb_dma_swptr {
+    name = "Software Pointer Register";
+    desc = "Consumer-side pointer of a circular buffer. The engine will not cross
+            this address and stalls the channel until software advances it
+            (§3.4, §3.5).";
+    regwidth = 32;
+
+    field {
+        name = "PTR";
+        desc = "Last location in the circular buffer that software has read/written.";
+        sw = rw; hw = r;
+    } ptr[30:0] = 0;
+
+    field {
+        name = "SWPTR_EN";
+        desc = "1 = enable the software pointer, 0 = disable.";
+        sw = rw; hw = r;
+    } en[31:31] = 0;
+};
+
+// ---------------------------------------------------------------------------
+// The bank
+// ---------------------------------------------------------------------------
+regfile wb_dma_ch_regs {
+    name = "DMA Channel Registers";
+    desc = "Control, status and address registers for a single DMA channel. The
+            bank is 0x20 bytes; channel n lives at 0x20 + n*0x20.";
+
+    wb_dma_csr   csr   @0x00;
+    wb_dma_sz    sz    @0x04;
+    wb_dma_addr  adr0  @0x08;
+    wb_dma_amask am0   @0x0c;
+    wb_dma_addr  adr1  @0x10;
+    wb_dma_amask am1   @0x14;
+    wb_dma_descptr desc @0x18;
+    wb_dma_swptr swptr @0x1c;
+};

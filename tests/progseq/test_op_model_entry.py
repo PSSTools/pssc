@@ -21,6 +21,8 @@ from pssc import driver
 from pssc.targets.export_action import ExportActionError, entry_point
 from pssc.testing import compile_op_model
 
+from . import trace_harness as th
+
 _MODEL = """
 import std_pkg::*;
 
@@ -224,5 +226,164 @@ def test_a_backend_that_does_not_render_entries_says_so(src, tmp_path):
     """Refused rather than an API generated without the entry."""
     ns = argparse.Namespace(progseq_root="pss_top", output_dir=str(tmp_path),
                             export_actions=["pss_top::A"])
-    with pytest.raises(ValueError, match="does not yet render exported actions"):
+    with pytest.raises(driver.CompileError,
+                       match="does not yet render exported actions"):
         driver.compile([src], target="op-model-c", opts=ns)
+
+
+# --- a test action (`pssunit_pkg::test_a`) ---------------------------------
+
+_MARKED = """\
+import std_pkg::*;
+package mark_pkg {
+  abstract action test_a { }
+  abstract action busy_a { int n; }
+}
+component dev_c {
+  int base_addr;
+  solve function void initialize(int b) { base_addr = b; }
+  target function void go() { message(NONE, "go %d", base_addr); }
+}
+component pss_top {
+  dev_c dev;
+  function void bind_dev() { dev.initialize(7); }
+  action t_a : mark_pkg::test_a {
+    exec body { comp.bind_dev(); comp.dev.go(); }
+  }
+  action u_a : mark_pkg::busy_a { exec body { } }
+}
+"""
+
+
+def test_a_test_action_derived_from_a_package_marker_exports(tmp_path):
+    """`pssunit_pkg::test_a` is an empty action in a package: the chain ends
+    there. A sub-component's constructor called from a target function (a
+    fixture's setup binding its device) constructs it anew."""
+    p = tmp_path / "m.pss"
+    p.write_text(_MARKED)
+    with compile_op_model("op-model-py", sources=[str(p)], root="pss_top",
+                          export_actions=["pss_top::t_a"]) as outcome:
+        mod, rt = _load(outcome, "pss_top")
+        bus = rt.MemoryBus()
+        mod.PssTop(bus).t_a()
+    assert [t for k, _, _, t in bus.log if k == "message"] == ["go 7"]
+
+
+def test_a_package_base_that_is_not_empty_is_a_user_error(tmp_path):
+    p = tmp_path / "m.pss"
+    p.write_text(_MARKED)
+    ns = argparse.Namespace(progseq_root="pss_top", output_dir=str(tmp_path),
+                            export_actions=["pss_top::u_a"])
+    with pytest.raises(driver.CompileError,
+                       match="inherits from 'mark_pkg::busy_a', which is not "
+                             "an action of the model"):
+        driver.compile([str(p)], target="op-model-py", opts=ns)
+
+
+# --- action functions -------------------------------------------------------
+
+_AF_MODEL = """\
+import std_pkg::*;
+component pss_top {
+  target function int add(int a, int b) { return a + b; }
+  abstract action base_a {
+    function void arrange() { message(NONE, "arrange"); }
+    function void act();
+    function int twice(int v) { return comp.add(v, v); }
+    exec body {
+      arrange();
+      act();
+      message(NONE, "twice %d", twice(4));
+    }
+  }
+  action d_a : base_a {
+    function void arrange() { super.arrange(); message(NONE, "more"); }
+    function void act() { message(NONE, "act %d", twice(2)); }
+  }
+  action r_a {
+    function int fact(int n) { if (n <= 1) { return 1; } return n * fact(n - 1); }
+    exec body { message(NONE, "fact %d", fact(5)); }
+  }
+}
+"""
+
+
+@pytest.fixture(scope="module")
+def af_src(tmp_path_factory):
+    p = tmp_path_factory.mktemp("af") / "af.pss"
+    p.write_text(_AF_MODEL)
+    return str(p)
+
+
+@pytest.fixture(scope="module")
+def af_gen(af_src):
+    with compile_op_model("op-model-py", sources=[af_src], root="pss_top",
+                          export_actions=["pss_top::d_a", "pss_top::r_a"]) as outcome:
+        mod, rt = _load(outcome, "pss_top")
+        yield mod, rt
+
+
+def _messages(dut_call, mod, rt):
+    bus = rt.MemoryBus()
+    dut_call(mod.PssTop(bus))
+    return [t for k, _, _, t in bus.log if k == "message"]
+
+
+def test_a_template_method_runs_the_derived_actions_functions(af_gen):
+    """The base `exec body` calls `arrange`/`act`; `d_a`'s overrides run,
+    `super.arrange()` reaches the base, and a value function returns."""
+    mod, rt = af_gen
+    assert _messages(lambda d: d.d_a(), mod, rt) == [
+        "arrange", "more", "act 4", "twice 8"]
+
+
+def test_a_recursive_action_function_runs(af_gen):
+    mod, rt = af_gen
+    assert _messages(lambda d: d.r_a(), mod, rt) == ["fact 120"]
+
+
+def test_action_functions_are_private_helpers_of_the_entry(af_src):
+    ep = entry_point(_ctx(af_src), "pss_top::d_a")
+    names = sorted(f.name for f in ep.helpers)
+    assert names and all(n.startswith("_pss_af_d_a_") for n in names)
+    for n in ("arrange", "act", "twice"):
+        assert any(x.endswith("_" + n) for x in names), n
+
+
+def test_an_action_function_reading_an_attribute_is_refused(tmp_path):
+    _refused(tmp_path, """
+component pss_top {
+  target function void f(int v) { }
+  action X {
+    int v = 3;
+    function void g() { comp.f(v); }
+    exec body { g(); }
+  }
+}""", match="reads its attribute 'v'")
+
+
+@pytest.mark.sim
+@pytest.mark.skipif(th.available("sv") != "", reason=th.available("sv") or "-")
+def test_action_functions_run_on_op_model_sv(tmp_path):
+    """The same entries on op-model-sv: each action function a protected
+    task, a value one returning through its `output status`."""
+    pss = _AF_MODEL.replace("import std_pkg::*;\n", "").replace(
+        "component pss_top {", "component pss_top {\n  target function void run() { }", 1)
+    out = th.compile_model(tmp_path, pss, "sv",
+                           export_actions=["pss_top::d_a", "pss_top::r_a"])
+    sv = (out / "pss_top.svh").read_text()
+    assert "protected task _pss_af_d_a_twice(output int status, input int v);" in sv
+    tb = (th._SV_TB.replace("@PLAT@", "").replace("@PRELOAD@", "")
+          .replace("@ARGS@", "")
+          .replace("dut.run();", "dut.d_a(); dut.r_a();"))
+    (out / "tb.sv").write_text(tb)
+    build = th.Build(
+        steps=[([th.VERILATOR, "--binary", "-j", "1", "-Wno-fatal",
+                 "--top-module", "top", f"-I{out}", "-Mdir",
+                 str(tmp_path / "obj"), "-o", "sim",
+                 str(out / "pssc_reg_pkg.sv"), str(out / "pss_top_pkg.sv"),
+                 str(out / "tb.sv")], str(tmp_path))],
+        run=([str(tmp_path / "obj" / "sim")], str(tmp_path)),
+        lines=th._sv_lines)
+    assert th.finish(build) == [
+        "arrange", "more", "act 4", "twice 8", "fact 120"]

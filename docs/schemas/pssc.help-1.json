@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pssc.help/1",
+  "title": "pssc help --json",
+  "description": "Every pssc command and sub-command, its arguments, and the schema of each machine-readable output it prints. Built from the real argparse tree. `pssc help CMD... --json` prints the same shape with only that command (no prog/version/args).",
+  "type": "object",
+  "required": ["schema", "commands"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "pssc.help/1"},
+    "prog": {"type": "string"},
+    "version": {"type": "string"},
+    "args": {"type": "array", "items": {"$ref": "#/$defs/arg"}},
+    "commands": {"type": "array", "items": {"$ref": "#/$defs/command"}}
+  },
+  "$defs": {
+    "command": {
+      "type": "object",
+      "required": ["name", "path", "help", "args"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string"},
+        "path": {"type": "array", "items": {"type": "string"},
+                 "description": "the command words, e.g. [\"model\", \"regs\"]"},
+        "help": {"type": ["string", "null"]},
+        "args": {"type": "array", "items": {"$ref": "#/$defs/arg"}},
+        "commands": {"type": "array", "items": {"$ref": "#/$defs/command"}},
+        "outputs": {"type": "array", "items": {"$ref": "#/$defs/output"}}
+      }
+    },
+    "arg": {
+      "type": "object",
+      "required": ["name", "flags", "positional", "kind", "type", "required",
+                   "default", "help"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string", "description": "the argparse dest"},
+        "flags": {"type": "array", "items": {"type": "string"},
+                  "description": "option strings; empty for a positional"},
+        "positional": {"type": "boolean"},
+        "kind": {"enum": ["store", "flag", "const", "append", "count", "version"]},
+        "type": {"type": ["string", "null"], "description": "str, int, bool, ..."},
+        "required": {"type": "boolean"},
+        "default": {},
+        "help": {"type": ["string", "null"]},
+        "nargs": {"type": ["string", "integer"]},
+        "choices": {"type": "array"},
+        "metavar": {"type": ["string", "array"]},
+        "const": {}
+      }
+    },
+    "output": {
+      "type": "object",
+      "required": ["when", "schema", "format"],
+      "additionalProperties": false,
+      "properties": {
+        "when": {"type": "array", "items": {"type": "string"},
+                 "description": "the options that select this output"},
+        "schema": {"type": ["string", "null"],
+                   "description": "schema id; null when unversioned"},
+        "format": {"enum": ["json", "ndjson", "json-file", "xml-file", "cdb-file", "lcov-file", "ndjson-file", "zbc-file"]},
+        "file": {"type": "string",
+                 "description": "the published schema, relative to the repo root"}
+      }
+    }
+  }
+}

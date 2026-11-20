@@ -5,6 +5,7 @@ See `_matrix` for what a case is and how it is run.
 from __future__ import annotations
 
 from ._matrix import ALL, Case, define_tests, on, ONE, Refused
+from ._matrix import pyvm_xfail, BC_ARRAY, BC_DOMAIN, BC_IN
 
 
 
@@ -341,5 +342,14 @@ component pss_top {""" + ONE + """
   target function void run() { go(true, false, false, 0xFF, 1, 0); }
 }""", ["t", "f", "1 1"], covers=("EX-LOG.4", "EX-LOG.5", "EX-LOG.1")),
 }
+
+pyvm_xfail(CASES, BC_IN,
+           'a bool printed as an integer',
+           'in: operands at a common type',
+           'unqualified enum items, as arguments and defaults')
+pyvm_xfail(CASES, BC_DOMAIN,
+           'an enum domain on a field')
+pyvm_xfail(CASES, BC_ARRAY,
+           'an enum item as an array size')
 
 test_construct = define_tests(CASES)

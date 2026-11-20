@@ -22,7 +22,20 @@ This package covers:
    :caption: Contents:
 
    quickstart
+   tutorial
    api
+   test-command
+   cli-reference
+   writing-tests
+   action-functions
+   platform-doubles
+   coverage
+   debugging
+   hot-reload
+   simulation
+   ctrf-report
+   test-internals
+   annotations
    pss_to_sv
    progseq
    progseq_design
@@ -40,7 +53,8 @@ the toctree above because this build has no Markdown parser configured.
 - ``pssc.targets.call_legality`` — which PSS calls each target may lower
 - ``docs/op-model-c-embedded.md`` — the C operation-model API with no heap
 - ``docs/op-model-manifest.md`` — the ``--emit-manifest`` schema
-- ``docs/cli.md`` — CLI reference
+- ``docs/cli.md`` — CLI guide (examples, exit codes); the option-by-option
+  reference, generated, is :doc:`cli-reference`
 
 ``docs/design/`` holds the design notes and implementation plans the shipped
 source cites by section. They are archived working notes, not guides: each

@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pssunit.stop/1",
+  "title": "pssc dbg run|continue|step|next|out|start --json",
+  "description": "Where a debug session's run is after a run command: stopped for the user (`stopped`: a breakpoint, a register watch, a step, a pause, a failing check...), ended (`exited`), or still running when `--timeout` ran out (`running`; the next run command or `pause` returns its stop). `output` is the logpoint lines written on the way. Fields not listed here may be added; readers ignore them.",
+  "type": "object",
+  "required": ["schema", "session", "event"],
+  "properties": {
+    "schema": {"const": "pssunit.stop/1"},
+    "session": {"type": "string", "description": "The session ID `pssc dbg start` returned."},
+    "event": {"enum": ["stopped", "exited", "running"]},
+    "output": {"type": "array", "items": {"$ref": "#/$defs/output"}}
+  },
+  "oneOf": [
+    {
+      "required": ["reason"],
+      "properties": {
+        "event": {"const": "stopped"},
+        "reason": {"enum": ["entry", "pause", "step", "breakpoint", "watch", "check",
+                            "sanitizer", "error", "unimplemented", "mocked", "start"],
+                   "description": "`start`: `pssc dbg back`/`rc` went back to the run's start."},
+        "tick": {"type": "integer", "description": "Statements the run has started so far (Python engine); `back`/`rc` run the run again to an earlier tick."},
+        "thread": {"type": "integer"},
+        "frame": {"type": "integer"},
+        "coro": {"type": "integer"},
+        "pc": {"type": "integer"},
+        "src_ref": {"type": "integer", "description": "Provenance entry of the statement (or instruction) stopped at; 0 when unknown."},
+        "source": {"$ref": "#/$defs/source"},
+        "hits": {"type": "array", "items": {"type": "integer"}, "description": "The engine's break or watch ids (before the session's filtering)."},
+        "detail": {"type": "object", "description": "Per reason: `step` {kind} (`back` after `pssc dbg back`); `watch` the access {rw, width, addr, data, reg_id?}; `check`/`sanitizer` the event's detail; `error` {severity, text} or {error}; `unimplemented` {name, fn_id, args}."},
+        "breakpoints": {"type": "array", "items": {"type": "integer"}, "description": "`breakpoint`: the user breakpoints that stopped the run."},
+        "watches": {"type": "array", "items": {"$ref": "#/$defs/watch_hit"}, "description": "`watch`: the user watches that stopped the run."}
+      }
+    },
+    {
+      "required": ["status"],
+      "properties": {
+        "event": {"const": "exited"},
+        "status": {"enum": ["ok", "error", "terminated"]},
+        "message": {"type": "string"}
+      }
+    },
+    {
+      "required": ["timeout"],
+      "properties": {
+        "event": {"const": "running"},
+        "timeout": {"type": "number", "description": "The seconds waited."}
+      }
+    }
+  ],
+  "$defs": {
+    "source": {
+      "type": "object",
+      "required": ["file", "line"],
+      "properties": {
+        "file": {"type": "string"},
+        "line": {"type": "integer"},
+        "col": {"type": "integer"}
+      }
+    },
+    "output": {
+      "type": "object",
+      "required": ["category", "output"],
+      "properties": {
+        "category": {"type": "string"},
+        "output": {"type": "string"},
+        "src_ref": {"type": ["integer", "null"]}
+      }
+    },
+    "watch_hit": {
+      "type": "object",
+      "required": ["id", "path", "rw"],
+      "properties": {
+        "id": {"type": "integer"},
+        "path": {"type": "string"},
+        "rw": {"type": "string"},
+        "data": {"type": "integer"},
+        "value": {"type": "integer"}
+      }
+    }
+  }
+}

@@ -4,8 +4,12 @@
 pssc [--version] <command> ...
 ```
 
+Every command and option, generated from `pssc help --json`, is listed in
+[cli-reference.rst](cli-reference.rst); this page is the guide.
+
 Exit codes: `0` success · `1` user error (unknown target, parse/translate
-failure) · `2` internal error.
+failure) · `2` internal error. `pssc test` has its own codes — see
+[`pssc test`](#pssc-test).
 
 ## Diagnostics
 
@@ -46,6 +50,7 @@ pssc compile SOURCES... [-t TARGET] [-o DIR] [--dump-ir FILE] [-q] [target-opts]
 | `--target-cfg NAME=VALUE` | override what the target publishes as `target_cfg_pkg` (repeatable; see below) |
 | `--no-comments` | do not carry the PSS source's comments into the generated code (see below) |
 | `--keep-detached-comments` | also carry the comments a blank line detaches from a statement in a procedural body (see below) |
+| `--line-directives` | op-model targets: precede each generated statement with a line directive naming its PSS source line (see below) |
 
 ### `--no-comments` — dropping the source's prose
 
@@ -116,6 +121,23 @@ either way. With `--no-comments` there is nothing to keep.
 A target can turn the option on for itself with the class attribute
 `keep_detached_comments = True` (`OpModelTarget`; default `False`); the flag,
 or `driver.compile(..., keep_detached_comments=...)`, overrides it per run.
+
+### `--line-directives` — debugging generated code at the PSS source
+
+With `--line-directives`, the op-model targets precede each generated statement
+with the language's way of saying "this came from `file.pss`, line N":
+
+| Target | What is emitted |
+|---|---|
+| `op-model-c`, `op-model-cpp` | `#line N "/abs/path/file.pss"` (column 0) |
+| `op-model-sv` | `` `line N "/abs/path/file.pss" 0 `` (column 0) |
+| `op-model-py` | `# /abs/path/file.pss:N`, a comment at the statement's indent |
+
+gdb, gcov and a SystemVerilog simulator then report breakpoints, coverage and
+`$display` positions at the PSS lines. Python has no line directive, so the
+comment is for a reader (or a tool mapping a traceback back). Statements the
+generator synthesizes, and those from the preludes, get none. The option is off
+by default, and without it the output is unchanged.
 
 ### `target_cfg_pkg` — the target describes itself to the model
 
@@ -221,6 +243,149 @@ pssc parse SOURCES... [--dump-ir FILE] [-q]
 Without `--dump-ir`, prints a one-line summary (`parsed OK: N types`). With
 `--dump-ir FILE`, writes the canonical `zuspec.ir.core.Context` as YAML.
 
+## `pssc test`
+
+Discover and run pssunit tests.
+
+```
+pssc test [SRC-SPEC...] [-k EXPR] [--fixture NAME] [--group NAME]
+          [--noskip] [--runxfail] [--collect-only] [--seed N] [-x]
+          [--strict] [--no-debug] [--engine py|c|gen-py|gen-sv]
+          [--ctrf PATH | --no-ctrf] [--junit PATH]
+          [--json] [-v | -q] [--changed [--base REV]] [--watch]
+          [--mutate [--mutate-kinds K,K] [--mutate-max N] [-j N]]
+```
+
+Unlike `compile` and `parse`, which take a list of files, a **src-spec** is a
+file, a directory (searched recursively for `*.pss`), a glob, or `@filelist` —
+and with no spec at all, the current directory. A suite is a directory that
+grows files, not a list maintained by hand.
+
+| Option | Description |
+|---|---|
+| `SRC-SPEC...` | file, directory, glob or `@filelist`; default `.` |
+| `-k EXPR` | run only tests whose name matches `EXPR` (glob or substring) |
+| `--fixture NAME` | run only tests rooted in component `NAME` |
+| `--group NAME` | run only tests in annotation group `NAME` (exact match) |
+| `--noskip` | run tests annotated `.skip = true` anyway |
+| `--runxfail` | report `.xfail` tests by what they actually did |
+| `--collect-only` | list the tests that would run; do not run them |
+| `--seed N` | solver seed; default random, and always reported |
+| `-x`, `--exitfirst` | stop after the first failure |
+| `--strict` | fail a test that records no checks |
+| `--no-debug` | lower the release image (default: debug lowering — statement markers, calls kept as calls, named locals) |
+| `--engine py\|c\|gen-py\|gen-sv` | the engine the tests run on: `py`, the Python VM, or `c`, the C engine (zuspec-rt-eng). On `c` mocks run in place of the PSS function as on `py`, interrupts start the handler as on `py`, the sanitizers and spies see the run's trace when it ends (the same findings and calls), and a test the C engine cannot run yet (an activity with a stream pool, a resource pool over 64 instances, or an action in no known instance) is an ERROR that says why; a `.cdb` records the engine (`native`). `gen-py` / `gen-sv` run each exportable action test as the `op-model-py` / `op-model-sv` generated code (gen-sv under Verilator) on a fresh fake, after a `py` reference run; a bus access that differs fails it ("diverges from pyvm at bus access N"), a test that cannot be exported is a SKIP that says why. See `docs/writing-tests.rst` "Generated code". Default `$PSSC_ENGINE`, else `py` |
+| `--platform replay:TRACE` | replay a run `--trace` recorded: reads and user imports are answered from `TRACE` (a trace file, or the directory of one per test, e.g. `.pssunit/traces`), and the first access or import that is not the recorded one fails the test ("first divergent access", expected and actual, with both source lines); so does a run that ends before the recording does. See `docs/test-command.rst` for the other platforms |
+| `--ctrf PATH` | write the CTRF report to `PATH` (default `pssunit-ctrf.json`) |
+| `--no-ctrf` | write no CTRF report |
+| `--report PATH` | same as `--ctrf PATH` |
+| `--junit PATH` | also write a JUnit XML report to `PATH` |
+| `--changed` | run only tests whose slice (the code they reach) changed since they last passed (record: `.pssunit/results.json`) |
+| `--base REV` | with `--changed`: run tests whose slice differs at git revision `REV` (instead of the record) |
+| `--watch` | re-run `--changed` each time a source is saved; Ctrl-C ends it |
+| `--json` | print NDJSON events (schema `pssunit.events/1`) instead of the human report; with `--collect-only`, the catalog as JSON |
+| `--mutate` | after a green run, run each mutant of the model (flipped operator, constant off by one, moved register offset, swapped field) on the tests that reach it and list the ones no test kills (`SURVIVED`) or reaches (`NOT COVERED`), with a mutation score; `-j N` runs N at once; exit 1 if any survive, 2 if the run was not green; with `--json`, `mutant.end` and `mutate.end` events |
+| `--mutate-kinds K,K` | with `--mutate`: only these kinds (`operator`, `constant`, `offset`, `field`) |
+| `--mutate-max N` | with `--mutate`: at most N mutants, a sample picked by `--seed` |
+| `-v`, `--verbose` | per-test detail: qualified name, traceback |
+| `-q`, `--quiet` | summary line only |
+
+Exit codes: `0` every selected test passed · `1` the suite ran and a test
+failed (a report exists) · `2` the model did not compile (a src-spec naming
+nothing, a parse or elaboration error, an unresolvable test base; no report) ·
+`3` internal error · `5` nothing selected — no tests found, or none matched.
+Full reference, with worked output: [`docs/test-command.rst`](test-command.rst).
+
+## `pssc model`
+
+```
+pssc model api     [SRC-SPEC...] --root COMP [--json]
+pssc model regs    [SRC-SPEC...] --root COMP [--base ADDR] [--json]
+pssc model explain ADDR|PATH [SRC-SPEC...] --root COMP [--base ADDR] [--json]
+pssc model tests   [SRC-SPEC...] [--json]
+```
+
+Questions about the elaborated model, answered from the op-model manifest
+([`docs/op-model-manifest.md`](op-model-manifest.md)) — the registers and
+offsets the generators emit. `api` lists components, constructors and
+operations; `regs` every register instance with its address (`--base`, default
+0, is the root group's); `explain` the register at an address (any byte of it)
+or a path from the root (`regs.bank[3].adr0`, `ch[3].regs.adr0`; without
+indices, every element), with its fields and the operations that read or write
+it; `tests` the pssunit catalog. A sub-component group whose layout matches an
+array of groups in the root (WB DMA's `ch[i].regs` and `regs.bank[i]`) is
+taken to be bound to element *i* and shown as an alias ("bound by layout"):
+the binding itself happens at run time. `--json` prints one document
+(schema `pssc.model/1`). Exit `1` when `explain` finds no register, `2` for a
+bad src-spec or `--root`.
+
+```
+$ pssc model explain 0x88 <wb_dma sources> --root wb_dma_c
+0x00000088  regs.bank[3].adr0  (wb_dma_addr_s, 32 bits, READWRITE)
+  alias       ch[3].regs.adr0  (bound by layout)
+  fields      addr[31:0]
+  read by     -
+  written by  ch[3].transfer_single, ch[3].configure_channel, ch[3].transfer_single_start
+```
+
+## `pssc daemon`
+
+`pssc test` and `pssc model` are served by a per-workspace daemon (`pssd`)
+that keeps the compiler imported, so a warm command starts in tens of
+milliseconds instead of a few hundred. The workspace is the nearest directory
+above the current one holding `pyproject.toml`, `.git`, `flow.dv` or
+`flow.yaml`. The first command starts the daemon; it exits after 15 minutes
+without a request. Output and exit codes are the same as without it.
+
+```
+pssc daemon status [--json]   # running? pid, requests served, uptime
+pssc daemon stop
+```
+
+| Variable | Effect |
+|---|---|
+| `PSSC_NO_DAEMON=1` | run every command in the calling process |
+| `PSSC_DAEMON_IDLE=<s>` | idle seconds before a newly started daemon exits |
+| `PSSC_DAEMON_DIR=<dir>` | where sockets and logs live (default `$XDG_RUNTIME_DIR/pssd-<uid>`) |
+
+A daemon running a different pssc version, or started before the package's
+sources were edited, is stopped and replaced by the next command; so is one
+that died. If no daemon can be started, the command runs in-process.
+
+The daemon keeps what `pssc test` builds -- the translated model, its test
+catalog, each component's lowered image and the op-model gate's verdict --
+keyed on the bytes of every source file. A command with no edit since the last
+rebuilds nothing; any edit rebuilds the model whole. The gate runs again only
+when a file it checks changed: editing a test file does not re-run it.
+`pssc daemon status` counts the builds, images, gate runs and cache hits.
+
+## `pssc help`
+
+```
+pssc help [COMMAND...]          # the same as pssc COMMAND... --help
+pssc help [COMMAND...] --json   # the CLI described as one JSON document
+pssc help --rst                 # the same, as docs/cli-reference.rst
+```
+
+`--json` prints every command and sub-command (`path`, e.g. `["model",
+"regs"]`), each argument (`name`, `flags`, `positional`, `kind`, `type`,
+`required`, `default`, `choices`, `metavar`, `help`) and each machine-readable
+output it can print: which options select it, its schema id and, when
+published, the schema file (`test --json` →
+[pssunit.events-1.json](schemas/pssunit.events-1.json), `test --collect-only
+--json` and `model tests --json` →
+[pssunit.catalog-1.json](schemas/pssunit.catalog-1.json), `model
+api|regs|explain --json` → [pssc.model-1.json](schemas/pssc.model-1.json)). It
+is read from the real parser, so it lists exactly the commands `pssc` accepts.
+Schema: [pssc.help-1.json](schemas/pssc.help-1.json).
+
+**Schema versions.** Each JSON document (or NDJSON event) names its schema in
+`schema`, as `name/N`. Within one `N`, pssc may add members and enum values,
+and the file under `docs/schemas/` is updated with them; a reader should ignore
+members it does not know. Removing or renaming a member, changing its type or
+meaning, or making an optional member required is a new `N`, with a new file
+beside the old one. The `pssc daemon status --json` document is not versioned.
+
 ## `pssc targets`
 
 List registered targets and their descriptions.
@@ -239,6 +404,50 @@ pssc sv-core-path [--file]
 |---|---|
 | (none) | print the directory (`.../pssc/share/sv`) |
 | `--file` | print the path to `pssc_reg_pkg.sv` |
+
+## `pssc sv-pssvm-path`
+
+Print the install path of the bundled SystemVerilog engine package
+(`pssvm_pkg`), which runs a `pssc build --image` image inside a simulation:
+the testbench extends `pssvm_platform_if` (bus accesses, imports, time) and
+`pssvm_ctxt::call` drives the engine. Compile with `+define+PSSVM_DPI` for the
+native (C) engine over DPI-C, link the library `--lib` prints, and create the
+engine with `pssvm_engine_dpi::new("x.zbc")`; no Python runs in the simulator.
+
+For pyvm (pssc's Python VM) inside the simulator, through pyhdl-if, compile
+pyhdl-if's `pyhdl_if.sv`, then `pssvm_pkg.sv`, `pssvm_hif_api_pkg.sv` and
+`pssvm_hif_pkg.sv` from this directory, create the engine with
+`pssvm_hif_pkg::pssvm_engine_hif::create("x.zbc")`, and run the simulation
+with `PYTHONPATH` set to the output of `--py`.
+
+To run the image's tests, give the context to a `pssvm_runner` and call its
+`run` task. It runs the tests `+pssunit=SEL` selects (comma-separated globs
+on `comp::fn` or `fn`, e.g. `+pssunit=*prio*,t_csr_*`), or every function
+test of the image, each between the image's setup and teardown functions.
+It prints `PSSVM-TEST: PASS|FAIL <test> @<start>..<end>` per test (the sim
+time it started and ended at) and
+`PSSVM-SUMMARY: <n> passed, <m> failed`, and returns the number that failed.
+The model and the design keep their state from one test to the next.
+With `+pssvm_dbg_on_fail` a failing test holds the simulation
+(`PSSVM-DBG: held <test> @<time>`) until `pssc sim resume [--rerun]`.
+
+```systemverilog
+pssvm_ctxt   ctxt   = new(pssvm_engine_hif::create("x.zbc"), my_platform);
+pssvm_runner runner = new(ctxt);
+int failed;
+runner.run(failed);
+```
+
+```
+pssc sv-pssvm-path [--file | --py | --lib]
+```
+
+| Option | Description |
+|---|---|
+| (none) | print the directory (`.../pssc/share/sv/pssvm`) |
+| `--file` | print the path to `pssvm_pkg.sv` |
+| `--py` | print the `PYTHONPATH` the pyvm engine needs (pssc and `pssvm_dpi_shim.py`) |
+| `--lib` | print the path to the C engine's shared library (`libpssvm.so`, built on first use) |
 
 ## `pssc c-core-path` / `pssc cpp-core-path`
 

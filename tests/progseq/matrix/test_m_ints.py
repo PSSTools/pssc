@@ -6,6 +6,7 @@ See `_matrix` for what a case is and how it is run.
 from __future__ import annotations
 
 from ._matrix import ALL, Case, define_tests, on, ONE, Refused
+from ._matrix import pyvm_xfail, BC_ARRAY, BC_DOMAIN, BC_IN, BC_POW, BC_SELECT
 
 I18 = ("I18: a pure function call does not fold as a constant expression "
        "(8.2)")
@@ -841,6 +842,31 @@ component pss_top {""" + ONE + """
 }""", ["ff ffff 1 8", "ff 1 100", "pos"],
         covers=("EX-SEL.7", "EX-WIDTH.1")),
 }
+
+pyvm_xfail(CASES, 'pyvm: a 64-bit shift by 64 gives 1, want 0 (shift count taken mod 64)',
+           'a 64-bit shift by 64')
+pyvm_xfail(CASES, BC_SELECT,
+           'a bit select and the high half of 64 bits',
+           'a bit select with a run-time index',
+           'a part and a bit select assigned',
+           'a part select as a compound-assignment target',
+           'a part select read',
+           'a value built bit by bit',
+           'selects are unsigned in a wider context')
+pyvm_xfail(CASES, BC_DOMAIN,
+           'a domain-typed field')
+pyvm_xfail(CASES, BC_ARRAY,
+           'a part select of a field of an array element, compound-assigned',
+           'integer widths from constant expressions',
+           'selects of a package static constant',
+           'selects of a static constant')
+pyvm_xfail(CASES, BC_POW,
+           'a power with a run-time operand',
+           'precedence and associativity')
+pyvm_xfail(CASES, BC_IN,
+           'in with a negative range',
+           'in with run-time range bounds that cross',
+           'in with values and ranges')
 
 test_construct = define_tests(CASES)
 

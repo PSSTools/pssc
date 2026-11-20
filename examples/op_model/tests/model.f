@@ -1,0 +1,26 @@
+# The device model, in dependency order (../pss/files.f with its upstream src/pss/ prefix dropped).
+target_cfg.pss
+../pss/wb_dma_regs_pkg.pss
+../pss/wb_dma_cfg_pkg.pss
+../pss/wb_dma_types_pkg.pss
+../pss/wb_dma_ch_c.pss
+../pss/wb_dma_ch_c/functions/blocking_ops.pss
+../pss/wb_dma_ch_c/functions/check_completion.pss
+../pss/wb_dma_ch_c/functions/configure_channel.pss
+../pss/wb_dma_ch_c/functions/probe_status.pss
+../pss/wb_dma_ch_c/functions/set_auto_restart.pss
+../pss/wb_dma_ch_c/functions/set_software_pointer.pss
+../pss/wb_dma_ch_c/functions/stop_channel_start.pss
+../pss/wb_dma_ch_c/functions/transfer_list_start.pss
+../pss/wb_dma_ch_c/functions/transfer_single_start.pss
+../pss/wb_dma_ch_c/functions/wait_hint.pss
+../pss/wb_dma_ch_c/actions/blocking_ops_a.pss
+../pss/wb_dma_ch_c/actions/set_auto_restart_a.pss
+../pss/wb_dma_ch_c/actions/set_software_pointer_a.pss
+../pss/wb_dma_c.pss
+../pss/wb_dma_c/functions/configure_interrupt_routing.pss
+../pss/wb_dma_c/functions/notify_irq.pss
+../pss/wb_dma_c/functions/pause_engine.pss
+../pss/wb_dma_c/functions/read_descriptor_residual.pss
+../pss/wb_dma_c/functions/write_descriptor.pss
+../pss/wb_dma_c/actions/configure_interrupt_routing_a.pss

@@ -35,6 +35,8 @@ def _runs(model, seeds=range(40), footprints=True):
             # by another branch are excluded.
             for table in model.activations.values():
                 table.par.clear()
+            # The C engine derives footprints from the image: nothing to compare.
+            model.act_sweep_unmirrored = "footprints cleared in memory"
         lines = []
         run_model(model, seed=seed, solve_backend=NativeBlobBackend(),
                   out=lines.append)

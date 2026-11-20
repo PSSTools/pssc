@@ -350,6 +350,12 @@ class _BodyEmitter(BodyWalker):
     # Temporaries are declared at the top of the enclosing block, as hoisted
     # declarations are (`enter_block`).
 
+    def line_directive(self, path: str, line: int, pad: str) -> List[str]:
+        # `line N "file" 0: level 0, neither entering nor leaving an
+        # include. At column 0, like the C target's `#line`.
+        esc = path.replace("\\", "\\\\").replace('"', '\\"')
+        return [f'`line {line} "{esc}" 0']
+
     def render_stmt(self, s, ind: int) -> List[str]:
         """The statement, preceded by the calls hoisted out of it."""
         saved, self._prefix = self._prefix, []
@@ -391,6 +397,15 @@ class _BodyEmitter(BodyWalker):
         self._tmp_n += 1
         self._block[1].append(f"{self.pad(self._ind)}{sv_t} {name};")
         return name
+
+    def add_helpers(self, helpers) -> None:
+        """Make an exported action's functions (`EntryPoint.helpers`)
+        callable from its bodies, as this component's own tasks are."""
+        self.own_fn_names = self.own_fn_names | {h.name for h in helpers}
+        for h in helpers:
+            self.op_fns[h.name] = h
+            if h.returns is not None:
+                self.out_calls.add(h.name)
 
     def _is_value_task(self, call) -> bool:
         """Does ``call`` block and yield a value -- a task with an output
@@ -1061,6 +1076,28 @@ class _BodyEmitter(BodyWalker):
 
     # --- register-group offset folding ------------------------------------
 
+    def _sub_reg_group(self, e):
+        """The register group `self.<sub>...<group>` names, through
+        sub-components (an element of a sub-component array has the same
+        offsets as any other), else ``None``."""
+        names = []
+        while _dt_name(e) in ("ExprAttribute", "ExprSubscript"):
+            if _dt_name(e) == "ExprAttribute":
+                names.append(e.attr)
+            e = e.value
+        if _dt_name(e) != "TypeExprRefSelf" or len(names) < 2:
+            return None
+        names.reverse()
+        sub = {c.name: c for c in sub_components(self.comp)}.get(names[0])
+        for name in names[1:-1]:
+            if sub is None:
+                return None
+            sub = {c.name: c for c in sub_components(sub.dtype)}.get(name)
+        if sub is None:
+            return None
+        return {f.name: f.datatype for f in sub.dtype.fields
+                if field_is_reg_group(f)}.get(names[-1])
+
     def _fold_offset(self, call) -> Optional[str]:
         """``regs.get_offset_of_instance[_array](...)`` -> a folded expression.
 
@@ -1086,7 +1123,8 @@ class _BodyEmitter(BodyWalker):
         recv = fn.value
         recv_name = (fn.value.attr if _dt_name(recv) == "ExprAttribute"
                      and _dt_name(recv.value) == "TypeExprRefSelf" else None)
-        group = self.reg_group_of.get(recv_name)
+        group = (self.reg_group_of.get(recv_name) if recv_name is not None
+                 else self._sub_reg_group(recv))
         if group is None:
             raise OffsetFoldError(
                 f"'{which}' is a reg_group_c method; '{recv_name or self.expr(recv)}' "
@@ -2450,7 +2488,8 @@ def _construct_body(view, members, subs, consts=None) -> List[str]:
 
 
 def _initialize_def(comp, ctor, members, *, super_base=None, namer=None,
-                    ctor_names=None, ctx=None, consts=None) -> List[str]:
+                    ctor_names=None, ctx=None, consts=None,
+                    line_directives=False) -> List[str]:
     """The op-model constructor, as a method (design D3). Not virtual: every
     caller uses its member's declared type, so a derived class may declare
     one with another signature and still reach its base's through `super`.
@@ -2468,6 +2507,7 @@ def _initialize_def(comp, ctor, members, *, super_base=None, namer=None,
                           namer=namer, ctor_names=ctor_names, ctx=ctx,
                           consts=consts)
         be.super_base = super_base
+        be.line_directives = line_directives
         body = be.stmts(ctor.body, 3)
     elif ctor.args.args:
         base = mangle(ctor.args.args[0].arg)
@@ -2504,15 +2544,18 @@ def _inherited_ctor_def(comp, view, ctor, members) -> List[str]:
         + ["    endfunction", ""])
 
 
-def _emitter(fn, comp, members, base, namer, ctor_names, ctx, consts=None):
+def _emitter(fn, comp, members, base, namer, ctor_names, ctx, consts=None,
+             line_directives=False):
     be = _BodyEmitter(fn, comp, members, namer=namer, ctor_names=ctor_names,
                       ctx=ctx, consts=consts)
     be.super_base = base
+    be.line_directives = line_directives
     return be
 
 
 def _init_hook_defs(comp, view, base, members, subs, namer=None,
-                    ctor_names=None, ctx=None, consts=None) -> List[str]:
+                    ctor_names=None, ctx=None, consts=None,
+                    line_directives=False) -> List[str]:
     """The construction hooks this class has something to put in.
 
     `pss_init_down`/`pss_init_up` hold its `exec` blocks of that kind, in
@@ -2531,7 +2574,7 @@ def _init_hook_defs(comp, view, base, members, subs, namer=None,
         lines.append(f"    virtual function void pss_{kind}();")
         for fn in blocks:
             be = _emitter(fn, comp, members, base, namer, ctor_names, ctx,
-                          consts)
+                          consts, line_directives)
             lines += be.stmts(fn.body, 3)
         lines.append("    endfunction")
         lines.append("")
@@ -2586,7 +2629,8 @@ def _routine(fn, be, name: str, prefix: str, pad: str) -> List[str]:
 
 
 def _method_defs(comp, view, base, members, namer=None, ctor_names=None,
-                 ctx=None, consts=None) -> List[str]:
+                 ctx=None, consts=None,
+                 line_directives=False) -> List[str]:
     """The functions this class declares -- `solve` ones as SV functions,
     `target` and unqualified ones as tasks -- `virtual`: component
     functions are virtual (a base's code calling `f` runs the override). A
@@ -2598,7 +2642,7 @@ def _method_defs(comp, view, base, members, namer=None, ctor_names=None,
                                              FuncKind.EXPORT_SOLVE):
             continue
         be = _emitter(fn, comp, members, base, namer, ctor_names, ctx,
-                      consts)
+                      consts, line_directives)
         blank_line(lines)
         virt = "" if (fn.metadata or {}).get("static") else "virtual "
         lines += _routine(fn, be, mangle(fn.name), virt, "    ")
@@ -2634,18 +2678,28 @@ def _overrides_ok(comp, view, base, ctor_names=None) -> None:
 
 
 def _entry_defs(comp, entries, members, base, namer=None, ctor_names=None,
-                ctx=None, consts=None) -> List[str]:
+                ctx=None, consts=None,
+                line_directives=False) -> List[str]:
     """Exported actions (`--export-action`) that run in this component, each
     a task: no arguments, no result (`export_action.py`). The factory's
     method of the entry's name calls it (design D12). The base actions'
     bodies its `super;` reaches are private tasks of their own, so their
-    locals and a `return` in one stay their own."""
+    locals and a `return` in one stay their own; so are the action's
+    functions (`AF_PREFIX`), with their arguments and result."""
     lines: List[str] = []
     for entry in entries:
+        helpers = list(getattr(entry, "helpers", None) or ())
         for k, fn in enumerate(entry.functions):
             be = _emitter(fn, comp, members, base, namer, ctor_names, ctx,
-                          consts)
+                          consts, line_directives)
+            be.add_helpers(helpers)
             blank_line(lines)
+            if fn in helpers:
+                lines.append(f"    // Function `{fn.metadata['action_function']}`"
+                             f" of `{entry.action}`.")
+                lines += _routine(fn, be, fn.name, "protected ", "    ")
+                lines.append("")
+                continue
             if k == 0:
                 lines.append(f"    // Exported action `{entry.action}`.")
                 lines.append(f"    virtual task {ACTION_PREFIX}{entry.name}();")
@@ -2659,7 +2713,8 @@ def _entry_defs(comp, entries, members, base, namer=None, ctor_names=None,
     return lines
 
 
-def emit_component_class(model, comp, namer=None, consts=None) -> str:
+def emit_component_class(model, comp, namer=None, consts=None,
+                         line_directives=False) -> str:
     """One PSS component type as one SV class (design D1).
 
     It extends its PSS base's class, or the generated component base, and
@@ -2691,16 +2746,17 @@ def emit_component_class(model, comp, namer=None, consts=None) -> str:
     if own_ctor is not None:
         lines += _initialize_def(comp, own_ctor, members, super_base=base,
                                  namer=namer, ctor_names=ctor_names, ctx=ctx,
-                                 consts=consts)
+                                 consts=consts,
+                                 line_directives=line_directives)
     elif base is not None:
         lines += _inherited_ctor_def(comp, view, _ctor(comp, ctor_names),
                                      members)
     lines += _init_hook_defs(comp, view, base, members, subs, namer,
-                             ctor_names, ctx, consts)
+                             ctor_names, ctx, consts, line_directives)
     lines += _method_defs(comp, view, base, members, namer, ctor_names, ctx,
-                          consts)
+                          consts, line_directives)
     lines += _entry_defs(comp, model.entries_of(comp), members, base, namer,
-                         ctor_names, ctx, consts)
+                         ctor_names, ctx, consts, line_directives)
     while lines and lines[-1] == "":
         lines.pop()
     lines.append("  endclass")
@@ -2891,7 +2947,7 @@ def emit_factory(model) -> str:
 # --- package functions --------------------------------------------------------
 
 def emit_package_functions(functions, ctx=None, ctor_names=None,
-                           consts=None) -> str:
+                           consts=None, line_directives=False) -> str:
     """Package-scope functions the model calls (`pkg_functions.py`), as
     `automatic` package tasks and functions -- automatic, because a PSS
     function may recurse. A package function has no component, so one that
@@ -2901,6 +2957,7 @@ def emit_package_functions(functions, ctx=None, ctor_names=None,
     for fn in functions:
         be = _BodyEmitter(fn, None, {}, ctor_names=ctor_names, ctx=ctx,
                           consts=consts)
+        be.line_directives = line_directives
         text = _routine(fn, be, pkg_function_name(fn), "automatic ", "  ")
         if any(f"{IMP_MEMBER}." in l for l in text[1:]):
             raise ValueError(

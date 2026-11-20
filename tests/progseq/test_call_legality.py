@@ -545,7 +545,8 @@ def test_re_registering_needs_replace(legality_sandbox):
 
 
 def test_the_builtins_registered_through_the_public_call():
-    assert set(registered_targets()) == {"op-model-sv", "op-model-c",
+    assert set(registered_targets()) == {"op-model-sv", "op-model-sv-vm",
+                                         "op-model-c",
                                          "op-model-cpp", "op-model-py"}
 
 

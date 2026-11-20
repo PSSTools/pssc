@@ -25,6 +25,7 @@ from typing import Dict, FrozenSet, List, Optional, Set
 from ..diag import at
 from . import pkg_functions as pf
 from .call_legality import Ctx, Outcome, classify, core_function
+from .export_action import AF_PREFIX
 from .progseq_model import (FuncKind, INIT_EXEC_KINDS, exec_kind, func_kind,
                             is_reg_group, _dt_name, sub_components)
 from .ir_walk import NON_CHILD_FIELDS
@@ -122,6 +123,11 @@ def ops_for_call(comp, func, ops: FrozenSet[str],
         return frozenset()
     if (_dt_name(func) == "ExprAttribute"
             and _dt_name(getattr(func, "value", None)) == "TypeExprRefSelf"):
+        if func.attr.startswith(AF_PREFIX):
+            # An exported action's function, rendered beside the entry
+            # (`export_action.EntryPoint.helpers`); `_pss_` names are the
+            # generator's, so no call the model wrote looks like this.
+            return frozenset({func.attr})
         return own_ops(comp, ctor_names) if comp is not None else frozenset()
     return ops
 

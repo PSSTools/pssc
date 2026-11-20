@@ -15,6 +15,7 @@ See `_matrix` for what a case is and how it is run.
 from __future__ import annotations
 
 from ._matrix import Case, define_tests, on, ONE, Refused
+from ._matrix import pyvm_xfail, BC_PACKED_STRUCT
 
 NOT_YET = "write-struct-plan.md: read_struct/write_struct not lowered yet"
 LATER = on(("cpp", "py"), NOT_YET)
@@ -158,5 +159,13 @@ component pss_top {""" + HANDLE + """
 }""", Refused([r"'b' is 12 bits", r"group it"]),
         xfail=LATER, covers=("LIB-MEM", "DT-PACK")),
 }
+
+pyvm_xfail(CASES, BC_PACKED_STRUCT,
+           '8, 16 and 64 bits are one access',
+           'read_struct of a descriptor, then its fields',
+           'sizes that are not 8/16/32/64 bits',
+           'through a struct parameter and a const one',
+           'write_struct of a 128-bit descriptor, member by member',
+           'write_struct of a packed struct')
 
 test_construct = define_tests(CASES)

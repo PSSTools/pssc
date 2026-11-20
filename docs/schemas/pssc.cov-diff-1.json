@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pssc.cov-diff/1",
+  "title": "pssc cov diff --json",
+  "description": "The statements and branch arms of a coverage report (pssunit.coverage/1 JSON or a pssc test --cov .cdb) with 0 hits whose source line was added or changed in the working tree since a git revision (git diff -U0 BASE). Gaps have the pssc.cov-gaps/1 shape. Fields not listed here may be added; readers ignore them.",
+  "type": "object",
+  "required": ["schema", "report", "base", "changed", "summary", "gaps"],
+  "properties": {
+    "schema": {"const": "pssc.cov-diff/1"},
+    "report": {"type": "string", "description": "The report path as given."},
+    "base": {"type": "string", "description": "The git revision compared with (--base)."},
+    "changed": {"type": "array", "items": {"type": "string"}, "description": "The files with added or changed lines, relative to the git root. Untracked files are not included."},
+    "summary": {
+      "type": "object",
+      "description": "Gaps per kind (register and bin are always 0: they have no source line).",
+      "properties": {
+        "statement": {"type": "integer"}, "arm": {"type": "integer"},
+        "register": {"type": "integer"}, "bin": {"type": "integer"}
+      }
+    },
+    "gaps": {"type": "array", "items": {"$ref": "pssc.cov-gaps/1#/$defs/gap"}}
+  }
+}

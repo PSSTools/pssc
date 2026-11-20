@@ -136,15 +136,16 @@ _EXPECTED = (["W 40000000 1"] + ["R 40000004"] * 3
 _EXPORT_RUN = "\nextend component pss_top { export target function run; }\n"
 
 
-def _build_and_run(tmp_path, model: str, tb: str) -> str:
+def _build_and_run(tmp_path, model: str, tb: str, **opts) -> str:
     """Generate ``model`` rooted at `pss_top`, with its `run` exported, build
-    it with ``tb``, run it, and return what it printed."""
+    it with ``tb``, run it, and return what it printed. ``opts`` are more
+    generator options (`line_directives=True`)."""
     src = tmp_path / "model.pss"
     src.write_text(model + _EXPORT_RUN)
     out = tmp_path / "gen"
     ns = argparse.Namespace(progseq_root="pss_top",
                             progseq_package="pss_top_pkg",
-                            output_dir=str(out))
+                            output_dir=str(out), **opts)
     res = driver.compile([str(src)], target="op-model-sv", opts=ns)
     (out / "tb.sv").write_text(tb)
 

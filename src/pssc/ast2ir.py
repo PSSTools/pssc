@@ -719,6 +719,11 @@ class AstToIrTranslator:
         from . import reg_rmw
         reg_rmw.reduce(ctx)
 
+        # Functions in actions (a pssc extension): each derived action gets
+        # the ones it inherits; an unimplemented abstract one is an error.
+        from .targets import action_inherit
+        action_inherit.complete(ctx)
+
         _mark_offset_functions(ctx)
 
         return ctx
@@ -1443,7 +1448,7 @@ class AstToIrTranslator:
         'ConstraintBlock':            ('_body_constraint',     _ALL_BODIES),
         'GenericConstraintDeclValue': ('_body_generic_value',  _ALL_BODIES),
         'Covergroup':                 ('_body_covergroup',     {'action', 'struct'}),
-        'FunctionDefinition':         ('_body_function',       {'component'}),
+        'FunctionDefinition':         ('_body_function',       {'component', 'action'}),
         'ExportFunction':             ('_body_export_function', {'component'}),
         'ExportAction':               ('_body_export_action',  {'component'}),
         'Action':                     ('_body_action',         {'component'}),
@@ -1457,8 +1462,9 @@ class AstToIrTranslator:
         # A name lookup is the linker's; ast2ir reads what it resolved.
         'PackageImportStmt':          (None,                   _ALL_BODIES),
         # A declaration only: the definition is built in or imported, and a
-        # call to it is resolved by the linker at the call.
-        'FunctionPrototype':          (None,                   _ALL_BODIES),
+        # call to it is resolved by the linker at the call. In an action (a
+        # pssc extension) it is an abstract function (`_body_prototype`).
+        'FunctionPrototype':          ('_body_prototype',      _ALL_BODIES),
         # The implicit `comp` handle; the action's component is recorded
         # as ctx.parent_comp_names when the action is registered.
         'FieldCompRef':               (None,                   {'action'}),
@@ -1644,7 +1650,31 @@ class AstToIrTranslator:
     def _body_function(self, ctx, child, target_ir, qualified_name):
         func = self._translate_function(ctx, child)
         if func:
+            if self._body_kind(target_ir) == 'action':
+                # not a constraint block, which shares `functions` (pss_lower)
+                func.metadata["action_function"] = True
             target_ir.functions.append(func)
+
+    def _body_prototype(self, ctx, child, target_ir, qualified_name):
+        # `function void act();` in an action: abstract, for a derived action
+        # to define (targets/action_inherit.py). Elsewhere, nothing to lower.
+        if self._body_kind(target_ir) != 'action':
+            return
+        name_node = child.getName()
+        func_name = (name_node.getId() if isinstance(name_node, pss_ast.ExprId)
+                     else str(name_node))
+        return_type, params, defaults, const_params, vararg, dirs = \
+            self._translate_signature(ctx, child, func_name, child)
+        ir_func = ir.Function(
+            name=func_name,
+            args=ir.Arguments(args=params, vararg=vararg, defaults=defaults),
+            body=[], returns=return_type, is_async=False,
+            doc=ast_doc(child), loc=self._loc(child),
+            annotations=self._annotations(ctx, child, child))
+        self._signature_metadata(ir_func, const_params, dirs)
+        ir_func.metadata["abstract"] = True
+        ir_func.metadata["action_function"] = True
+        target_ir.functions.append(ir_func)
 
     def _body_export_function(self, ctx, child, target_ir, qualified_name):
         self._record_export(ctx, child, qualified_name)
@@ -1852,6 +1882,7 @@ class AstToIrTranslator:
         if super_name == "reg_c" and super_elem is not None:
             reg = self._translate_reg_c(ctx, super_elem)
             reg.name = qualified_name
+            reg.annotations = self._annotations(ctx, component)
             ctx.add_type(qualified_name, reg)
             if namespace_prefix:
                 ctx.add_type(comp_name, reg)
@@ -2147,6 +2178,7 @@ class AstToIrTranslator:
             
         # Create IR class for action
         action_ir = ir.DataTypeClass(name=action_name, super=None)
+        action_ir.loc = self._loc(action)
         action_ir.annotations = self._annotations(ctx, action)
         
         # Register under qualified name if nested in a component, simple name otherwise

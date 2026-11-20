@@ -1,0 +1,72 @@
+import std_pkg::*;
+import wb_dma_types_pkg::*;
+
+extend component wb_dma_ch_c {
+
+    // Poll whether the operation running on this channel has finished.
+    //
+    // The non-blocking half of every end-to-end operation, present on every
+    // profile -- this is what firmware polls. Completes immediately: one
+    // register read, one answer. It never suspends and never spins; the caller
+    // supplies the loop.
+    //
+    // **The contract is narrower than it looks.**
+    //
+    // 1. An operation must have been STARTED on this channel, by one of
+    //    ``transfer_single_start()`` or ``transfer_list_start()``.
+    // 2. Once this returns anything other than ``WB_DMA_PENDING``, the operation
+    //    is over. DO NOT CALL AGAIN until the next ``*_start()``.
+    //
+    // Both rules exist because reading CHn_CSR is destructive: ERR and the three
+    // interrupt-source bits are read-to-clear, so this call CONSUMES the
+    // completion it reports. A second call after DONE does not re-report DONE --
+    // it reads a channel whose status has already been taken and answers PENDING
+    // forever. That failure is invisible from the device side, because a stale
+    // read and a live one look identical.
+    //
+    // **How the guard works.** :pss:field:`inflight` holds one token for the
+    // life of an operation. This takes it, reads, and puts it back only if the
+    // answer was PENDING:
+    //
+    // ``try_get`` fails
+    //     Rule 1 or rule 2 has been broken. Report it.
+    // ``WB_DMA_PENDING``
+    //     Restore the token; the operation continues.
+    // ``WB_DMA_DONE`` / ``WB_DMA_ERROR``
+    //     Leave it taken; the operation is over.
+    //
+    // Take-and-restore rather than a peek because ``channel_c`` has no peek
+    // (§21.9.1 offers get/put/try_get/try_put and nothing else). It is safe
+    // under the one-operation-per-channel rule that already governs this model:
+    // the polling thread is the only one entitled to that token.
+    //
+    // .. note::
+    //    "Report it" is weaker than it should be. This stdlib has no runtime
+    //    ``error()``, so a violation is a message at ``NONE`` verbosity -- the
+    //    loudest thing available, and still only a message. A runtime that wants
+    //    it fatal should bind the model's message sink to one; the text is
+    //    deliberately distinctive so it can be matched. Returning
+    //    ``WB_DMA_ERROR`` was considered and rejected: it would make a
+    //    PROGRAMMING error indistinguishable from a DEVICE error. It answers
+    //    PENDING instead, because the state needed for an honest answer was
+    //    consumed by whoever broke the rule.
+    target function wb_dma_status_e check_completion() {
+        wb_dma_status_e status;
+        bit             tok;
+
+        if (!inflight.try_get(tok)) {
+            message(NONE, "wb_dma: check_completion() with no operation in progress on this channel -- either no *_start() was called, or a previous completion was already consumed");
+            return WB_DMA_PENDING;
+        }
+
+        status = probe_status();
+
+        if (status == WB_DMA_PENDING) {
+            // Still running: hand the token back. try_put cannot fail -- this
+            // is the only holder, and it was just emptied.
+            inflight.try_put(tok);
+        }
+
+        return status;
+    }
+}

@@ -1,0 +1,13 @@
+import pssunit_pkg::*;
+import wb_dma_types_pkg::*;
+
+// A fixture derived from wb_dma_fx_c: the base binds the device, this one
+// then routes every channel's interrupts to bank A, as each companion
+// operation test does first. Tests under it start from a routed device.
+component wb_dma_routed_fx_c : wb_dma_fx_c {
+
+    @pssunit_pkg::setup
+    function void route_all() {
+        dma.configure_interrupt_routing(WB_DMA_INT_A, 0xf);
+    }
+}

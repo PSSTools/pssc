@@ -1,0 +1,345 @@
+# yaml-language-server: $schema=https://dv-flow.github.io/flow.dv.schema.json
+fragment:
+  name: pss
+  # The DEVICE operation model, and the programming APIs generated from it.
+  #
+  # `docs/wb_dma_operation_model.md` is the specification; `src/pss/*` is its
+  # executable form; everything below is a projection of that one source. The
+  # device's register offsets, address arithmetic and operation bodies are
+  # stated once, here, and reach the testbench as generated code -- see
+  # `docs/op-model-export-design.md`.
+  tasks:
+
+  # ---- The source, in dependency order -----------------------------------------
+  # `pss.FileSet`, not `std.FileSet`. Same parameters; the difference is the
+  # ORDER. A glob yields alphabetical order, and alphabetical order of this tree
+  # leaves 78 references unresolved while the front end still reports
+  # `0 errors` and exits 0 (pssparser D3, `docs/pssparser-defects-2026-08-02.md`).
+  #
+  # Nothing here lists a file. The order comes from the layout -- `*_pkg` files
+  # and directories are packages, `*_c.pss` plus `*_c/` is a component and its
+  # attachments -- so adding a file to `wb_dma_ch_c/functions/` is the whole
+  # change. `strict: true` because this tree follows the convention exactly:
+  # anything that would make the order guessable-but-not-derived should fail
+  # here rather than be described in a log nobody reads.
+  #
+  # This task is the only statement of the selection. Anything outside the
+  # build that needs the same files -- a command line, pssparser's corpus gate
+  # -- reads it with `pss-order --from-flow src/pss --task src` rather than
+  # restating the root, the profile and the `exclude:` below. There used to be
+  # a generated `src/pss/files.f` for that; it went stale when the model was
+  # renamed, and a derivation cannot.
+  #
+  # `profile: total-topological` checks this tree against the STRICTEST
+  # front-end behaviour measured so far: a tool that rejects the whole model
+  # the moment a file names something not yet declared -- root scope included,
+  # at two files -- and returns exit status 0 while doing it. It does not
+  # change the order (there is one order). It adds the checks that class of
+  # tool makes load-bearing: `strict` is implied, and PSS that tool cannot
+  # compile at all is reported with a file and line here. Keeping this model
+  # inside that envelope is what makes it portable rather than merely working.
+  # ONE fileset, both profiles. There is no `exclude:` and no second copy of
+  # anything: the device tree states the model once, and the target says what
+  # kind of machine it is.
+  #
+  # `wb_dma_cfg_pkg.pss` derives `HAS_EVENT_WAIT` from `target_cfg_pkg`, which
+  # pssc injects ahead of these sources -- `op-model-sv` publishes
+  # HAVE_EVENT_WAIT=true, and a task that wants the other answer says so with
+  # `target_cfg:` rather than by selecting different files. See
+  # `docs/target-cfg-contract.md`.
+  #
+  # When NOTHING injects (a bare `pssparser` run, or another tool) there is no
+  # `target_cfg_pkg` at all, `compile has` on it is false, and the adapter
+  # defaults to the richer model. No stub declaration is carried here.
+  #
+  # NOT ALL OF THE MODEL IS HERE. `wb_dma_regs_pkg` is GENERATED IN FULL from
+  # src/rdl by `reg-model-pss` and has no hand-written part: every register
+  # type, field struct and register group the components below program the
+  # device through comes from the RDL. Nothing under this tree declares that
+  # package.
+  #
+  # So it must be COMPILED FIRST, which is why the consumers below say
+  # `needs: [reg-model-pss, src]` and not `[src]`. `needs` order is compile
+  # order, and this fileset cannot express the dependency itself: it derives
+  # order from the layout of this directory, and the generated file is not in
+  # it.
+  #
+  # What did NOT move into the RDL is in `wb_dma_types_pkg.pss` -- the channel
+  # count, the MMIO window size and the descriptor-record geometry. Those are
+  # parameters of the DEVICE rather than of its register map, so a generated
+  # register package is the wrong place for them regardless of whether the
+  # exporter could emit them.
+  - name: src
+    uses: pss.FileSet
+    with:
+      root: wb_dma_c
+      profile: total-topological
+      # Declared by `reg-model-pss`, not by anything under this directory. The
+      # tree imports it from a dozen files, so without this the profile's
+      # unresolved-import check -- correctly -- calls every one of them a
+      # missing file. Naming it here keeps that check live for every OTHER
+      # import, which is the alternative `strict: false` would have thrown away.
+      provided: [wb_dma_regs_pkg]
+
+  # ---- The same device, with no event to wait on --------------------------------
+  # The firmware-facing profile. It has THE WHOLE OPERATION SURFACE -- the
+  # configuration operations, the three *_start() functions, check_completion(),
+  # wait_completion() and all three end-to-end operations. What it does not have
+  # is notify_irq() and a suspending wait: wait_hint() takes its `yield` branch,
+  # so every wait is a spin.
+  #
+  # That is a recent change and it is the point of this task now. This profile
+  # used to be a strictly smaller model -- no end-to-end operations at all --
+  # because the flag asked "can this runtime suspend a thread?" and the whole
+  # waiting layer was gated on the answer. Scoped to event waits, the two
+  # profiles differ in one function BODY, so `check-nonblocking` compiles the
+  # same operations `check` does and the export API is profile-independent.
+  #
+  # SAME SOURCES AS `check`. The only difference is the one line below: this
+  # task tells the model it is being compiled for a target with no way to wait
+  # on an event. That is the whole point of the target_cfg contract -- the
+  # profile is a property of the target, so it is stated as one, not as a
+  # different set of files. `pssc.Check` names no target, so it takes the
+  # constants directly.
+  #
+  # WHAT IT BUYS: that the polling branch cannot rot. Every operation here is
+  # compiled in its spin form, so a change that only works when there is a
+  # `wake` channel to get from fails here rather than in a firmware build
+  # nobody runs on this machine.
+  #
+  # It does NOT exist to give the arm-and-poll core its own regression. It does
+  # not need one: every end-to-end operation is a *_start() plus a wait over the
+  # same probe_status(), so the SystemVerilog simulations already drive the core
+  # on every run.
+  - name: check-nonblocking
+    uses: pssc.Check
+    needs: [reg-model-pss, src]
+    with:
+      order_check: false
+      # Both constants, not just the one this check is about: a provider that
+      # declares TARGET_CFG_VERSION declares every constant in that version,
+      # and pssc enforces it. That obligation is what lets the model reference
+      # a flag directly instead of guarding each one.
+      target_cfg: ["HAVE_EVENT_WAIT=false", "HAVE_RUNTIME_SOLVER=false"]
+
+  # ---- Does it still link? ------------------------------------------------------
+  # Elaborate-only, no codegen: the cheap gate that catches a broken model
+  # before any of the projections below run.
+  #
+  # `order_check` stays OFF until pssparser D3 is fixed: the real model is
+  # order-dependent today (pinned by pssc's
+  # `tests/progseq/test_op_model_order.py`), so turning it on would fail every
+  # build for a defect the `src` task above already works around. Turn it on
+  # the day that xfail xpasses.
+  - name: check
+    uses: pssc.Check
+    needs: [reg-model-pss, src]
+    with:
+      order_check: false
+
+  # ---- The SystemVerilog programming API ----------------------------------------
+  # `wb_dma_c_pkg.sv` (the export API + factory) plus the bundled
+  # `pssc_reg_pkg.sv` it builds on. `classify_outputs` tags both as
+  # systemVerilogSource with their directory as an incdir, so a downstream
+  # SimLib/SimImage picks them up with no extra wiring. Compile order is
+  # pssc_reg_pkg.sv -> wb_dma_c_pkg.sv -> wb_dma_env_pkg.sv, which is the order
+  # the fileset carries.
+  #
+  # pssc-debug: built by THIS repo's pssc (src/pss/pssvm_gen.py), target
+  # `op-model-sv-vm --with-gen`: the generated model and the pyvm facade in one
+  # package, picked at run time by `wb_dma_c_root_sel::create` from
+  # `+pss_impl=gen|vm` (default gen). `pssvm_pkg.sv` comes first in the output.
+  - root: op-model-sv
+    shell: pytask
+    run: pssvm_gen.OpModelSvVm
+    needs: [check]
+    with:
+      root: { type: str, value: wb_dma_c }
+      package_name: { type: str, value: wb_dma_c_pkg }
+      enum_items: { type: str, value: verbatim }
+      dpi: { type: bool, value: true }
+
+  # pssc-debug: the pyvm image of the same model (`pssc build --api --image`),
+  # for the `+pss_impl=vm` cells (`dfm run uvm.tests-vm`). Its output is the
+  # SimRunArgs `+pss_impl=vm +pss_img=<rundir>/wb_dma_c.zbc`.
+  - root: op-model-vm-img
+    shell: pytask
+    run: pssvm_gen.PssvmImage
+    needs: [reg-model-pss, src]
+    with:
+      root: { type: str, value: wb_dma_c }
+
+  # pssc-debug: the same package for the `native` build (pssc's C engine over
+  # DPI-C; `PSSVM_DPI` defined, the engine library linked, no pyhdl-if and so
+  # no Python in the simulator), and its image with `+pss_impl=native`
+  # (`dfm run uvm.tests-native`).
+  - root: op-model-sv-native
+    shell: pytask
+    run: pssvm_gen.OpModelSvVm
+    needs: [check]
+    with:
+      root: { type: str, value: wb_dma_c }
+      package_name: { type: str, value: wb_dma_c_pkg }
+      enum_items: { type: str, value: verbatim }
+      dpi: { type: bool, value: false }
+      native: { type: bool, value: true }
+
+  - root: op-model-native-img
+    shell: pytask
+    run: pssvm_gen.PssvmImage
+    needs: [reg-model-pss, src]
+    with:
+      root: { type: str, value: wb_dma_c }
+      impl: { type: str, value: native }
+
+  # ---- The C firmware driver ----------------------------------------------
+  # The same model, projected to C for a bare-metal target: one struct per
+  # component with the four channels inline, baked register accessors with every
+  # offset folded, and no allocator below the root.
+  #
+  # THIS IS THE SAME OPERATION SURFACE THE UVM ENVIRONMENT DRIVES, not a subset.
+  # The end-to-end layer (transfer_single, wait_completion, stop_channel) is
+  # present here exactly as it is in SystemVerilog; what differs is one function
+  # body, wait_hint(), which polls with `yield` instead of suspending on the
+  # `wake` channel. That is what HAVE_EVENT_WAIT=false buys and all it costs --
+  # see src/pss/wb_dma_ch_c/functions/wait_hint.pss.
+  #
+  # `notify_irq` is the one operation absent from this build, and correctly: it
+  # POSTS the event, so it only exists where there is one.
+  #
+  # `lifecycle: static` because this is the firmware profile and firmware has no
+  # heap: the caller writes `static wb_dma_t dma; wb_dma_init(&dma, BASE);` and
+  # the generated code references no allocator at all. The default (`malloc`)
+  # additionally emits wb_dma_create()/_destroy(), which is right for a host
+  # program and is the one thing that would pull an allocator into the image.
+  #
+  # `link_style: mmio` for the same reason: on the part, the registers ARE
+  # memory. The seam forms a pointer from the address and dereferences it
+  # (pssc_mem_ptr.h), so a register access compiles to the load or store it is,
+  # and the platform supplies NOTHING -- no bus object to build, no context to
+  # thread through every call, no indirect call per access. It also changes the
+  # signatures the caller sees: `wb_dma_init(&dma, BASE)`, with no seam
+  # argument, and the whole API arrives as static inline in wb_dma.h (there is
+  # no wb_dma.c to compile).
+  #
+  # `vtable` is what a SIMULATION wants, where a register access has to become a
+  # transaction on somebody's sequencer, and it costs the caller a `pssc_mem_if`
+  # to populate and pass to every _init(). Firmware should not pay for that
+  # indirection to reach a device it is memory-mapped to. The choice is a
+  # property of the TARGET, which is why it is stated here and not in the model:
+  # the same src/pss compiles to both.
+  - root: op-model-c
+    uses: pssc.OpModelC
+    needs: [check]
+    with:
+      root: wb_dma_c
+      prefix: wb_dma
+      link_style: mmio
+      lifecycle: static
+      core_copy: true
+
+  # ---- The C++ programming API --------------------------------------------
+  # The same model again, projected to C++ for a host program or a C++-side
+  # simulation harness.
+  #
+  # This task used to be a comment saying it could not exist: `pssc.OpModelCpp`
+  # had no channel runtime, so `wb_dma_ch_c`'s `inflight` guard had nothing to
+  # lower to. `share/cpp/pssc_chan.hpp` closed that gap, and it is TYPED --
+  # `pssc::chan1<bool> inflight` rather than the C runtime's one struct with a
+  # `uint64_t` payload -- so the member and the local a `try_get` drains into
+  # are checked against each other.
+  #
+  # NO `target_cfg` HERE, and that is the point. The C++ runtime implements the
+  # non-blocking end of `channel_c` only; `get`/`put` still need a scheduler it
+  # does not have. But the target already publishes HAVE_EVENT_WAIT=false as
+  # its own answer, so wait_hint() takes its `yield` branch and the one
+  # blocking call in the model is never reached. Stating the flag here would
+  # restate what the target already knows -- and would go stale the day it
+  # grows a scheduler.
+  #
+  # SAME OPERATION SURFACE as C, for the same reason: the profiles differ in
+  # one function body, not in which operations exist. `notify_irq` is the one
+  # absent operation, as in C, because it POSTS the event.
+  #
+  # There is no `link_style` or `lifecycle` to choose. C++ dispatches register
+  # access through a `pssc::mem_if` the caller subclasses -- virtual, always --
+  # which is what a host program or a harness wants and is why the firmware
+  # profile is the C one. `dispatch: virtual` is the default and the only
+  # implemented value; it is not stated here for that reason.
+  - root: op-model-cpp
+    uses: pssc.OpModelCpp
+    needs: [check]
+    with:
+      root: wb_dma_c
+      namespace: wb_dma
+      core_copy: true
+
+  # ---- The Python programming API, polling profile -------------------------
+  # The same model again, as one importable module. `wb_dma.py` plus the
+  # `pssc_rt.py` it is driven through.
+  #
+  # SAME PROFILE AS C AND C++: the target publishes HAVE_EVENT_WAIT=false, so
+  # wait_hint() spins and notify_irq() is absent. Nothing is stated here for
+  # that -- the target's own answer is the right one, exactly as in the C++ task
+  # above.
+  #
+  # What this projection adds that the other three cannot is that IT RUNS HERE.
+  # A generated C driver needs a cross-compiler and a part; a generated SV
+  # package needs a simulator. This one is `import wb_dma` and a `MemoryBus`,
+  # which makes it the cheapest place to ask a question about the model's
+  # BEHAVIOUR -- is the folded offset right, does the completion poll terminate,
+  # does the read-modify-write preserve what it should. Those addresses come
+  # from the same walk the C accessors are folded from, so an offset wrong here
+  # is wrong in four languages.
+  #
+  # The platform seam is a `typing.Protocol` the generated module declares for
+  # itself, listing exactly what these bodies call. Nothing has to inherit it,
+  # so a cocotb driver, a socket client or a pure-Python device model satisfies
+  # it by having the methods.
+  - root: op-model-py
+    uses: pssc.OpModelPy
+    needs: [check]
+    with:
+      root: wb_dma_c
+      module: wb_dma
+      await_style: sync
+      core_copy: true
+
+  # ---- The Python programming API, event-wait profile ----------------------
+  # THE SAME SOURCES, told they are being compiled for a target that can
+  # suspend. `await_style: async` makes every operation an `async def`, and the
+  # target publishes HAVE_EVENT_WAIT=true to match -- so wait_hint() takes its
+  # `wake.get()` branch and notify_irq() exists to release it.
+  #
+  # WHY BOTH FORMS ARE BUILT, when the other three languages get one task each.
+  # Until this task existed, `op-model-sv` was the ONLY projection compiling the
+  # event-wait branch of the model. That branch is half of what
+  # `wait_hint()` exists to select, and the only regression covering it needed a
+  # simulator -- so a change that broke it failed late, on the machine least
+  # likely to be running. This is the mirror of `check-nonblocking` above: that
+  # task keeps the polling branch from rotting, and this one keeps the blocking
+  # branch from rotting, in-process and in seconds.
+  #
+  # It is not a restyling of the task above. A `compile if` on HAVE_EVENT_WAIT
+  # selects a different function body, so these two tasks compile DIFFERENT
+  # MODELS from one source -- which is the whole target_cfg contract, and the
+  # reason `await_style` is a target option rather than a naming style.
+  #
+  # `core_copy` brings `pssc_rt_async.py` as well, whose depth-1 channel
+  # actually suspends. Its event is the PLATFORM's, never one the generated
+  # module picks: `asyncio.Event` and `cocotb.triggers.Event` both satisfy the
+  # three methods it needs, which is what lets this module drive a cocotb
+  # simulation without being regenerated.
+  #
+  # `module: wb_dma_async` because both tasks generate into their own output
+  # directory but a reader with both on a path should not have two different
+  # `wb_dma` to disambiguate -- and the name is the one thing that says which
+  # form an importer got.
+  - root: op-model-py-async
+    uses: pssc.OpModelPy
+    needs: [check]
+    with:
+      root: wb_dma_c
+      module: wb_dma_async
+      await_style: async
+      core_copy: true

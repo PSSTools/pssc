@@ -123,6 +123,8 @@ def _registers(comp) -> List[Dict[str, Any]]:
             "path": list(acc.path),
             "offset": acc.const_off,
             "strides": list(acc.strides),
+            "counts": list(acc.counts),
+            "array_at": list(acc.array_at),
             "bits": acc.value_bits,
             "access_width": acc.prim_bits,
             "access": acc.access,

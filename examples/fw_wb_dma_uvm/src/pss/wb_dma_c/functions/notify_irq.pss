@@ -1,0 +1,16 @@
+// notify_irq -- Environment event notification
+// Only called from outside
+import wb_dma_cfg_pkg::*;
+
+extend component wb_dma_c {
+
+    compile if (wb_dma_cfg_pkg::HAS_EVENT_WAIT) {
+
+        target function void notify_irq() {
+            foreach (ch[i]) {
+                ch[i].wake.try_put(1);
+            }
+        }
+
+    }
+}

@@ -341,6 +341,7 @@ def _register_builtins() -> None:
     from .sv_tgt import SvTarget
     from .sv_pure_tgt import SvPureTarget
     from .progseq_tgt import ProgSeqTarget
+    from .sv_vm import SvVmTarget
     from .c_progseq_tgt import CProgSeqTarget
     from .cpp_progseq_tgt import CppProgSeqTarget
     from .py_progseq_tgt import PyProgSeqTarget
@@ -355,6 +356,7 @@ def _register_builtins() -> None:
     # one family and sort together; the former `<kind>-progseq` names are kept
     # as aliases so existing command lines and flows keep working.
     register(ProgSeqTarget(), aliases=("progseq", "sv-progseq"))
+    register(SvVmTarget())
     register(CProgSeqTarget(), aliases=("progseq-c", "c-progseq"))
     register(CppProgSeqTarget(), aliases=("progseq-cpp", "cpp-progseq"))
     register(PyProgSeqTarget(), aliases=("py-progseq",))

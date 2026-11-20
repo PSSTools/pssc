@@ -113,6 +113,13 @@ class COpModelBackend:
         from .lower_progseq import CBodyEmitter
         return cls.body_emitter_cls or CBodyEmitter
 
+    @property
+    def line_directives(self) -> bool:
+        """`--line-directives`: each body statement is preceded by a `#line`
+        naming its PSS source line. Read by the body emitters (`OpCtx`)."""
+        return bool(getattr(getattr(self, "settings", None),
+                            "line_directives", False))
+
     # -- derived state ------------------------------------------------------
 
     @overridable(since='0.1', stability='provisional')

@@ -5,6 +5,7 @@ See `_matrix` for what a case is and how it is run.
 from __future__ import annotations
 
 from ._matrix import Case, define_tests, on, ONE, Refused
+from ._matrix import pyvm_xfail, BC_CALL_TARGET
 
 W64 = ("W64: Verilator reads `$signed(q.x)` of a non-constant packed struct "
        "from the wrong bits (q.x prints 67, 0x43, the whole value)")
@@ -171,5 +172,12 @@ component pss_top {""" + ONE + """
                "sv": W64},
         covers=("LIB-CHAN.1", "LIB-CHAN.4", "LIB-CHAN.5")),
 }
+
+pyvm_xfail(CASES, None,
+           'a channel of depth 3',
+           'try_get into a struct field and an array element')
+pyvm_xfail(CASES, BC_CALL_TARGET,
+           'an array of channels',
+           'channels of a struct, an enum and a bool')
 
 test_construct = define_tests(CASES)

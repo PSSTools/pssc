@@ -42,7 +42,7 @@ CC = available_c_compilers()
 CXX = available_cpp_compilers()
 VERILATOR = shutil.which("verilator")
 
-TARGETS = ("c", "cpp", "py", "sv")
+TARGETS = ("c", "cpp", "py", "sv", "pyvm")
 
 _PRELUDE = "import std_pkg::*;\nimport addr_reg_pkg::*;\n"
 
@@ -52,7 +52,10 @@ _EXPORT_RUN = "\nextend component pss_top { export target function run; }\n"
 
 def compile_model(tmp_path, pss, target, **opts):
     """Generate ``pss`` for ``op-model-<target>``; return the output dir.
-    ``opts`` are further option attributes (``progseq_manifest=...``)."""
+    ``opts`` are further option attributes (``progseq_manifest=...``).
+    For ``pyvm`` and ``native``, the lowered bytecode model (`_lower_pyvm`)."""
+    if target in ("pyvm", "native"):
+        return _lower_pyvm(tmp_path, pss)
     p = tmp_path / "m.pss"
     p.write_text(_PRELUDE + pss + (_EXPORT_RUN if target == "sv" else ""))
     out = tmp_path / target
@@ -126,6 +129,8 @@ def available(target):
     return {"c": "" if CC else "no C compiler",
             "cpp": "" if CXX else "no C++ compiler",
             "py": "",
+            "pyvm": "",
+            "native": "" if CC else "no C compiler",
             "sv": "" if VERILATOR else "verilator not on PATH"}[target]
 
 
@@ -158,6 +163,156 @@ def _run_py(tmp_path, pss, args=(), mem=None):
         tail = [f"{kind}: {e}"]
     return [d if k == "message" else f"{k} {w} 0x{a:x} 0x{d:x}"
             for k, w, a, d in bus.log] + tail
+
+
+# --- pyvm ---------------------------------------------------------------------
+# No generated code: the model lowered to bytecode and run by `pssc.testing.vm`
+# (what `pssc test` runs on), `run()` called on the root after `initialize`.
+
+class _PyvmPlatform:
+    """Memory as the other harnesses keep it: one cell per address, a read
+    masked to its width; messages in the log, in order."""
+
+    def __init__(self, mem):
+        self.mem = dict(mem or {})
+        self.log = []
+
+    def _rd(self, w, a):
+        v = self.mem.get(a, 0) & ((1 << w) - 1)
+        self.log.append(f"read {w} 0x{a:x} 0x{v:x}")
+        return v
+
+    def _wr(self, w, a, d):
+        d &= (1 << w) - 1
+        self.mem[a] = d
+        self.log.append(f"write {w} 0x{a:x} 0x{d:x}")
+
+    def read8(self, a): return self._rd(8, a)
+    def read16(self, a): return self._rd(16, a)
+    def read32(self, a): return self._rd(32, a)
+    def read64(self, a): return self._rd(64, a)
+    def write8(self, a, d): self._wr(8, a, d)
+    def write16(self, a, d): self._wr(16, a, d)
+    def write32(self, a, d): self._wr(32, a, d)
+    def write64(self, a, d): self._wr(64, a, d)
+
+    def message(self, text):
+        self.log.append(text)
+
+
+#: `pssc test` gates the code under test for op-model-c before it runs
+#: (`pssc.testing.gate`). So a model pyvm runs is one C takes, and pyvm
+#: refuses what C refuses -- as a user error; a defect in C's code generation
+#: is C's, not pyvm's.
+PYVM_GATE = "c"
+
+
+def _lower_pyvm(tmp_path, pss):
+    """``pss`` gated (`PYVM_GATE`), translated and lowered for pyvm: the
+    ``bc_session`` model. A refusal or translation error is a
+    ``CompileError``; a construct the lowering cannot express propagates."""
+    from pssc.testing import bc_session, sources
+
+    p = tmp_path / "m.pss"
+    p.write_text(_PRELUDE + pss)
+    paths = [str(x) for x in sources.all_sources([str(p)])]
+
+    def translate():
+        ctx = driver.translate(paths)
+        if ctx.errors:
+            errs = [str(e) for e in ctx.errors]
+            raise driver.CompileError("\n".join(errs), errs)
+        return ctx
+
+    try:
+        compile_model(tmp_path, pss, PYVM_GATE)
+    except driver.CompileError:
+        raise
+    except Exception:       # noqa: BLE001 -- C's code generation, not its gate
+        pass
+    ctx = translate()
+    return ctx, bc_session.lower(ctx, "pss_top", functions=["*"], debug=True)
+
+
+def _run_pyvm(tmp_path, pss, args=(), mem=None):
+    from pssc.testing import vm as pv
+    from zuspec.be.bc.interp.ops_proc import VMError
+
+    _ctx, model = _lower_pyvm(tmp_path, pss)
+    plat = _PyvmPlatform(mem)
+    s = pv.Session(model, platform=plat, sanitize=False)
+    try:
+        root = s.construct()
+        s.call(root, "initialize", *args)
+        s.call(root, "run")
+    except VMError as e:
+        # error()/fatal()/an unmatched match stop the VM; the trace line is
+        # the other targets' (`_matrix.ERROR`, `FATAL`).
+        text = str(e)
+        m = re.match(r"fatal \(status -?\d+\): (.*)", text, re.S)
+        if m:
+            plat.log.append("fatal: " + m.group(1))
+        elif text.startswith("error: ") or text.startswith("match: "):
+            plat.log.append(text if text.startswith("error: ")
+                            else "error: " + text)
+        else:
+            raise
+    return plat.log
+
+
+# --- native -------------------------------------------------------------------
+# pyvm's model run by the C engine (zuspec-rt-eng, `pssc.testing.native`):
+# `initialize` then `run` on one component tree. The trace is the engine's
+# own access and message events, in order.
+
+class _NativeMemory:
+    """One cell per address, a read masked to its width (``n`` bytes)."""
+
+    def __init__(self, mem):
+        self.mem = dict(mem or {})
+
+    def read(self, a, n):
+        return self.mem.get(a, 0) & ((1 << (8 * n)) - 1)
+
+    def write(self, a, n, d):
+        self.mem[a] = d & ((1 << (8 * n)) - 1)
+
+
+def _run_native(tmp_path, pss, args=(), mem=None):
+    from pssc.testing import native
+    from zuspec.be.bc.trace import binary, events as ev
+    from zuspec.rt.eng.host import Engine, NativeError, run_sync
+
+    _ctx, model = _lower_pyvm(tmp_path, pss)
+    native.check_model(model)
+    data = bytearray()
+    memory = _NativeMemory(mem)
+    stopped = None
+    # every message level is reported, as pyvm's platform logs them all
+    with Engine(native.engine_lib(native.needs_solver(model)),
+                model.to_bytes(), opts="verbosity=255") as eng:
+        eng.trace(data.extend, ev.EV_ACCESS | ev.EV_MESSAGE)
+        try:
+            run_sync(eng.call("pss_top::initialize", tuple(args), seed=1),
+                     memory, None)
+            run_sync(eng.call("pss_top::run", (), seed=1), memory, None)
+        except NativeError as e:
+            stopped = str(e)
+    log = []
+    for r in binary.read(bytes(data))[2] if data else ():
+        d = r.get("detail") or {}
+        if r["kind"] == "access":
+            op = "read" if d["rw"] == "r" else "write"
+            log.append(f"{op} {d['width']} 0x{d['addr']:x} 0x{d['data']:x}")
+        else:
+            sev = d.get("severity", "info")
+            log.append(d["text"] if sev == "info" else f"{sev}: {d['text']}")
+    # error()/fatal() stop the engine after their message, as on pyvm; any
+    # other stop is the run's failure
+    if stopped is not None and not (log and log[-1].startswith(
+            ("error: ", "fatal: "))):
+        raise NativeError({"message": stopped})
+    return log
 
 
 # --- C -----------------------------------------------------------------------
@@ -393,4 +548,5 @@ def _prepare_sv(tmp_path, pss, args=(), mem=None, plat=""):
 
 
 _PREPARE = {"c": _prepare_c, "cpp": _prepare_cpp, "py": _run_py,
+            "pyvm": _run_pyvm, "native": _run_native,
             "sv": _prepare_sv}

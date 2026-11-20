@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pssunit.catalog/1",
+  "title": "pssc test --collect-only --json",
+  "type": "object",
+  "required": [
+    "schema",
+    "fixtures",
+    "tests"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "pssunit.catalog/1"
+    },
+    "fixtures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "fixture"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "fixture": {
+            "type": "boolean",
+            "description": "derives from pssunit_pkg::fixture_c"
+          }
+        }
+      }
+    },
+    "tests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "bases",
+          "calls",
+          "decl",
+          "end_line",
+          "expect_error",
+          "file",
+          "fixture",
+          "group",
+          "id",
+          "kind",
+          "line",
+          "name",
+          "platform_min",
+          "property_runs",
+          "reason",
+          "samples",
+          "skip",
+          "tags",
+          "xfail"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "<fixture>::<test>; stable across file moves"
+          },
+          "name": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "action",
+              "function"
+            ]
+          },
+          "fixture": {
+            "type": "string",
+            "description": "root component the test runs under"
+          },
+          "decl": {
+            "type": "string",
+            "description": "declaring action type, or <comp>::<fn>"
+          },
+          "file": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "line": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "end_line": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "line of the closing brace; FILE:LINE selects within [line, end_line]"
+          },
+          "group": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "skip": {
+            "type": "boolean"
+          },
+          "xfail": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "samples": {
+            "type": "integer"
+          },
+          "property_runs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "@pssunit_pkg::property .runs; null if not a property test"
+          },
+          "expect_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "platform_min": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "bases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "super chain, nearest first"
+          },
+          "calls": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "the test's slice: {units: the actions and functions it reaches by name, slice: the hash --changed compares}; null when not computed"
+          }
+        }
+      }
+    }
+  }
+}

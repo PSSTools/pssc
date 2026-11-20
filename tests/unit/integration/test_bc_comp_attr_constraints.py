@@ -129,7 +129,6 @@ def test_a_component_attribute_read_is_bounded_by_its_instances_values():
     value by value, and the conflicts reshaped unrelated distributions
     (the NVMe bench's READ/WRITE sizes)."""
     import ctypes
-    from dv_solve.ctx import SolveCtx
 
     src = """
 import std_pkg::*;
@@ -147,8 +146,8 @@ component pss_top {
     (cone,) = [c for t in model.activations.values() for c in t.cones]
     table, = model.activations.values()
     names = [v.name for v in cone.vars]
-    blob = table.blob(cone, tuple(range(len(cone.constraints))))
-    ctx = SolveCtx((ctypes.c_uint8 * len(blob)).from_buffer_copy(blob))
+    from zuspec.be.bc.interp.solve_cache import SolveCache
+    ctx = SolveCache()._compile(table.blob(cone, tuple(range(len(cone.constraints)))))
     lib = ctx._lib
     for f in (lib.dvs_var_lo64, lib.dvs_var_hi64):
         f.restype = ctypes.c_int64

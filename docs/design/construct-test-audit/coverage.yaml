@@ -37,6 +37,8 @@ dispositions:
 
   # --- action-level patterns: proved on bc or through --export-action ----------
   IP-61:
+    pyvm: {status: open, defect: "the pyvm harness calls target functions only (run()); bc refuses `super;` in an exec (unsupported statement StmtSuper)"}
+    native: {status: open, defect: "the native harness, like pyvm, calls target functions only (run()); bc refuses `super;` in an exec"}
     py:
       status: elsewhere
       test: tests/progseq/test_op_model_py_super.py::test_an_extensions_body_follows_super_and_the_initial_body
@@ -69,6 +71,8 @@ dispositions:
 
   # --- scalar data types -----------------------------------------------------
   DT-INT.8:
+    pyvm: {"status": "n-a", "why": "the bytecode VM has no 4-state values: nothing a foreign function returns can be X/Z (7.2)"}
+    native: {"status": "n-a", "why": "the C engine has no 4-state values: nothing a foreign function returns can be X/Z (7.2)"}
     c: {"status": "n-a", "why": "C has no 4-state values: nothing a foreign function returns can be X/Z (7.2)"}
     cpp: {"status": "n-a", "why": "C++ has no 4-state values: nothing a foreign function returns can be X/Z (7.2)"}
     py: {"status": "n-a", "why": "Python has no 4-state values: nothing a foreign function returns can be X/Z (7.2)"}
@@ -92,6 +96,8 @@ dispositions:
   DT-LIST.13:
     all: {"status": "n-a", "why": "list randomization is solve-time only (Ctx C); op-model targets have no solver, and lists are refused (R4)"}
   DT-REF.11:
+    pyvm: {"status": "open", "defect": "the pyvm harness calls target functions only (run()), never an action exec with `comp`"}
+    native: {"status": "open", "defect": "the native harness, like pyvm, calls target functions only (run()), never an action exec with `comp`"}
     py: {"status": "elsewhere", "test": "tests/progseq/test_op_model_entry.py::test_an_operation_is_called_through_sub_components"}
     sv: {"status": "elsewhere", "test": "tests/compliance/test_compliance_op_model_sv.py::test_op_model_sv"}
     c: {"status": "open", "defect": "P6: C entries (--export-action) not implemented"}
@@ -107,11 +113,15 @@ dispositions:
   EX-METH.4:
     all: {"status": "n-a", "why": "pure built-ins in constraints (7.9) are solve-time only; op-model targets have no solver"}
   EX-REF.3:
+    pyvm: {"status": "open", "defect": "the pyvm harness calls target functions only (run()), never an action exec with `comp`"}
+    native: {"status": "open", "defect": "the native harness, like pyvm, calls target functions only (run()), never an action exec with `comp`"}
     py: {"status": "elsewhere", "test": "tests/progseq/test_op_model_entry.py::test_the_entry_runs_its_exec_body_against_the_component"}
     sv: {"status": "elsewhere", "test": "tests/compliance/test_compliance_op_model_sv.py::test_op_model_sv"}
     c: {"status": "open", "defect": "P6: C entries (--export-action) not implemented"}
     cpp: {"status": "open", "defect": "P6: C++ entries (--export-action) not implemented"}
   EX-REF.5:
+    pyvm: {"status": "open", "defect": "test_op_model_inherit_native.py has no pyvm run; no matrix case of super.field"}
+    native: {"status": "open", "defect": "test_op_model_inherit_native.py has no native-engine run; no matrix case of super.field"}
     py: {"status": "elsewhere", "test": "tests/progseq/test_op_model_inherit_native.py::test_python"}
     c: {"status": "elsewhere", "test": "tests/progseq/test_op_model_inherit_native.py::test_c"}
     cpp: {"status": "elsewhere", "test": "tests/progseq/test_op_model_inherit_native.py::test_cpp"}
@@ -150,6 +160,8 @@ dispositions:
 
   # --- statements I ----------------------------------------------------------
   ST-ASSIGN.8:
+    pyvm: {"status": "open", "defect": "the pyvm harness runs no activity (run() only)"}
+    native: {"status": "open", "defect": "the native harness, like pyvm, runs no activity (run() only)"}
     py: {"status": "open", "defect": "op-model entries (--export-action) refuse an action with an activity and a read of an action attribute (test_op_model_entry.py::test_an_action_with_an_activity_is_refused, ::test_reading_an_action_attribute_is_refused); reactive activities await docs/design/compound-actions-design.md"}
     c: {"status": "open", "defect": "P6: C entries (--export-action) not implemented"}
     cpp: {"status": "open", "defect": "P6: C++ entries (--export-action) not implemented"}
@@ -159,6 +171,8 @@ dispositions:
   ST-RAND.8:
     all: {"status": "n-a", "why": "random stability (13.4.6.2) is a property of the values a solver draws; op-model targets have no solver and refuse every randomize statement at the front end (test_m_refusals 'randomize'), so no randomized value exists to be stable or not"}
   ST-RET.5:
+    pyvm: {"status": "n-a", "why": "20.7.5 leaves falling off the end of a non-void function unspecified (01 §7 item 11); nothing to hold pyvm to"}
+    native: {"status": "n-a", "why": "20.7.5 leaves falling off the end of a non-void function unspecified (01 §7 item 11); nothing to hold the C engine to"}
     c: {"status": "open", "defect": "W57"}
     cpp: {"status": "open", "defect": "W57"}
     py: {"status": "n-a", "why": "20.7.5 says a non-void function shall return a value but leaves the value of falling off the end unspecified (01 §7 item 11); nothing to hold py to beyond building, which it does"}

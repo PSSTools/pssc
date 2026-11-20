@@ -42,7 +42,7 @@ from .mem_access import DEFAULT as DEFAULT_MEM, MemAccess
 from .style import coerce as _style
 from ...diag import Refusal
 from ..body_walker import (BodyWalker, CallDispatch, match_values,
-                           foreach_parts, assigns_local, in_as_compare,
+                           c_line_directive, foreach_parts, assigns_local, in_as_compare,
                            match_needs_chain, match_arm_test,
                            scan_output_locals,
                            scan_write_only)
@@ -1590,6 +1590,10 @@ class CBodyEmitter(CIntSemantics, CallDispatch, BodyWalker):
 
     legality_target = "op-model-c"
     call_context = Ctx.TARGET
+
+    def line_directive(self, path: str, line: int, pad: str) -> List[str]:
+        # At column 0: a directive is not code, and gcc reads it anywhere.
+        return [c_line_directive(path, line)]
 
     #: "statement" when the bodies were sequenced
     #: (`OpModelTarget.reg_read_form`): a read that is a declaration's or a
@@ -3940,6 +3944,7 @@ def _lifecycle_impl(node, prefixes, link_style: str, qual: str,
         be.op_ctx = OpCtx(comp=comp, prefix=prefix, qual=helper,
                           emitter_cls=ctor_cls, be_kw={"style": style},
                           type_name=prefixes.type_name(comp), api=api)
+        be.line_directives = getattr(api, "line_directives", False)
         stmts = be.stmts(ctor.body, 1)
         body = be.function_local_lines(1) + body + stmts
         code = [ln for ln in body
@@ -4025,6 +4030,8 @@ class OpCtx:
                               handle=self.op_api.handle_param(fn, self),
                               **self.be_kw)
         be.op_ctx = self
+        # `--line-directives`, from the backend (`COpModelBackend.prepare`).
+        be.line_directives = getattr(self.api, "line_directives", False)
         return be
 
 

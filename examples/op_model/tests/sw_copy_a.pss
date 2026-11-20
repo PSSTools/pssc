@@ -1,0 +1,29 @@
+import pssunit_pkg::*;
+import wb_dma_types_pkg::*;
+
+extend component wb_dma_fx_c {
+    // A software-mode copy on channel 0, as the companion example's
+    // ``sw_copy_a`` composes it: route the interrupts, then one transfer.
+    function void sw_copy() {
+        wb_dma_ch_cfg_s cfg;
+        wb_dma_status_e st;
+        cfg.src = 0x1000;
+        cfg.dst = 0x2000;
+        cfg.tot_sz = 16;
+        cfg.inc_src = 1;
+        cfg.inc_dst = 1;
+        cfg.mode = WB_DMA_SOFTWARE;
+        dma.configure_interrupt_routing(WB_DMA_INT_A, 0x1);
+        // The fake has no DMA engine: script CSR.done instead. The first
+        // read is the arming read-modify-write; the next sees the copy done.
+        status_sequence("dma.ch[0].regs.csr", "done", 0);
+        status_sequence("dma.ch[0].regs.csr", "done", 1);
+        st = dma.ch[0].transfer_single(cfg);
+        check(st == WB_DMA_DONE, "transfer completes");
+        check_field("dma.ch[0].regs.csr", "ch_en", 1, "channel enabled");
+    }
+
+    action sw_copy_a : test_a {
+        exec body { comp.sw_copy(); }
+    }
+}

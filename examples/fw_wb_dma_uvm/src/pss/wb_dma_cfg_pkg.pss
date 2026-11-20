@@ -1,0 +1,63 @@
+// MAINTAINER NOTE, not documentation -- two properties of the shape below are
+// load-bearing and easy to "simplify" into a defect:
+//
+//   * THE GUARD IS NESTED, not one expression. `compile has(V) &&
+//     target_cfg_pkg::X` -- the LRM's own Example275 -- is a hard error in
+//     pssparser, which evaluates both operands of a compile-time binary
+//     expression eagerly. Short-circuiting is normative (§8.4.4) but it governs
+//     EVALUATION, not name resolution. `!compile has(V) || ...` is the same bet
+//     mirrored; also avoid it.
+//
+//   * THE DEFAULT IS TRUE, i.e. the richer wait. Defaulting to false would drop
+//     `wake` and notify_irq() and still elaborate -- a hang or livelock in
+//     simulation rather than a diagnostic. Defaulting to true fails at the
+//     missing runtime primitive instead, loudly and with a location.
+//
+// There is no `package target_cfg_pkg { }` stub in this tree and none is
+// needed: `compile has` naming an undeclared package evaluates to false, so an
+// unconfigured build reaches the `else`. A real provider comes from pssc's
+// target prelude, ahead of every file here, and is obliged to declare every
+// contract constant -- so a misspelling is a compile error, not a silent
+// fallback to the default.
+
+// This model's build configuration, derived from the execution target's.
+//
+// The adapter, and the only file that mentions ``target_cfg_pkg`` or
+// ``compile has``. Everything downstream reads the two constants below. The
+// full contract is ``docs/target-cfg-contract.md``.
+//
+// **HAS_EVENT_WAIT** -- can a caller on this target wait for an EVENT? It
+// selects the wait PRIMITIVE and nothing else:
+//
+// ``true``
+//     ``wb_dma_ch_c.wake`` and ``wb_dma_c::notify_irq()`` exist, and
+//     ``wait_hint()`` suspends on the channel.
+//
+// ``false``
+//     Neither exists, and ``wait_hint()`` spins with ``yield``.
+//
+// It does NOT select the operation surface: ``wait_completion()``, the three
+// end-to-end operations and their scenario actions are present on BOTH
+// profiles, written against ``wait_hint()``, so a firmware caller gets the same
+// API a UVM test gets. It replaced ``HAS_BLOCKING`` ("can the runtime suspend a
+// thread?"), which conflated that with whether there is an event to wait on at
+// all. Only the latter is a real capability -- every target can spin.
+//
+// **HAS_SOLVER** -- gates the SCENARIO layer, the actions in
+// ``wb_dma_ch_c/actions/blocking_ops_a.pss``. Those have ``rand`` fields, and a
+// target with no solver in the image has nothing to populate them with. It is
+// separate from ``HAS_EVENT_WAIT`` so that a target with a solver and no event
+// source, or the reverse, is expressible. Both current profiles answer both
+// questions the same way (``op-model-sv`` true/true, ``op-model-c``
+// false/false).
+package wb_dma_cfg_pkg {
+
+    compile if (compile has(target_cfg_pkg::TARGET_CFG_VERSION)) {
+        static const bool HAS_EVENT_WAIT = target_cfg_pkg::HAVE_EVENT_WAIT;
+        static const bool HAS_SOLVER     = target_cfg_pkg::HAVE_RUNTIME_SOLVER;
+    } else {
+        static const bool HAS_EVENT_WAIT = true;
+        static const bool HAS_SOLVER     = true;
+    }
+
+}

@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://dv-flow.github.io/flow.dv.schema.json
+fragment:
+  # RTL-boundary binding for the SPL model: how the model's abstract ports map onto
+  # concrete Wishbone/GPIO signals. This is the structural spec from which BOTH the
+  # signal-level co-sim wrapper (today) and a future lowered-to-RTL top are produced
+  # -- co-sim interprets the binding via transactors; lowering compiles it. Two
+  # inputs, both load-bearing for lowering:
+  #   * wb_dma_spl_wb_pkg.sv (+ wb_dma_spl_bridges.svh) -- the leaf port<->signal
+  #     adapters (the fw-hdl bridge / IfProtocol seam).
+  #   * wb_dma_spl.sv -- the structural skeleton: the concrete port footprint (ports
+  #     identical to the OpenCores wb_dma_top) and the pin<->transactor<->model-edge
+  #     topology. The lowered top is "somewhat a copy" of this module: same skeleton,
+  #     lowered leaves.
+  # Depends on the core model (spl) plus the Wishbone kit (transactor modules +
+  # fw_proto_wb_pkg adapters) and the GPIO kit (interrupt outputs driven through a
+  # gpio_initiator_xtor). Explicit ordered include: package BEFORE the module that
+  # imports it (alphabetical would invert -- '.' sorts before '_').
+  tasks:
+  - export: spl-rtl
+    uses: sv-module
+    needs: [spl, fw.proto.wb.files, fw.proto.gpio.files]
+    with:
+      include:
+      - wb_dma_spl_wb_pkg.sv        # signal-binding bridges (WB/GPIO adapters)
+      - wb_dma_spl.sv               # the design-top structural skeleton
+      incdirs: [ . ]                # wb_dma_spl_wb_pkg.sv includes wb_dma_spl_bridges.svh

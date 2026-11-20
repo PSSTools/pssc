@@ -33,6 +33,7 @@ import zuspec.ir.core as ir
 
 from .. import comp_inherit as ci
 from ..body_walker import (match_values, foreach_parts, assigns_local,
+                           c_line_directive, source_loc,
                            in_as_compare, match_needs_chain,
                            match_arm_test)
 
@@ -346,8 +347,11 @@ class _BodyEmitter(CIntSemantics):
     def __init__(self, fn, comp, names, *, imports=None,
                  yield_mode: str = "none", match_default: str = "message",
                  message_style: str = "import", cls: str = "",
-                 ctor_names=None, ctx=None, value_structs=()):
+                 ctor_names=None, ctx=None, value_structs=(),
+                 line_directives: bool = False):
         self.fn = fn
+        #: `--line-directives`: a `#line` before each statement (`stmt`).
+        self.line_directives = line_directives
         #: Register value structs: C++ bitfields of unsigned integers, so an
         #: enum field of one is held as an integer (`_enum_type`).
         self.value_structs = {id(v) for v in value_structs}
@@ -1121,7 +1125,10 @@ class _BodyEmitter(CIntSemantics):
             if is_comment_only(s):
                 return comment_lines(getattr(s, "comment", None), pad, LINE)
             return lines
+        loc = source_loc(s) if self.line_directives else None
+        directive = [c_line_directive(*loc)] if loc else []
         return comment_lines(getattr(s, "comment", None), pad, LINE) + \
+            directive + \
             append_trailing(lines, getattr(s, "comment_trailing", None), LINE)
 
     def _stmt_lines(self, s, ind: int) -> List[str]:

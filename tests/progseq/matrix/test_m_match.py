@@ -5,6 +5,7 @@ See `_matrix` for what a case is and how it is run.
 from __future__ import annotations
 
 from ._matrix import Case, define_tests, ERROR, on, ONE
+from ._matrix import C_MATCH_ERR, native_xfail, pyvm_xfail
 
 
 
@@ -183,4 +184,11 @@ component pss_top {""" + ONE + """
 }""", ["00", "0y", "x1", "xy"], covers=("ST-MATCH.11", "ST-MATCH.3")),
 }
 
+pyvm_xfail(CASES, "pyvm: match choices are not compared at the subject's common type (def, want four/five)",
+           'match choices meet the subject at a common type')
+
+native_xfail(CASES, C_MATCH_ERR,
+             'a match nothing matches, with no default',
+             'choices that overlap on some iterations',
+             'constant choices that overlap, with a call as the subject')
 test_construct = define_tests(CASES)

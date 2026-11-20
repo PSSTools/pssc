@@ -1,0 +1,81 @@
+// MAINTAINER NOTE, not documentation.
+//
+// THE `compile if` IS IN THE BODY, NOT AROUND THE DECLARATION. That is
+// deliberate and it buys two things:
+//
+//   * The FUNCTION exists on every profile, so callers reference one name and
+//     never gate. Around the declaration, every caller would need its own
+//     `compile if` and we would be back where we started.
+//
+//   * It sidesteps pssparser defect 4 (docs/pssparser-defects-2026-08-02.md):
+//     a DECLARATION inside a `compile if` is invisible to every later source
+//     file, silently, with `0 errors`. A STATEMENT inside one is not a
+//     declaration, so nothing here is at risk -- which is why this function can
+//     have its own file at all, while blocking_ops.pss cannot be split.
+//
+// PSS 3.1 permits `compile if` in a procedural scope: §19.2.1 lists "Procedural
+// Scopes (Execs and Functions)", grammar `procedural_compile_if`, Syntax 88.
+// Verified against pssparser in both configurations.
+import sync_pkg::*;
+import wb_dma_cfg_pkg::*;
+
+extend component wb_dma_ch_c {
+
+    // Wait until the device may have progressed.
+    //
+    // The wait PRIMITIVE: the one function in this model whose body differs
+    // between execution targets, and the only thing
+    // ``wb_dma_cfg_pkg::HAS_EVENT_WAIT`` gates.
+    //
+    // **Contract: return when the device MAY have progressed.** Not "when it
+    // has" -- this reports nothing and decides nothing. Every caller is a loop
+    // that re-reads CHn_CSR afterwards and tests its own condition, so a
+    // spurious return costs one register read and a late return costs latency.
+    // Neither is a defect.
+    //
+    // This is the seam that lets the OPERATION SURFACE be profile-independent.
+    // The two ways to wait have different requirements:
+    //
+    // ``wake.get()``
+    //     Suspend until someone posts. Needs an event source (``notify_irq()``,
+    //     hence configured interrupt routing) and a runtime that can suspend a
+    //     caller. Costs nothing while waiting.
+    //
+    // ``yield``
+    //     Spin. Needs NOTHING -- every target can spin, including a bare-metal
+    //     single-threaded one. Costs the bus a read per iteration and, on a
+    //     threaded target, whatever the scheduler charges.
+    //
+    // Only the first is a capability, so that is what the flag asks about and
+    // this is where the answer is consumed. Every operation above it is written
+    // once and compiles on both. See ``docs/op-model-c-embedded-design.md``
+    // §5.4 and ``docs/target-cfg-contract.md``.
+    //
+    // .. warning::
+    //    ``yield`` is a hint to the SCHEDULER, not to the device, and a backend
+    //    spends it however its target charges for waiting. It must NOT be
+    //    implemented as a wait on this device's interrupt: that would
+    //    reintroduce the routing prerequisite this branch exists to avoid, and
+    //    would deadlock the one caller that has no interrupt to wait for. The
+    //    contract is stated in full in ``docs/op-model-export-design.md`` §4.4.
+    target function void wait_hint() {
+        compile if (wb_dma_cfg_pkg::HAS_EVENT_WAIT) {
+            // The token carries no information and is discarded: notify_irq()
+            // posts to EVERY channel regardless of which one raised the
+            // interrupt, and with CHUNK_DONE enabled the interrupt also fires on
+            // events that complete nothing, so most wakes are for someone else.
+            // That is precisely why every caller is a wake-and-recheck loop
+            // rather than a single suspend.
+            //
+            // A target exec blocked on a channel operation does not stall other
+            // execs on the same executor (§20.8).
+            wake.get();
+        } else {
+            // No event to wait on, so spin. The caller re-reads CHn_CSR on every
+            // iteration; this only decides what the gap between reads costs, and
+            // the target decides that.
+            yield;
+        }
+    }
+
+}

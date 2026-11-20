@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pssc.model/1",
+  "title": "pssc model api|regs|explain --json",
+  "description": "What the device model offers a test writer: its API (`api`), every register instance and its address (`regs`), or the registers at one address or path (`explain`). `command` says which. Addresses are `null` when the layout does not fix them. `pssc model tests --json` prints pssunit.catalog/1 instead.",
+  "type": "object",
+  "required": ["schema", "command"],
+  "properties": {
+    "schema": {"const": "pssc.model/1"},
+    "command": {"enum": ["api", "regs", "explain"]}
+  },
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "required": ["root", "imports", "exports", "components"],
+      "properties": {
+        "schema": true,
+        "command": {"const": "api"},
+        "root": {"type": "string"},
+        "imports": {"type": "array", "items": {"$ref": "#/$defs/function"}},
+        "exports": {"type": "array", "items": {"$ref": "#/$defs/function"}},
+        "components": {"type": "array", "items": {"$ref": "#/$defs/component"}}
+      }
+    },
+    {
+      "additionalProperties": false,
+      "required": ["root", "base", "registers"],
+      "properties": {
+        "schema": true,
+        "command": {"const": "regs"},
+        "root": {"type": "string"},
+        "base": {"type": "integer"},
+        "registers": {"type": "array", "items": {"$ref": "#/$defs/register"}}
+      }
+    },
+    {
+      "additionalProperties": false,
+      "required": ["what", "base", "registers"],
+      "properties": {
+        "schema": true,
+        "command": {"const": "explain"},
+        "what": {"type": "string", "description": "the address or path asked about, as typed"},
+        "base": {"type": "integer"},
+        "registers": {"type": "array", "items": {"$ref": "#/$defs/explained"}}
+      }
+    }
+  ],
+  "$defs": {
+    "param": {
+      "type": "object",
+      "required": ["name", "type"],
+      "properties": {"name": {"type": "string"}, "type": {"type": "string"}}
+    },
+    "function": {
+      "type": "object",
+      "required": ["name", "params", "returns"],
+      "properties": {
+        "name": {"type": "string"},
+        "params": {"type": "array", "items": {"$ref": "#/$defs/param"}},
+        "returns": {"type": "string"},
+        "doc": {"type": ["string", "null"]},
+        "annotations": {"type": "array"}
+      }
+    },
+    "operation": {
+      "allOf": [{"$ref": "#/$defs/function"}],
+      "required": ["reads", "writes"],
+      "properties": {
+        "reads": {"type": "array", "items": {"type": "string"}},
+        "writes": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "is_root", "constructor", "operations", "sub_components", "groups"],
+      "properties": {
+        "name": {"type": "string"},
+        "is_root": {"type": "boolean"},
+        "constructor": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/function"}]},
+        "operations": {"type": "array", "items": {"$ref": "#/$defs/operation"}},
+        "sub_components": {"type": "array", "items": {
+          "type": "object",
+          "required": ["name", "type"],
+          "properties": {"name": {"type": "string"}, "type": {"type": "string"},
+                         "count": {"type": ["integer", "null"]}}}},
+        "groups": {"type": "array", "items": {"type": "object", "required": ["name"]}}
+      }
+    },
+    "register": {
+      "type": "object",
+      "required": ["path", "addr", "reg", "component", "access", "bits", "aliases"],
+      "properties": {
+        "path": {"type": "string"},
+        "addr": {"type": ["integer", "null"]},
+        "reg": {"type": "string"},
+        "component": {"type": "string"},
+        "type": {"type": "string"},
+        "value_struct": {"type": ["string", "null"]},
+        "access": {"type": "string"},
+        "access_width": {"type": ["integer", "null"]},
+        "bits": {"type": "integer"},
+        "offset": {"type": ["integer", "null"]},
+        "counts": {"type": "array", "items": {"type": "integer"}},
+        "strides": {"type": "array", "items": {"type": "integer"}},
+        "array_at": {"type": "array", "items": {"type": "integer"}},
+        "aliases": {"type": "array", "items": {"type": "string"}},
+        "via": {"type": ["string", "null"]}
+      }
+    },
+    "explained": {
+      "allOf": [{"$ref": "#/$defs/register"}],
+      "required": ["fields", "operations"],
+      "properties": {
+        "fields": {"type": "array", "items": {
+          "type": "object",
+          "required": ["name", "lsb", "width"],
+          "properties": {"name": {"type": "string"}, "lsb": {"type": "integer"},
+                         "width": {"type": "integer"}}}},
+        "operations": {"type": "array", "items": {
+          "type": "object",
+          "required": ["op", "reads", "writes"],
+          "properties": {"op": {"type": "string"}, "reads": {"type": "boolean"},
+                         "writes": {"type": "boolean"}}}}
+      }
+    }
+  }
+}

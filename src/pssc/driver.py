@@ -289,7 +289,15 @@ def compile(
             target=target, errors=list(ctx.errors), context=ctx.ir_context
         )
 
-    outputs = tgt.run(ctx, opts)
+    # A refused `--export-action` names the user's action, not a compiler bug.
+    from .targets.export_action import ExportActionError
+    try:
+        outputs = tgt.run(ctx, opts)
+    except ExportActionError as e:
+        if raise_on_error:
+            raise CompileError(str(e)) from None
+        return CompileResult(target=target, errors=[str(e)],
+                             context=ctx.ir_context)
     return CompileResult(
         target=target,
         outputs=list(outputs),

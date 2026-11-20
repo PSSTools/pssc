@@ -6,6 +6,7 @@ See `_matrix` for what a case is and how it is run.
 from __future__ import annotations
 
 from ._matrix import ALL, Case, define_tests, ERROR, FATAL, on, ONE, Refused
+from ._matrix import pyvm_xfail, BC_NULL, BC_REG_ARRAY
 
 M1 = ("M1: %p of a chandle is refused, 'this model has no ... chandle "
       "values', though it has one")
@@ -425,5 +426,17 @@ component pss_top {
 }""", ["write 32 0x1000 0x5", "write 32 0x1004 0x6", "read 32 0x1000 0x5", "5"],
         xfail=on(("c", "cpp", "sv"), E36), covers=("LIB-MEM.6",)),
 }
+
+pyvm_xfail(CASES, BC_NULL,
+           'a chandle compared with null',
+           'chandle typedefs compared with null, 0 and each other')
+pyvm_xfail(CASES, 'pyvm: addr_value of a chained handle offset is wrong (0x1014, want 0x100c)',
+           'addr_value of a chain of handles')
+pyvm_xfail(CASES, 'pyvm: memory primitives of some width give a wrong trace (undiagnosed)',
+           'memory primitives of every width')
+pyvm_xfail(CASES, 'pyvm: bc does not know `print` (solve function) in a constructor',
+           'print in a constructor')
+pyvm_xfail(CASES, BC_REG_ARRAY,
+           'register arrays with a run-time index')
 
 test_construct = define_tests(CASES)

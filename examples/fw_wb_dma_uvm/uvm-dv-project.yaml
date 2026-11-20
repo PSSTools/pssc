@@ -1,0 +1,115 @@
+# yaml-language-server: $schema=https://dv-flow.github.io/flow.dv.schema.json
+package:
+  name: uvm-dv-project
+  # Common BASE project: the core capabilities a leaf project extends/configures
+  # (the src-*/run-* API, generic FileSet conveniences). Reusable verification
+  # CAPABILITIES live in their own imported dv.* packages (dv.uvm, dv.lint,
+  # dv.synth, ...). Tool/flag wiring (flags-sim-*, opt-vs-debug) is deliberately
+  # NOT here -- the LEAF project owns it and injects it into the dv.* compounds.
+
+  imports:
+  # dv.* capability packages. Leaf projects reach these by qualified name
+  # (dv.uvm.env-base, dv.uvm.tb-img, ...).
+  - uvm-dv-project/uvm.yaml       # dv.uvm  : UVM env/image/run building blocks
+  # - uvm-dv-project/lint.yaml    # dv.lint : (placeholder)
+  # - uvm-dv-project/synth.yaml   # dv.synth: (placeholder)
+
+  tasks:
+  # The archetype states its contract once; every leaf is held to it. A slot
+  # declared here and never filled by a project otherwise RUNS AND REPORTS
+  # SUCCESS -- which is the worst outcome for a shared project interface,
+  # because it makes `dfm run <verb>` mean something in one project and nothing
+  # in the next.
+  - export: src-rtl
+    desc: |
+      Provides synthesizable Verilog RTL sources
+    requires:
+    # Implemented, not `Needs: {produces: std.FileSet}`. `produces:` matches
+    # what a task DECLARES, and `std.FileSet` tasks emit filesets at runtime
+    # without declaring anything -- so a produces-check here would fail a
+    # correctly wired project. Keyed checks suit a marker type a producer
+    # declares deliberately (see the profiling example in the guide), not a
+    # ubiquitous type nobody annotates.
+    - std.check.Implemented:
+        hint: |
+          `src-rtl` must be wired to the task(s) providing this project's
+          synthesizable RTL. Typically:
+
+              - override: src-rtl
+                needs: [rtl]
+
+  - export: src-spl
+    desc: |
+      Provides sequential process level (SPL) SystemVerilog sources
+
+  - root: tests
+    uses: hdlsim.SimSuiteReport
+    desc: |-
+      Entrypoint for running tests defined by the project
+    doc: |-
+      The project's test-execution command. A leaf project wires the available
+      cases and suites into it with `needs:`; everything else comes from
+      hdlsim.SimSuiteReport -> std.TestRunner:
+
+        dfm run tests                        # everything
+        dfm run tests --tests arb,err        # just those cases
+        dfm run tests --views rtl            # just that DUT view
+        dfm run tests --detail full          # every case in the report
+
+      Selection prunes the graph at build time, so a deselected case -- and any
+      simulation image only it needed -- is never built. The task status is the
+      CI gate: nonzero iff a case failed, errored, or nothing was selected.
+
+  - root: tests-info
+    uses: hdlsim.SimSuiteInfo
+    desc: |-
+      Show the tests and DUT views this project offers
+    doc: |-
+      Introspection companion to `tests`: it reports the inventory `tests`
+      selects over -- the case names `--tests` accepts and the view names
+      `--views` accepts -- and BUILDS NOTHING.
+
+        dfm run tests-info
+
+      The inventory is read off the `tests` root's own `needs:` at graph build,
+      so it cannot drift from what `tests` would run. A leaf project that adds
+      a suite gets it here for free -- there is nothing to keep in sync.
+      `tests-info.json` lands in the rundir for scripted use.
+    with:
+      target: tests
+
+  - root: run-lint-rtl
+    desc: |-
+      Entrypoint for running lint on RTL sources
+    requires:
+    - std.check.Implemented:
+        hint: |
+          This project declares `run-lint-rtl` (inherited from uvm-dv-project)
+          but never implements it. Either wire it up:
+
+              - override: run-lint-rtl
+                needs: [ <a lint task> ]
+
+          or, if this project has no lint flow, say so explicitly:
+
+              - override: run-lint-rtl
+                requires:
+                - {std.check.Implemented: {severity: "off"}}
+
+  # Convenience FileSets: `type: systemVerilogSource`, glob the dir. Callers
+  # supply `include` only when the glob doesn't match (multiple packages in one
+  # dir, or a required compile order alphabetical would invert); where a dir maps
+  # 1:1 to a package/module, omit it. sv-module carries NO incdir -- add
+  # `incdirs: [.]` case-by-case when a file `include`s a local .svh. sv-package
+  # keeps the self-incdir since a package typically includes its component .svh.
+  - name: sv-module
+    uses: std.FileSet
+    with:
+      type: systemVerilogSource
+      include: [ "*.sv" ]
+
+  - name: sv-package
+    uses: sv-module
+    with:
+      include: [ "*_pkg.sv" ]
+      incdirs: [ . ]

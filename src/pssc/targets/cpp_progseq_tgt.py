@@ -100,5 +100,7 @@ class CppProgSeqTarget(OpModelTarget):
                                               "message"),
                         message_style=getattr(opts, "c_message_style",
                                               "import"),
-                        class_map=getattr(opts, "c_prefix_map", None)
+                        class_map=getattr(opts, "c_prefix_map", None),
+                        line_directives=getattr(opts, "line_directives",
+                                                False)
                         ) + self.install_core(model, opts)

@@ -69,12 +69,18 @@ test = [
   # and CI, which installs them, never silently skips it.
   "mypy",
 ]
+# `pssc test --reg-semantics FILE.rdl` reads SystemRDL with it
+rdl = ["systemrdl-compiler"]
 
 [project.scripts]
-pssc = "pssc.cli:main"
+pssc = "pssc._entry:main"
 
 [project.entry-points."dv_flow.mgr"]
 pssc = "pssc.dvflow.__ext__"
+
+# inert unless `pssunit_paths` is set in the pytest configuration
+[project.entry-points.pytest11]
+pssunit = "pssc.testing.pytest_plugin"
 
 [tool.setuptools.dynamic]
 version = {attr = "pssc.__version__.version"}
@@ -86,7 +92,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-pssc = ["std_libs/*.pss", "share/sv/*.sv", "share/c/*.h", "share/c/*.c",
+pssc = ["std_libs/*.pss", "share/sv/*.sv", "share/sv/pssvm/*.sv", "share/c/*.h", "share/c/*.c",
         "share/cpp/*.hpp", "share/py/*.py", "dvflow/*.yaml"]
 # The model `pssc.testing` compiles. ~12 KB; the real WB DMA model is
 # deliberately NOT shipped -- see pssc/testing/__init__.py.

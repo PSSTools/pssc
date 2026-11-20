@@ -6,6 +6,7 @@ See `_matrix` for what a case is and how it is run.
 from __future__ import annotations
 
 from ._matrix import ALL, Case, define_tests, on, ONE, PY_LAZY_SUB, Refused
+from ._matrix import pyvm_xfail, BC_CALL_TARGET, BC_SELECT
 
 W66 = ("W66: `in` over a component array compares the components by value: "
        "the C/C++ does not compile")
@@ -559,5 +560,10 @@ component pss_top {""" + ONE + """
 }""", ["bd1", "bd2", "shu", "run"], refused=INIT_NOT_LOWERED,
         covers=("ST-SUPER.2",)),
 }
+
+pyvm_xfail(CASES, BC_SELECT,
+           'fields written while the component is constructed')
+pyvm_xfail(CASES, BC_CALL_TARGET,
+           'size() of and in over a component array')
 
 test_construct = define_tests(CASES)

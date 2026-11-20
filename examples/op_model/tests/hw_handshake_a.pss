@@ -1,0 +1,36 @@
+import pssunit_pkg::*;
+import wb_dma_types_pkg::*;
+
+extend component wb_dma_routed_fx_c {
+    // A hardware-handshake transfer, as the companion example's
+    // ``hw_handshake_a`` composes it. There the peripheral model feeds the
+    // transfer chunk by chunk in parallel; the fake has no peripheral, so
+    // DONE is scripted to land after a few polls instead.
+    function void hw_handshake() {
+        wb_dma_ch_cfg_s cfg;
+        wb_dma_status_e st;
+        cfg.src = 0x1000;
+        cfg.dst = 0x2000;
+        cfg.tot_sz = 64;
+        cfg.chk_sz = 16;
+        cfg.inc_src = 1;
+        cfg.inc_dst = 0;
+        cfg.mode = WB_DMA_HW_HANDSHAKE;
+
+        // The arming read, then three PENDING polls, then DONE.
+        status_sequence("dma.ch[2].regs.csr", "done", 0);
+        status_sequence("dma.ch[2].regs.csr", "done", 0);
+        status_sequence("dma.ch[2].regs.csr", "done", 0);
+        status_sequence("dma.ch[2].regs.csr", "done", 0);
+        status_sequence("dma.ch[2].regs.csr", "done", 1);
+        st = dma.ch[2].transfer_single(cfg);
+        check(st == WB_DMA_DONE, "handshake transfer completes");
+        check_field("dma.ch[2].regs.csr", "mode", 1, "hardware-handshake mode");
+        check_field("dma.ch[2].regs.csr", "inc_dst", 0, "destination not incremented");
+        check_field("dma.ch[2].regs.sz", "chk_sz", 16, "chunk size programmed");
+    }
+
+    action hw_handshake_a : test_a {
+        exec body { comp.hw_handshake(); }
+    }
+}

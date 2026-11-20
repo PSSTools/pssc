@@ -1,0 +1,119 @@
+// SystemRDL 2.0 register model for the WISHBONE DMA/Bridge engine.
+//
+// Sources of truth, in order of authority:
+//   src/spl/wb_dma_rf.svh, src/spl/wb_dma_ch.svh   (executable model)
+//   src/pss/wb_dma_regs_pkg/*.pss                  (PSS register model)
+//   docs/dma_doc.md §4                             (OpenCores datasheet rev 1.5)
+//
+// Map layout:
+//   0x00  csr         global control (PAUSE)
+//   0x04  int_msk_a   per-channel routing mask, bank A
+//   0x08  int_msk_b   per-channel routing mask, bank B
+//   0x0c  int_src_a   masked pending snapshot, bank A (RO)
+//   0x10  int_src_b   masked pending snapshot, bank B (RO)
+//   0x20  bank[0] ... stride 0x20, NUM_CH banks
+//
+// NUM_CH is the build-time channel count (RTL `ch_count`); it sizes the static
+// register structure. It is a parameter of the DEVICE, so it is stated in three
+// places that must agree: here, in the `-P NUM_CH` passed to both exports in
+// src/rdl/flow.yaml, and as WB_DMA_MAX_CH in src/pss/wb_dma_types_pkg.pss.
+// The datasheet allows up to 31.
+//
+// See the naming note in wb_dma_ch_regs.rdl: the type and instance names here
+// are the identifiers peakrdl-fw-hdl and peakrdl-pss emit, chosen to match the
+// models in src/spl and src/pss.
+//
+// wb_dma_ch_regs.rdl is NOT `included: it is a separate file in the task's file
+// list (src/rdl/flow.yaml), compiled ahead of this one. That is what makes it a
+// tracked input rather than something the preprocessor pulls in behind the
+// build's back.
+
+// ---------------------------------------------------------------------------
+// CSR -- main configuration/status register (0x00, §4.1 Table 3)
+// ---------------------------------------------------------------------------
+reg wb_dma_gcsr {
+    name = "Main Configuration/Status Register";
+    regwidth = 32;
+    field {
+        name = "PAUSE";
+        desc = "Writing 1 pauses all DMA channels; writing 0 resumes normal
+                operation. The engine pauses only after the transfer in flight
+                has completed. Reads back the engine state: 1 = paused,
+                0 = normal.";
+        sw = rw; hw = r;
+    } pause[0:0] = 0;
+    // 31:1 RESERVED (the RTL reads back {31'h0, paused})
+};
+
+// ---------------------------------------------------------------------------
+// INT_MSK_A/B -- interrupt routing masks (0x04, 0x08, §4.2 Table 4)
+// ---------------------------------------------------------------------------
+//
+// Two banks, two independent aggregate outputs (inta_o, intb_o); a channel may
+// be routed to both. Because every end-to-end DMA operation completes on a
+// channel interrupt, programming at least one of these is a hard prerequisite
+// for all of them.
+reg wb_dma_intmsk {
+    name = "Interrupt Mask Register";
+    desc = "Bit n = 1 enables DMA channel n to contribute to this bank's
+            aggregate interrupt output (int_msk_a -> inta_o, int_msk_b -> intb_o).";
+    regwidth = 32;
+    field {
+        name = "CH";
+        desc = "Per-channel interrupt enable; bit n corresponds to channel n.";
+        sw = rw; hw = r;
+    } ch[30:0] = 0;
+    // 31 RESERVED
+};
+
+// ---------------------------------------------------------------------------
+// INT_SRC_A/B -- masked pending snapshots (0x0c, 0x10, §4.3 Table 5)
+// ---------------------------------------------------------------------------
+//
+// Pure hardware-driven status: the RTL computes int_srca = int_maska_r & ch_int.
+// Reading has NO side effect, unlike a channel CSR read, which makes this the
+// only side-effect-free completion condition the device offers. But because the
+// value is ANDed with the routing mask, a channel that is not routed never
+// appears here at all.
+reg wb_dma_intsrc {
+    name = "Interrupt Source Register";
+    desc = "Masked snapshot of the pending per-channel interrupt sources for this
+            bank (int_src_a -> inta_o, int_src_b -> intb_o). Read-only and free of
+            read side effects; the source bits themselves are cleared by reading
+            the owning CHn_CSR.";
+    regwidth = 32;
+    field {
+        name = "CH";
+        desc = "Per-channel pending interrupt, already ANDed with the corresponding
+                interrupt mask bit; bit n corresponds to channel n.";
+        sw = r; hw = w;
+    } ch[30:0] = 0;
+    // 31 RESERVED
+};
+
+// ---------------------------------------------------------------------------
+// The device
+// ---------------------------------------------------------------------------
+addrmap wb_dma_regs #(
+    longint unsigned NUM_CH = 4
+) {
+    name = "WISHBONE DMA/Bridge Core";
+    desc = "Register file of the OpenCores WISHBONE DMA/Bridge engine: a global
+            control register, two interrupt routing/source register pairs, and
+            one 0x20-byte register bank per DMA channel.";
+
+    lsb0;
+    addressing = regalign;
+    littleendian;
+    default regwidth = 32;
+
+    wb_dma_gcsr   csr       @0x00;
+    wb_dma_intmsk int_msk_a @0x04;
+    wb_dma_intmsk int_msk_b @0x08;
+    wb_dma_intsrc int_src_a @0x0c;
+    wb_dma_intsrc int_src_b @0x10;
+
+    // Per-channel banks (0x20, stride 0x20, §4.4)
+    wb_dma_ch_regs bank[NUM_CH] @0x20 += 0x20;
+};
+

@@ -69,6 +69,9 @@ class SvOpModelBackend(object):
         self.reg_fields = reg_fields
         #: `prefixed` or `verbatim` -- `--sv-enum-items`. Spelling only.
         self.enum_items = enum_items
+        #: `--line-directives`: a `` `line `` naming the PSS source before
+        #: each statement of an operation body.
+        self.line_directives = False
         #: `constants()`'s answer, and the model it is for.
         self._consts = None
         self._consts_model = None
@@ -302,7 +305,8 @@ class SvOpModelBackend(object):
         return ["  // ----- Package functions -----",
                 emit_package_functions(model.functions, model.ctx,
                                        model.ctor_names,
-                                       self.constants(model)),
+                                       self.constants(model),
+                                       self.line_directives),
                 ""]
 
     def emit_import_api(self, model) -> List[str]:
@@ -343,7 +347,8 @@ class SvOpModelBackend(object):
         it, each child before what contains it, the root last."""
         return [f"  // ----- Component: {comp.name} -----",
                 emit_component_class(model, comp, self.namer(model, comp),
-                                     self.constants(model)),
+                                     self.constants(model),
+                                     self.line_directives),
                 ""]
 
     def emit_factory(self, model) -> List[str]:

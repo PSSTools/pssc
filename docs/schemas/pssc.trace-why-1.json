@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pssc.trace-why/1",
+  "title": "pssc trace why --json",
+  "description": "Where a register's last written value came from in a test trace: the write access, the statement that made it, and each value that statement read, followed back through the statements that wrote it (stmt events' defs/uses, debug images) to a register read, an import, a function call, an operation input or a component field's initial value. Fields not listed here may be added; readers ignore them.",
+  "type": "object",
+  "required": ["schema", "trace", "test", "seed", "target", "stmt", "chain"],
+  "$defs": {
+    "loc": {
+      "type": "object",
+      "properties": {
+        "index": {"type": "integer", "description": "The event's index (seq) in the trace."},
+        "file": {"type": ["string", "null"]},
+        "line": {"type": ["integer", "null"]},
+        "text": {"type": ["string", "null"], "description": "The source line, when the file is found."}
+      }
+    }
+  },
+  "properties": {
+    "schema": {"const": "pssc.trace-why/1"},
+    "trace": {"type": "string", "description": "The trace path as given."},
+    "test": {"type": ["string", "null"]},
+    "seed": {"type": ["integer", "null"]},
+    "target": {
+      "allOf": [{"$ref": "#/$defs/loc"}],
+      "description": "The write access: the last write to REG, or for REG.FIELD the last write that changed the field (else the last).",
+      "properties": {
+        "reg": {"type": "string"}, "field": {"type": "string"}, "value": {"type": "integer", "description": "The field's value (with field)."},
+        "data": {"type": ["integer", "null"]}, "addr": {"type": ["integer", "null"]}, "coro": {"type": "integer"}
+      },
+      "required": ["index", "reg", "coro"]
+    },
+    "stmt": {
+      "description": "The statement that made the write; null when the trace has no stmt events (then note says why).",
+      "oneOf": [{"type": "null"},
+                {"allOf": [{"$ref": "#/$defs/loc"}],
+                 "properties": {"uses": {"type": "array", "items": {"type": "string"}}}}]
+    },
+    "chain": {
+      "type": "array",
+      "description": "Depth-first: each value read, and what gave it its value. Tokens: l:<local>, a#<arg>, f#<object field slot>, c:<component field path>.",
+      "items": {
+        "allOf": [{"$ref": "#/$defs/loc"}],
+        "required": ["token", "kind", "depth", "via"],
+        "properties": {
+          "token": {"type": "string"},
+          "kind": {"enum": ["stmt", "read", "import", "call", "input", "initial"],
+                   "description": "stmt: set by the statement at file:line; read: by a register read (reg, data); import: by an import's return (name, ret); call: by a function's return (fn, retval), followed into the function; input: no earlier statement of the frame set it (fn, args of the frame's call, when traced); initial: a component field not written in the trace."},
+          "depth": {"type": "integer", "description": "Hops from the target's statement (0 = a value it reads)."},
+          "via": {"type": "integer", "description": "Index in chain of the entry whose statement reads this value; -1 = the target's statement."},
+          "coro": {"type": "integer"}
+        }
+      }
+    },
+    "note": {"type": "string", "description": "Why there is no chain."}
+  }
+}

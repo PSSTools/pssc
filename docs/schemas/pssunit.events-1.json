@@ -1,0 +1,375 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pssunit.events/1",
+  "title": "pssc test --json: one event per line (NDJSON)",
+  "description": "Each line of stdout is one of these objects. A run is run.start, then test.start/test.end per test (with -j, a test.start comes just before its test.end), then run.end. With --mutate, a green run is followed by one mutant.end per mutant, then mutate.end.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/run_start"
+    },
+    {
+      "$ref": "#/$defs/test_start"
+    },
+    {
+      "$ref": "#/$defs/test_end"
+    },
+    {
+      "$ref": "#/$defs/run_end"
+    },
+    {
+      "$ref": "#/$defs/mutant_end"
+    },
+    {
+      "$ref": "#/$defs/mutate_end"
+    }
+  ],
+  "$defs": {
+    "run_start": {
+      "type": "object",
+      "required": [
+        "event",
+        "schema",
+        "tests"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "const": "run.start"
+        },
+        "schema": {
+          "const": "pssunit.events/1"
+        },
+        "tests": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "seed": {
+          "type": "integer"
+        }
+      }
+    },
+    "test_start": {
+      "type": "object",
+      "required": [
+        "event",
+        "id",
+        "name",
+        "suite"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "const": "test.start"
+        },
+        "id": {
+          "type": "string",
+          "description": "qualified test ID (SUITE::TEST)"
+        },
+        "name": {
+          "type": "string"
+        },
+        "suite": {
+          "type": "string",
+          "description": "root component"
+        },
+        "file": {
+          "type": "string"
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "test_end": {
+      "type": "object",
+      "required": [
+        "event",
+        "id",
+        "status",
+        "duration_ms"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "const": "test.end"
+        },
+        "id": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "pass",
+            "fail",
+            "error",
+            "skip",
+            "xfail",
+            "xpass"
+          ]
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "seed": {
+          "type": "integer"
+        },
+        "message": {
+          "type": "string"
+        },
+        "trace": {
+          "type": "string"
+        },
+        "stdout": {
+          "type": "string"
+        },
+        "checks": {
+          "type": "object",
+          "required": [
+            "passed",
+            "failed",
+            "skipped"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "passed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "skipped": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "runs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failing_seed": {
+          "type": "integer"
+        },
+        "trace_file": {
+          "type": "string",
+          "description": "--trace: the zbc-trace/2 NDJSON file of this test's events"
+        },
+        "trace_flaky": {
+          "type": "boolean",
+          "description": "--trace fail: the traced re-run did not fail the same way"
+        },
+        "repro": {
+          "type": "string",
+          "description": "command that re-runs this test as it ran; present on every failing verdict"
+        },
+        "failures": {
+          "type": "array",
+          "description": "where the test failed, for an editor to mark: each failed check with a known site, and each sanitizer finding with provenance",
+          "items": {
+            "type": "object",
+            "required": [
+              "file",
+              "line",
+              "col",
+              "kind",
+              "message"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "file": {
+                "type": "string"
+              },
+              "line": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "col": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "1-based; 0 when not known"
+              },
+              "kind": {
+                "type": "string",
+                "description": "the check called (check_eq, require, ...) or 'sanitizer <name>'"
+              },
+              "message": {
+                "type": "string",
+                "description": "the check's 'what' argument, else the call as written; a finding's text"
+              }
+            }
+          }
+        }
+      }
+    },
+    "run_end": {
+      "type": "object",
+      "required": [
+        "event",
+        "summary",
+        "exit",
+        "duration_ms"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "const": "run.end"
+        },
+        "summary": {
+          "type": "object",
+          "required": [
+            "passed",
+            "failed",
+            "error",
+            "skipped",
+            "xfailed",
+            "xpassed"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "passed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "error": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "skipped": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "xfailed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "xpassed": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "exit": {
+          "type": "integer"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "mutant_end": {
+      "type": "object",
+      "required": [
+        "event",
+        "file",
+        "line",
+        "col",
+        "kind",
+        "old",
+        "new",
+        "status",
+        "by",
+        "tests"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "const": "mutant.end"
+        },
+        "file": {
+          "type": "string"
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "col": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kind": {
+          "enum": [
+            "operator",
+            "constant",
+            "offset",
+            "field"
+          ]
+        },
+        "old": {
+          "type": "string"
+        },
+        "new": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "killed",
+            "survived",
+            "invalid",
+            "not covered"
+          ]
+        },
+        "by": {
+          "type": "string",
+          "description": "the test that killed it, or \"timeout\"; empty otherwise"
+        },
+        "tests": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "how many tests ran on it"
+        }
+      }
+    },
+    "mutate_end": {
+      "type": "object",
+      "required": [
+        "event",
+        "killed",
+        "survived",
+        "uncovered",
+        "invalid",
+        "score",
+        "exit"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "const": "mutate.end"
+        },
+        "killed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "survived": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "uncovered": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "invalid": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "killed / (killed + survived), in percent; null if both are 0"
+        },
+        "exit": {
+          "type": "integer"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,423 @@
+# yaml-language-server: $schema=https://dv-flow.github.io/flow.dv.schema.json
+fragment:
+  name: uvm
+  # UVM + fw-hdl environment for the SPL class model. The UVM register agent
+  # drives the engine through the protocol-independent std_mem_if BFM; scenarios
+  # mirror packages/wb_dma/bench (sw_dma / arb_test / hw_dma, Phase-1 subset).
+  #
+  # Requires UVM_HOME=$IVPM_PACKAGES/uvm (the uvm package ships no envrc;
+  # hdlsim.vlt.SimLibUVM locates UVM via $UVM_HOME).
+  tasks:
+
+  # ---- Per-view DUT sources ----------------------------------------------------
+  # What each DUT view adds ON TOP OF the shared env library, which already
+  # carries the class model (`spl`). The TLM view adds nothing -- the class
+  # model IS the DUT; the WB view adds the wrapper + Wishbone kit; the RTL view
+  # adds the OpenCores design on top of that.
+  #
+  # One aggregator per view lets the image body select its sources with a single
+  # deferred need (`view-src-${{ this.view }}`) instead of one image task per
+  # view. Listing `spl` here as well would compile the class model twice --
+  # Verilator MODDUP -- which is what a first pass at this did.
+  # fw-proto-wb moved the TLM memory adapters (wb_proto_client_export, wb_mem_*)
+  # into fw_proto_wb_spl_pkg, exported only under its `use-fw-hdl` config.
+  # Compiled here directly (pssc copy of the bench).
+  - name: fw-proto-wb-spl
+    uses: std.FileSet
+    needs: [fw.proto.wb.files, fw-hdl.hdl.sv-src]
+    with:
+      base: "${{ env.IVPM_PACKAGES }}/fw-proto-wb/src"
+      type: systemVerilogSource
+      include: [fw_proto_wb_spl_pkg.sv]
+      incdirs: [.]
+  - { name: uvm-rtl-ram-src, uses: sv-module, with: {base: tb, include: [ wb_ram_slv.sv ] } }
+
+  - { name: view-src-tlm, passthrough: all, consumes: none }
+  - { name: view-src-wb,  passthrough: all, consumes: none, needs: [spl-rtl] }
+  - { name: view-src-rtl, passthrough: all, consumes: none, needs: [spl-rtl, rtl] }
+
+  # ---- Shared UVM env library, one per build variant ---------------------------
+  # A select family, not a single task: the env library is COMPILED, so it is as
+  # much a build-variant artifact as the images are. Two cells (opt, dbg), each
+  # shared by all three views -- `dfm run tests` compiles one env library, not
+  # three, and `-D build=dbg` compiles the other one instead.
+  #
+  # Feed the design-package deps AND the compile-flag DataItem through the
+  # compound INPUT (not a subtask override): compound needs -> input -> pre-deps
+  # -> env-src -> ... -> env-lib, so the dep files (and incdirs) precede the env
+  # pkgs that import them, and the flags reach the SimLib compile. The dv.uvm
+  # package is flag-agnostic; the leaf injects the holder here.
+  - name: uvm-env
+    strategy:
+      select:
+        axes:
+          build: [opt, dbg, native]
+        default: {build: "${{ build }}"}
+      body:
+      - uses: dv.uvm.env-base
+        needs:
+        - spl
+        # The generated operation-model API (pssc_reg_pkg.sv +
+        # wb_dma_c_pkg.sv), ahead of the env packages that will import it.
+        # Compiling it here is also the gate that keeps codegen honest: a
+        # package that lints alone but does not compile against UVM would
+        # otherwise be found only when Phase 6 tries to use it.
+        - "${{ pss_model_sv[this.build] }}"
+        - fw-proto-wb-spl
+        - org.fwvip.wb.vip-uvm-hvlsrc
+        - org.fwvip.gpio.vip-uvm-hvlsrc
+        - uvm-rtl-ram-src
+        - "flags-comp-${{ this.build }}"
+        # env is a single package (wb_dma_env_pkg); env-base's default *_pkg.sv
+        # glob picks it up -- no explicit env_include ordering needed.
+
+  #============================================================================
+  # The simulation-image FAMILY.
+  #
+  # Six cells -- 3 DUT views x 2 build variants -- from one body. Each is an
+  # independently addressable artifact:
+  #
+  #   dfm run sim-img                    # the project default (tlm, opt)
+  #   dfm run sim-img --view rtl         # one cell
+  #   dfm run sim-img.rtl.dbg            # the same cell, by name
+  #   dfm run sim-img -D build=dbg       # project-wide variant
+  #
+  # A cell nobody asks for is never built, and a cell two consumers ask for is
+  # built once -- which is what lets the regression compile one image per view
+  # while six cases run on them.
+  #
+  # THE THREE VIEWS:
+  #   tlm  -- the class model itself (hvl_top_spl). No signal-level DUT.
+  #   wb   -- the same env against the wb_dma_spl wrapper over Wishbone.
+  #   rtl  -- the OpenCores wb_dma_top, its master (data) ports backed by
+  #           combinational 0-wait-state SV RAMs (wb_ram_slv) via
+  #           wb_dma_rtl_model, so the engine is proven against a same-cycle
+  #           memory rather than a variable-latency transactor. The per-channel
+  #           HS bus is tied off in hvl_top_rtl, so only sw_copy / arb run here.
+  #============================================================================
+  - root: sim-img
+    desc: Simulation images -- one per (view, build) pair
+    with:
+      view:
+        type: str
+        value: tlm
+        cli: true
+        values: [tlm, wb, rtl]
+        doc: DUT view to build
+      build:
+        type: str
+        value: "${{ build }}"     # defaults from the project-wide control
+        cli: true
+        values: [opt, dbg, native]
+        doc: Build variant
+    strategy:
+      select:
+        axes:
+          view:  [tlm, wb, rtl]
+          build: [opt, dbg, native]
+        default: {view: "${{ view }}", build: "${{ build }}"}
+      body:
+      - uses: dv.uvm.tb-img
+        needs:
+        - "uvm-env.${{ this.build }}"        # the matching env library cell
+        - "view-src-${{ this.view }}"        # this view's DUT sources
+        - "flags-comp-${{ this.build }}"
+        - "flags-elab-${{ this.build }}"
+        with:
+          tb_include: "${{ view_tb[this.view] }}"
+          top:        "${{ view_top[this.view] }}"
+          sim_args:   "${{ view_sim_args[this.view] }}"
+
+  #============================================================================
+  # Partitioned regression suite.
+  #
+  # Tests split by what each model VERSION can drive:
+  #   * UNIVERSAL (non-handshake) -- sw_copy / arb / arb_eq / err -- run on ALL
+  #     three views.
+  #   * HS-HANDSHAKE -- hw_hs / hol -- run on the TLM class-model ONLY; the WB
+  #     and RTL tops stub the per-channel hardware-handshake bus (see
+  #     hvl_top_spl_wb / hvl_top_rtl), so those tests "stay on the TLM top".
+  #
+  # A suite IS all of its cases, so it stays a `matrix:` -- the fan-out meaning.
+  # Each cell reaches its image by NAME (`sim-img.<view>.<build>`); there is no
+  # alias map between the axis value and the image task, because the cell name
+  # is derived from the axis value by construction.
+  #
+  # `${{ build }}` here is the PACKAGE variable, not a suite axis: the whole
+  # regression runs on one variant, chosen with `-D build=dbg`.
+  #
+  # arb/err use channel-keyed compare (+CMP_BY_CHANNEL); arb_eq adds
+  # +CMP_NO_ORDER (round-robin: count, not order); hw_hs/hol +NO_CMP.
+  #
+  # Each cell carries a short `name` -- that is the key `dfm run tests --tests
+  # <name>` selects on, and the `image` axis is what `--views` selects on
+  # (hdlsim.SimSuiteReport sets `view_axis: image`). Selection prunes cells at
+  # graph build, so an unselected case is never built -- and neither is the
+  # image cell only it needed.
+  #============================================================================
+  - name: uvm-universal
+    strategy:
+      matrix:
+        image: "${{ images }}"        # tlm,wb,rtl (default); -D images=... to subset
+        case:
+        - { name: sw_copy, testname: wb_dma_sw_copy_test, plusargs: [] }
+        # CMP_NO_ORDER: the cross-model COMPLETION-ORDER check is not valid for
+        # this test once the operation layer drives it, and the reason is the
+        # reference rather than the DUT. The reference is loosely timed (no
+        # memory latency), so during the ~320ns window the four arms span it
+        # makes far more progress than the real engine does and genuinely
+        # finishes a lower-priority channel first. Atomic arming would remove
+        # the window, but this device has no such idiom -- arming while paused
+        # is dropped, and worse, wedges the RTL engine (docs §7.3.2).
+        # Per-channel DATA and the done COUNT are still compared exactly, and
+        # the DUT's own strict-priority order is still asserted by
+        # env.sb.check_order().
+        - { name: arb,     testname: wb_dma_arb_test,     plusargs: [CMP_BY_CHANNEL, CMP_NO_ORDER] }
+        - { name: arb_eq,  testname: wb_dma_arb_eq_test,  plusargs: [CMP_BY_CHANNEL, CMP_NO_ORDER] }
+        - { name: err,     testname: wb_dma_err_test,     plusargs: [CMP_BY_CHANNEL] }
+    body:
+    - name: "${{ this.image }}-${{ this.case.name }}"
+      uses: hdlsim.vlt.SimUVMCase
+      needs:
+      - "sim-img.${{ this.image }}.${{ build }}"
+      - "flags-run-${{ build }}"
+      with:
+        name: "${{ this.image }}-${{ this.case.name }}"
+        testname: "${{ this.case.testname }}"
+        plusargs: "${{ this.case.plusargs }}"
+
+  # HS-handshake tests are TLM-only -- included only when the TLM view is
+  # selected (so `-D images=rtl` doesn't drag in a TLM build).
+  # The `image` axis is a literal [tlm] rather than absent, so `--views` can
+  # select over this suite the same way it does over uvm-universal (an absent
+  # axis is unfilterable, and `--views rtl` would have quietly run the HS tests
+  # anyway). The `iff:` stays for the older `-D images=` package-variable path,
+  # which does not reach a task parameter.
+  - name: uvm-hs-only
+    iff: "${{ images | contains('tlm') }}"
+    strategy:
+      matrix:
+        image: [tlm]
+        case:
+        - { name: hw_hs, testname: wb_dma_hw_hs_test, plusargs: [NO_CMP] }
+        - { name: hol,   testname: wb_dma_hol_test,   plusargs: [NO_CMP] }
+    body:
+    - name: "${{ this.image }}-${{ this.case.name }}"
+      uses: hdlsim.vlt.SimUVMCase
+      needs:
+      - "sim-img.tlm.${{ build }}"
+      - "flags-run-${{ build }}"
+      with:
+        name: "${{ this.image }}-${{ this.case.name }}"
+        testname: "${{ this.case.testname }}"
+        plusargs: "${{ this.case.plusargs }}"
+
+  #============================================================================
+  # pssc-debug: the same regression with the model running in pssc's pyvm.
+  #
+  #   dfm run uvm.tests-vm                # 14 cases, same images as `tests`
+  #   dfm run uvm.tests-vm -D images=tlm
+  #
+  # Same images and cases as the two suites above; `pss.op-model-vm-img` adds
+  # `+pss_impl=vm +pss_img=...`, and `pssvm_case.SimUVMCaseVm` gives the run the
+  # environment pyhdl-if needs (README "Running the model in pyvm"). Not in
+  # `tests`: those stay on the generated model.
+  #============================================================================
+  - name: uvm-universal-vm
+    strategy:
+      matrix:
+        image: "${{ images }}"
+        case:
+        - { name: sw_copy, testname: wb_dma_sw_copy_test, plusargs: [] }
+        - { name: arb,     testname: wb_dma_arb_test,     plusargs: [CMP_BY_CHANNEL, CMP_NO_ORDER] }
+        - { name: arb_eq,  testname: wb_dma_arb_eq_test,  plusargs: [CMP_BY_CHANNEL, CMP_NO_ORDER] }
+        - { name: err,     testname: wb_dma_err_test,     plusargs: [CMP_BY_CHANNEL] }
+    body:
+    - name: "${{ this.image }}-${{ this.case.name }}-vm"
+      uses: hdlsim.vlt.SimUVMCase
+      shell: pytask
+      run: pssvm_case.SimUVMCaseVm
+      needs:
+      - "sim-img.${{ this.image }}.${{ build }}"
+      - "flags-run-${{ build }}"
+      - pss.op-model-vm-img
+      with:
+        name: "${{ this.image }}-${{ this.case.name }}-vm"
+        testname: "${{ this.case.testname }}"
+        plusargs: "${{ this.case.plusargs }}"
+
+  - name: uvm-hs-only-vm
+    iff: "${{ images | contains('tlm') }}"
+    strategy:
+      matrix:
+        image: [tlm]
+        case:
+        - { name: hw_hs, testname: wb_dma_hw_hs_test, plusargs: [NO_CMP] }
+        - { name: hol,   testname: wb_dma_hol_test,   plusargs: [NO_CMP] }
+    body:
+    - name: "${{ this.image }}-${{ this.case.name }}-vm"
+      uses: hdlsim.vlt.SimUVMCase
+      shell: pytask
+      run: pssvm_case.SimUVMCaseVm
+      needs:
+      - "sim-img.tlm.${{ build }}"
+      - "flags-run-${{ build }}"
+      - pss.op-model-vm-img
+      with:
+        name: "${{ this.image }}-${{ this.case.name }}-vm"
+        testname: "${{ this.case.testname }}"
+        plusargs: "${{ this.case.plusargs }}"
+
+  - root: tests-vm
+    uses: hdlsim.SimSuiteReport
+    needs: [uvm-universal-vm, uvm-hs-only-vm]
+
+  # pssc-debug: the same regression on pssc's C engine, no Python in the
+  # simulator.
+  #
+  #   dfm run uvm.tests-native            # 14 cases on the `native` images
+  #
+  # The images are the `native` build (sim-img.<view>.native: the model
+  # package with `PSSVM_DPI`, the engine library linked, no pyhdl-if);
+  # `pss.op-model-native-img` adds `+pss_impl=native +pss_img=...`. The stock
+  # run task needs no environment.
+  - name: uvm-universal-native
+    strategy:
+      matrix:
+        image: "${{ images }}"
+        case:
+        - { name: sw_copy, testname: wb_dma_sw_copy_test, plusargs: [] }
+        - { name: arb,     testname: wb_dma_arb_test,     plusargs: [CMP_BY_CHANNEL, CMP_NO_ORDER] }
+        - { name: arb_eq,  testname: wb_dma_arb_eq_test,  plusargs: [CMP_BY_CHANNEL, CMP_NO_ORDER] }
+        - { name: err,     testname: wb_dma_err_test,     plusargs: [CMP_BY_CHANNEL] }
+    body:
+    - name: "${{ this.image }}-${{ this.case.name }}-native"
+      uses: hdlsim.vlt.SimUVMCase
+      needs:
+      - "sim-img.${{ this.image }}.native"
+      - flags-run-native
+      - pss.op-model-native-img
+      with:
+        name: "${{ this.image }}-${{ this.case.name }}-native"
+        testname: "${{ this.case.testname }}"
+        plusargs: "${{ this.case.plusargs }}"
+
+  - name: uvm-hs-only-native
+    iff: "${{ images | contains('tlm') }}"
+    strategy:
+      matrix:
+        image: [tlm]
+        case:
+        - { name: hw_hs, testname: wb_dma_hw_hs_test, plusargs: [NO_CMP] }
+        - { name: hol,   testname: wb_dma_hol_test,   plusargs: [NO_CMP] }
+    body:
+    - name: "${{ this.image }}-${{ this.case.name }}-native"
+      uses: hdlsim.vlt.SimUVMCase
+      needs:
+      - "sim-img.tlm.native"
+      - flags-run-native
+      - pss.op-model-native-img
+      with:
+        name: "${{ this.image }}-${{ this.case.name }}-native"
+        testname: "${{ this.case.testname }}"
+        plusargs: "${{ this.case.plusargs }}"
+
+  - root: tests-native
+    uses: hdlsim.SimSuiteReport
+    needs: [uvm-universal-native, uvm-hs-only-native]
+
+  #============================================================================
+  # DIAGNOSTIC: is a CH_EN write honoured while the engine is paused?
+  #
+  #   dfm run uvm-pause-arm              # all three views, reports per view
+  #
+  # DELIBERATELY NOT IN THE `tests` AGGREGATE. It exists to expose a divergence
+  # between the RTL and the SPL class model, so on today's sources it is
+  # EXPECTED to report "DROPPED" on tlm/wb and "DEFERRED" on rtl -- putting that
+  # in the regression would just make the regression red. It reports rather than
+  # asserts; add +PAUSE_ARM_STRICT to make it fail when the arming is dropped,
+  # which is how it becomes a real regression once the model is fixed.
+  #
+  # See tests/uvm/tests/wb_dma_pause_arm_seq.svh for the RTL/model citations.
+  #============================================================================
+  - name: uvm-pause-arm
+    strategy:
+      matrix:
+        image: "${{ images }}"
+        case:
+        - { name: pause_arm,     mode: 1 }   # arm WHILE paused  -> dropped
+        - { name: pause_release, mode: 2 }   # pause/release/arm -> completes
+    body:
+    - name: "${{ this.image }}-${{ this.case.name }}"
+      uses: hdlsim.vlt.SimUVMCase
+      needs:
+      - "sim-img.${{ this.image }}.${{ build }}"
+      - "flags-run-${{ build }}"
+      with:
+        name: "${{ this.image }}-${{ this.case.name }}"
+        testname: wb_dma_pause_arm_test
+        plusargs: ["NO_CMP", "PAUSE_ARM_MODE=${{ this.case.mode }}"]
+
+  # ---- observable events: the model's own execution, as a stream ---------------
+  # Same arbitration test the regression runs, with the debug facility switched
+  # on. `arb` is the interesting scenario precisely because it is the one where
+  # "why did MY channel not get serviced" is a real question -- the de.arb record
+  # answers it with the ready-vector and a per-loser reason.
+  #
+  #   dfm run uvm-trace                          # 3 = arbitration, arming, waits
+  #   dfm run uvm-trace -D dbg_level=5           # + every register access
+  #   dfm run uvm-trace -D dbg_clamp=dut.de:5    # deep on the engine only
+  #   dfm run uvm-trace -D dbg_test=wb_dma_err_test   # bus errors, with the address
+  #
+  # Two more axes, for when the flood is one site rather than one subsystem:
+  #   dfm run uvm-trace -D dbg_mute=de.arb       # keep the engine, drop arbitration
+  #   dfm run uvm-trace -D dbg_subj=de.arb:1,2   # arbitration, but only ch1/ch2
+  #   dfm run uvm-trace -D dbg_subj=2            # every site, but only about ch2
+  #
+  # Deliberately NOT in the `tests` aggregate: it produces a large stream and
+  # asserts nothing the functional cases do not already assert. What keeps the
+  # instrumentation honest in regression is that every case above compiles it.
+  - root: uvm-trace
+    uses: hdlsim.vlt.SimRun
+    needs: [sim-img.tlm.opt, flags-run-opt]
+    with:
+      plusargs:
+      - "UVM_TESTNAME=${{ dbg_test }}"
+      - CMP_BY_CHANNEL
+      - fw_dbg
+      - "fw_dbg_level=${{ dbg_level }}"
+      - "fw_dbg_clamp=${{ dbg_clamp }}"
+      - "fw_dbg_mute=${{ dbg_mute }}"
+      - "fw_dbg_subj=${{ dbg_subj }}"
+      - "${{ dbg_catalog }}"
+
+  # ---- throughput benchmark: same wb_dma_perf_test on all three DUT flavours ----
+  # Simulator-generic: `-D sim=<vlt|vcs|mti|xcm|xsm>` picks the backend, and
+  # tests/bench collects all four perf runs into one result file
+  # (`dfm run bench.bench -D sim=...`; tests/bench/README.md).
+  # Wall-clock-bounded (runs >= PERF_SECS); +PERF disables the sim-time watchdog.
+  # Reports xfers/s + Mword/s; the tops also print START/FINISH wall-clock.
+  # These name the OPTIMIZED cell explicitly -- a throughput number measured on a
+  # debug build would be meaningless, so this is one place the project-wide
+  # `build` control deliberately does not reach.
+  - root: uvm-perf
+    uses: hdlsim.SimRun
+    needs: [sim-img.tlm.opt, flags-run-opt]
+    with:
+      sim: "${{ sim }}"
+      plusargs: [UVM_TESTNAME=wb_dma_perf_test, PERF, PERF_LABEL=TLM, "PERF_SECS=${{ bench_secs }}"]
+
+  - root: uvm-wb-perf
+    uses: hdlsim.SimRun
+    needs: [sim-img.wb.opt, flags-run-opt]
+    with:
+      sim: "${{ sim }}"
+      plusargs: [UVM_TESTNAME=wb_dma_perf_test, PERF, PERF_LABEL=SPL_XTOR, "PERF_SECS=${{ bench_secs }}"]
+
+  - root: uvm-rtl-perf
+    uses: hdlsim.SimRun
+    needs: [sim-img.rtl.opt, flags-run-opt]
+    with:
+      sim: "${{ sim }}"
+      plusargs: [UVM_TESTNAME=wb_dma_perf_test, PERF, PERF_LABEL=RTL, "PERF_SECS=${{ bench_secs }}"]
+

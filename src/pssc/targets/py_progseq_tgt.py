@@ -235,8 +235,10 @@ class PyProgSeqTarget(OpModelTarget):
 
     def backend_for(self, opts: argparse.Namespace):
         """The backend instance this run generates through."""
-        return self.backend_class()(getattr(opts, "py_module", None) or "",
-                                    await_style=self._await_style(opts))
+        backend = self.backend_class()(getattr(opts, "py_module", None) or "",
+                                       await_style=self._await_style(opts))
+        backend.line_directives = getattr(opts, "line_directives", False)
+        return backend
 
     def sections(self, model, opts: argparse.Namespace) -> Dict[str, str]:
         return self.backend_for(opts).sections(model)

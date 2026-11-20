@@ -1,0 +1,77 @@
+import addr_reg_pkg::*;
+import wb_dma_regs_pkg::*;
+import wb_dma_types_pkg::*;
+
+// The MMIO operation model for the WISHBONE DMA/Bridge core (§3,
+// ``dma_mmio_c`` in the operation-model document).
+//
+// This component holds the engine-GLOBAL operations -- PAUSE, interrupt
+// routing, descriptor authoring. Everything per-channel is on
+// :pss:comp:`wb_dma_ch_c`, an array of which it owns.
+//
+// Scope (§1): everything the processor reaches by load/store. The per-channel
+// hardware handshake's participant is the PERIPHERAL, so its model sits with
+// the environment (``tests/pss/wb_dma_hs_c.pss``). The WISHBONE masters are
+// device-driven and out of scope; so is descriptor FETCHING, though descriptor
+// AUTHORING is here, because the processor initiates it.
+//
+// Deliberately absent:
+//
+// * **bulk buffer access** -- the test writer already has a path to memory
+//   (``read32``/``write32``); filling a source region and checking a
+//   destination region are not operations of this model.
+// * **bus-error injection** -- it belongs to whatever component can drive
+//   ``err_i``. A DMA-error-reaction test is a composition of two operation
+//   models, not a wider version of this one (§5.1).
+// * **bridge_access** -- the pass-through path is reachable only with a target
+//   on the far interface; omitted by review decision.
+component wb_dma_c {
+
+    // The engine-global register bank: PAUSE, the two routing masks, the two
+    // pending snapshots.
+    wb_dma_regs_c       regs;
+
+    // The per-channel operation models, sized at the BUILD-TIME channel count
+    // because the register structure is static.
+    wb_dma_ch_c     ch[wb_dma_types_pkg::WB_DMA_MAX_CH];
+
+    // How many channels this instance actually uses.
+    //
+    // Integrator-facing: operations should be issued only to
+    // ``ch[0..num_ch-1]``. Nothing in this model enforces that -- the register
+    // structure is sized at ``WB_DMA_MAX_CH`` regardless, so a stray
+    // access reaches a bank the RTL may not implement.
+    int                 num_ch   = wb_dma_types_pkg::WB_DMA_MAX_CH;
+
+    // Build-time ``pri_sel``: how many priority levels the part discriminates.
+    //
+    // Integrator-facing, and likewise unenforced. Legal values are 1, 4 and 8;
+    // a ``wb_dma_ch_cfg_s.prio`` above this is not an error, it simply does not
+    // discriminate.
+    int                 pri_levels = 4;
+
+    // Bind the whole register file.
+    //
+    // Called from the integrating environment's ``init_down`` exec, which is
+    // where the address space that owns ``base`` is built. Each channel gets
+    // its own handle rather than being nested in one device-wide group: that is
+    // what keeps the per-channel operations index-free.
+    //
+    // Bank offsets come from the GENERATED group, so the base and the stride
+    // are stated once, in ``src/rdl/wb_dma.rdl``, and this loop cannot disagree
+    // with the register model it binds. Note that
+    // ``get_offset_of_instance_array()`` returns -1 for an unknown instance
+    // name, so ``"bank"`` is load-bearing: rename that instance in the RDL and
+    // every channel binds to a wild address rather than failing here.
+    //
+    // :param base: handle to the device's MMIO window
+    solve function void initialize(addr_handle_t base) {
+        regs.set_handle(base);
+
+        foreach (ch[i]) {
+            ch[i].initialize(i,
+                make_handle_from_handle(base,
+                    regs.get_offset_of_instance_array("bank", i)));
+        }
+    }
+}

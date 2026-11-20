@@ -102,6 +102,7 @@ def settings_for(model, prefix: str, *,
                  includes=None, includes_impl=None,
                  omit_stdint: bool = False, addr_bits: int = 64,
                  fold_constants: bool = False,
+                 line_directives: bool = False,
                  style=None) -> "CSettings":
     """Turn the command line's keywords into the backend's `CSettings`.
 
@@ -164,7 +165,7 @@ def settings_for(model, prefix: str, *,
         match_default=match_default,
         message_style=message_style, emit_stubs=emit_stubs,
         prefix_map=tuple(prefix_map or ()),
-        fold_constants=fold_constants)
+        fold_constants=fold_constants, line_directives=line_directives)
 
 
 def _style_renders_registers(style, link_style: str) -> bool:

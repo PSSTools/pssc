@@ -5,6 +5,7 @@ See `_matrix` for what a case is and how it is run.
 from __future__ import annotations
 
 from ._matrix import Case, define_tests, ONE
+from ._matrix import pyvm_xfail, BC_ARRAY
 
 
 CASES = {
@@ -410,5 +411,13 @@ component pss_top {""" + ONE + """
   }
 }""", ["1 2 1 4 0"], covers=("ST-VAR.3", "ST-VAR.4", "ST-VAR")),
 }
+
+pyvm_xfail(CASES, BC_ARRAY,
+           '&& guarding an index in a while condition',
+           'continue in repeat-while',
+           'return from a loop in a void function',
+           'several declarators and an array declarator')
+pyvm_xfail(CASES, 'pyvm: a local hiding a field gives the wrong value (2, want 5)',
+           'a local hiding a field, and nested indexes of one name')
 
 test_construct = define_tests(CASES)

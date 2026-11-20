@@ -1,0 +1,9 @@
+import std_pkg::*;
+import pssunit_pkg::*;
+
+// A suite whose tests assert rather than merely running. Kept apart from
+// `pss/suite` so that suite's counts stay stable and each fixture stays
+// legible on its own.
+component checks_c {
+    pssunit_pkg::rt_c rt;
+}

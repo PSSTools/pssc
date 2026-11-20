@@ -1,0 +1,9 @@
+import std_pkg::*;
+import pssunit_pkg::*;
+
+// A suite exercising `@pssunit_pkg::test` (M4.3). Kept apart from `pss/suite`
+// and `pss/checks` so each fixture's counts stay stable and each one reads on
+// its own.
+component annotated_c {
+    pssunit_pkg::rt_c rt;
+}

@@ -1,0 +1,93 @@
+# yaml-language-server: $schema=https://dv-flow.github.io/flow.dv.schema.json
+fragment:
+  # The DEVICE register model, and the SystemVerilog projection generated from
+  # it.
+  #
+  # `src/rdl/*.rdl` is the source of truth for the DMA register file: offsets,
+  # bit positions, reset values and access semantics are stated once, here, and
+  # reach the SPL model as generated code -- the same relationship src/pss has
+  # with the operation model. Nothing downstream should restate a bit position.
+  #
+  # BOTH files are listed, in dependency order, and `wb_dma.rdl` does NOT
+  # `include the other. peakrdl takes a file list and compiles it in order, so
+  # the include bought nothing -- and it cost correctness: a file reached only
+  # through the preprocessor is not an input of this task, so editing
+  # wb_dma_ch_regs.rdl left every export below reporting "up-to-date" and
+  # regenerating nothing. A stale register model is silent in a way a broken
+  # one is not; both projections compile fine against yesterday's bit
+  # positions.
+  tasks:
+  - name: rdl-src
+    uses: std.FileSet
+    with:
+      type: systemRDLSource
+      include:
+      - wb_dma_ch_regs.rdl
+      - wb_dma.rdl
+
+  # The fw-hdl class projection: wb_dma_regs / wb_dma_ch_regs (fw_reg_block)
+  # plus the packed field structs, in package wb_dma_reg_pkg.
+  #
+  # NUM_CH is a build-time RDL parameter, so the emitted `bank[]` array is
+  # STATIC. 4 is the RDL default and matches WB_DMA_MAX_CH in the PSS model;
+  # raise it here (`-P NUM_CH=8`) and in the model's num_ch together.
+  #
+  # --strict is deliberately OFF: the map legitimately carries three constructs
+  # fw-hdl cannot represent (the write-only STOP pulse and the three `intr`
+  # aggregation fields). They are reported per-field and annotated in the
+  # generated source; see docs/rdl-reg-model-migration.md.
+  - export: reg-model
+    uses: rdl.Export
+    needs: [rdl-src]
+    with:
+      format: fw-hdl
+      top: wb_dma_regs
+      filename: wb_dma_reg_pkg.sv
+      args: ["-P", "NUM_CH=4"]
+      options:
+        package-name: wb_dma_reg_pkg
+        type-style: lexical
+
+  # The PSS projection: the same register file as a PSS register package --
+  # a packed_s struct and a reg_c component per register type, and a
+  # reg_group_c per addrmap/regfile. This is what the operation model in
+  # src/pss programs the device through, so the two projections cannot
+  # disagree about a bit position: they are the same elaboration.
+  #
+  # `-P NUM_CH=4` matches `reg-model` above. Both projections must be
+  # elaborated at the same channel count or the SPL and the operation model
+  # would place the channel banks differently.
+  #
+  # `pad-tail` fills each struct out to `regwidth` with a reserved field. The
+  # hand-written package this replaces did the same by hand; keeping the shape
+  # means every struct is exactly as wide as the register it is written to.
+  #
+  # Same three unrepresentable constructs as fw-hdl -- the STOP write pulse and
+  # the three `intr` fields' rclr/enable behaviour. PSS has no read-to-clear
+  # concept at all, so those are dropped to plain fields and annotated in the
+  # generated source. The operation model already treats them as read-to-clear
+  # in the ONE place that matters (check_completion reads CHn_CSR exactly once);
+  # see the `inflight` guard in wb_dma_ch_c.pss. --strict stays OFF for that
+  # reason.
+  #
+  # This output is the WHOLE of `wb_dma_regs_pkg` -- src/pss declares no part of
+  # it. What the RDL does not describe is not smuggled in beside it either: the
+  # channel count, the MMIO window size and the descriptor-record geometry are
+  # parameters of the DEVICE, and they live in src/pss/wb_dma_types_pkg.pss with
+  # the rest of the device's shared declarations.
+  #
+  # The one coupling to watch is `-P NUM_CH` above and WB_DMA_MAX_CH there:
+  # the same device parameter, told separately to the register model and to the
+  # operation model, with nothing checking that the two agree.
+  - export: reg-model-pss
+    uses: rdl.Export
+    needs: [rdl-src]
+    with:
+      format: pss
+      top: wb_dma_regs
+      filename: wb_dma_regs_pkg.pss
+      args: ["-P", "NUM_CH=4"]
+      options:
+        package-name: wb_dma_regs_pkg
+        type-style: lexical
+        pad-tail: true

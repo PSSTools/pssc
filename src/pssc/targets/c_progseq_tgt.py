@@ -319,6 +319,7 @@ class CProgSeqTarget(OpModelTarget):
             omit_stdint=getattr(opts, "c_omit_stdint", False),
             addr_bits=getattr(opts, "c_addr_bits", 64),
             fold_constants=getattr(opts, "c_fold_constants", False),
+            line_directives=getattr(opts, "line_directives", False),
         )
 
     def enum_item_symbol(self, enum_dtype, item, opts):

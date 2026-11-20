@@ -1,0 +1,40 @@
+import wb_dma_regs_pkg::*;
+
+extend component wb_dma_ch_c {
+
+    // Publish how far a software reader has drained a FIFO in memory.
+    //
+    // *§3.2 group 1, configuration.* Completes when CHn_SWPTR has been updated
+    // -- a channel stalled on the old pointer may resume as a side effect.
+    // Waits for nothing.
+    //
+    // The consumer side of a FIFO in memory (§3.5): the DMA stalls rather than
+    // overrun the software reader, and publishing a new pointer un-stalls it. So
+    // this is invoked repeatedly during a live transfer, always concurrent with
+    // a ``transfer_single()``.
+    //
+    // Note what that implies about scope: the FIFO's DATA is read on the test
+    // writer's own memory path. This operation only publishes how far that
+    // reader has got.
+    //
+    // Requires ``caps.cbuf``, and only means anything with a circular-buffer
+    // address mask programmed on the same channel.
+    //
+    // :param ptr:    the new software pointer
+    // :param enable: whether the pointer is honoured at all
+    target function void set_software_pointer(bit[31] ptr, bit enable) {
+        wb_dma_swptr_s sw;
+
+        if (!caps.cbuf) {
+            return;
+        }
+
+        // A whole-register write, not a read-modify-write: both fields are
+        // supplied and this register carries no status to preserve. That also
+        // keeps it clear of the CSR read-to-clear hazard, which matters because
+        // this runs against a live channel.
+        sw.ptr = ptr;
+        sw.en  = enable;
+        regs.swptr.write(sw);
+    }
+}

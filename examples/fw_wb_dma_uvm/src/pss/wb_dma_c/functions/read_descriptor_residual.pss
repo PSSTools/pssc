@@ -1,0 +1,29 @@
+import addr_reg_pkg::*;
+import wb_dma_regs_pkg::*;
+
+extend component wb_dma_c {
+
+    // Read back how much of a descriptor's transfer actually moved.
+    //
+    // *§3.2 group 3, configuration.* Completes when DESC_CSR has been loaded
+    // back from memory and decoded; waits for nothing.
+    //
+    // A device-specific decode, not a memory service -- the same rationale that
+    // keeps ``write_descriptor()`` in this model. Only meaningful when SZ_WB is
+    // set in the channel CSR and the descriptor was cut short by
+    // ``skip_to_next_descriptor()``. This is how software learns how much of a
+    // variable-length payload actually moved, which is the whole point of §3.9.
+    //
+    // .. note::
+    //    Open question (§6.1): §3.9 says the remaining BYTES are written back,
+    //    into a field Table 1 defines as a 12-bit WORD count. One of the two is
+    //    wrong. This returns the raw field and lets the caller decide.
+    //
+    // :param desc_ptr: the descriptor whose control word is read back
+    target function bit[12] read_descriptor_residual(addr_handle_t desc_ptr) {
+        bit[32] desc_csr;
+
+        desc_csr = read32(desc_ptr);
+        return (bit[12])desc_csr;
+    }
+}

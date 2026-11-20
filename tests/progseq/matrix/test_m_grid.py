@@ -8,6 +8,7 @@ case per operator. See `_matrix` for what a case is and how it is run.
 from __future__ import annotations
 
 from ._matrix import Case, define_tests
+from ._matrix import pyvm_xfail, BC_ARRAY, BC_POW, BC_SELECT
 from . import grid
 
 #: case name -> {target: defect} for a grid case a target gets wrong.
@@ -17,5 +18,23 @@ CASES = {
     name: Case(pss, want, covers=covers, xfail=XFAIL.get(name, {}))
     for name, (pss, want, covers) in grid.cases().items()
 }
+
+pyvm_xfail(CASES, BC_ARRAY,
+           'grid %',
+           'grid *',
+           'grid -',
+           'grid /',
+           'grid <<',
+           'grid >>',
+           'grid ^',
+           'grid |',
+           'grid ~')
+pyvm_xfail(CASES, BC_SELECT,
+           'grid &',
+           'grid +',
+           'grid ?:',
+           'grid neg')
+pyvm_xfail(CASES, BC_POW,
+           'grid **')
 
 test_construct = define_tests(CASES)

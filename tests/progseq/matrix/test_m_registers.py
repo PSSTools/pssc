@@ -10,6 +10,7 @@ import pytest
 
 from .. import trace_harness as th
 from ._matrix import ALL, Case, define_tests, on, ONE, Refused, REGS
+from ._matrix import pyvm_xfail, BC_ENUM_WIDTH, BC_REG_ARRAY, BC_SELECT, BC_STRUCT_RET
 
 W59 = "W59: a read of a WRITEONLY / write of a READONLY register is accepted"
 E28 = "E28: a nested packed struct or array field in a register value"
@@ -787,10 +788,28 @@ component pss_top {
         covers=("DT-REG", "LIB-REG.1", "LIB-REG.2", "LIB-REG.12")),
 }
 
+pyvm_xfail(CASES, "pyvm: bc ignores a register's big-endian field layout",
+           'a big-endian register value')
+pyvm_xfail(CASES, BC_SELECT,
+           'a part select of a register field assigned',
+           "selects of a register value's fields in a loop, then a write")
+pyvm_xfail(CASES, BC_ENUM_WIDTH,
+           'an enum field in a packed register struct',
+           'an enum field of a register value read back')
+pyvm_xfail(CASES, BC_REG_ARRAY,
+           'four groups, one with an indexed register array')
+pyvm_xfail(CASES, 'pyvm: bc returns no struct through a run-time component array index',
+           'numbered members and a strided register array')
+pyvm_xfail(CASES, BC_STRUCT_RET,
+           'register values an operation takes and returns')
+pyvm_xfail(CASES, 'pyvm: bc ignores big-endian packing of a register struct',
+           "the LRM's packing examples, little- and big-endian")
+
 test_construct = define_tests(CASES)
 
 
-@pytest.mark.parametrize("target", ALL)
+# pyvm and native write no manifest.
+@pytest.mark.parametrize("target", [t for t in ALL if t not in ("pyvm", "native")])
 def test_an_enum_field_has_its_base_types_width_in_the_manifest(tmp_path,
                                                                 target):
     """`enum e2_e : bit[2]` makes the field two bits wide (D6). The layout is

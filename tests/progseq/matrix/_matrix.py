@@ -4,7 +4,9 @@ target.
 Each case is a small model and the memory-access trace its ``run()`` must
 produce, worked out by hand from the LRM -- never taken from a backend, since
 an address a backend computed proves only that the backends agree. Every case
-runs on op-model-c, -cpp, -py and -sv (`..trace_harness`).
+runs on op-model-c, -cpp, -py and -sv, on pyvm: the model lowered to
+bytecode and run by `pssc.testing.vm`, and on native: the same bytecode run
+by the C engine (`..trace_harness`).
 
 A case a target does not handle yet is a STRICT xfail naming its defect, so a
 fix that makes it pass has to remove the marker too. A target that refuses a
@@ -98,11 +100,54 @@ class Case(NamedTuple):
     covers: Sequence[str] = ()           # construct / pattern IDs
 
 
-ALL = ("c", "cpp", "py", "sv")
+ALL = ("c", "cpp", "py", "pyvm", "native", "sv")
 
 
 def on(targets, why):
     return {t: why for t in targets}
+
+
+def pyvm_xfail(cases, why, *names):
+    """Mark each of ``names`` in ``cases`` a strict pyvm xfail for ``why``.
+    pyvm runs what op-model-c's gate passes (`th.PYVM_GATE`), so with
+    ``why`` None the case's C defect is pyvm's too."""
+    for n in names:
+        case = cases[n]
+        assert "pyvm" not in case.xfail, n
+        w = why or "pyvm (behind op-model-c's gate): " + case.xfail["c"]
+        cases[n] = case._replace(xfail={**case.xfail, "pyvm": w})
+
+
+def native_xfail(cases, why, *names):
+    """Mark each of ``names`` in ``cases`` a strict native (C engine) xfail
+    for ``why``, where it fails though pyvm does not."""
+    for n in names:
+        case = cases[n]
+        assert "native" not in case.xfail, n
+        cases[n] = case._replace(xfail={**case.xfail, "native": why})
+
+
+#: Defects of the C engine (zuspec-rt-eng) the matrix shows.
+C_MATCH_ERR = ("native: a failed match stops the C engine with a bare "
+               "run-time error, no `error: match: ...` message")
+
+
+#: Defects of pyvm (bc lowering, `pssc.testing.vm`) shared by many cases.
+BC_ARRAY = "pyvm: bc procedural code has no arrays (DataTypeArray)"
+BC_SELECT = ("pyvm: bc lowers no bit/part select or array element "
+             "(\"an array element is not supported by bc here\")")
+BC_IN = "pyvm: bc lowers no `in` expression (ExprIn)"
+BC_POW = "pyvm: bc has no ** operator"
+BC_DOMAIN = "pyvm: a domain-typed field needs entry pss_top::_range_0, absent"
+BC_NULL = "pyvm: bc lowers no `null` (ExprNull)"
+BC_REG_ARRAY = "pyvm: bc accesses no register array element (grp.reg[i])"
+BC_STRUCT_LIT = "pyvm: bc cannot move a struct literal (ExprStructLiteral)"
+BC_STRUCT_RET = "pyvm: a function returning a struct is not supported by bc"
+BC_CALL_TARGET = ("pyvm: bc resolves no call through a component/channel "
+                  "array element or virtual dispatch")
+BC_ENUM_WIDTH = ("pyvm: bc counts an enum field of a register struct wider "
+                 "than its base type (\"register struct of 62 bits\")")
+BC_PACKED_STRUCT = "pyvm: bc has no read_struct/write_struct"
 
 
 #: Python builds a sub-component whose type has a constructor AT its
@@ -141,8 +186,19 @@ def trace_matches(got, want):
 
 
 def expected(case, target):
-    """What ``case`` must give on ``target``: trace lines, or a `Refused`."""
+    """What ``case`` must give on ``target``: trace lines, or a `Refused`.
+    pyvm refuses what its gate's target does (`th.PYVM_GATE`)."""
+    if target in ("pyvm", "native") and target not in case.refused:
+        target = th.PYVM_GATE
     return case.refused.get(target, case.want)
+
+
+def xfail_of(case, target):
+    """Why ``case`` fails on ``target`` (None: it passes). native runs
+    pyvm's model, so it fails where pyvm does unless it names its own."""
+    if target == "native" and "native" not in case.xfail:
+        target = "pyvm"
+    return case.xfail.get(target)
 
 
 def case_params(cases):
@@ -157,9 +213,9 @@ def case_params(cases):
                 marks.append(pytest.mark.c_toolchain)
             if tgt == "sv":
                 marks.append(pytest.mark.sim)
-            if tgt in case.xfail:
-                marks.append(pytest.mark.xfail(strict=True,
-                                               reason=case.xfail[tgt]))
+            why = xfail_of(case, tgt)
+            if why:
+                marks.append(pytest.mark.xfail(strict=True, reason=why))
             yield pytest.param(name, tgt, marks=marks, id=f"{tgt}-{name}")
 
 

@@ -116,6 +116,9 @@ class PyOpModelBackend(object):
         #: from options at each site so that a subclass driving the backend
         #: directly picks a form the same way the command line does.
         self.await_style = await_style
+        #: `--line-directives`: precede each statement with a `# file:line`
+        #: comment naming its PSS source line.
+        self.line_directives = False
         #: `id(model)` -> the components section. The import-API Protocol is
         #: derived from the text the bodies emit (`lower_import_api`), and the
         #: same text is then emitted; rendering it twice would be correct and
@@ -489,6 +492,7 @@ class PyOpModelBackend(object):
                                    ctor_names=model.ctor_names,
                                    await_style=self.await_style,
                                    pkg_async=pkg_async)
+        be.line_directives = self.line_directives
         for i, a in enumerate(args):
             p = mangle(a.arg)
             if i >= first_dflt:
@@ -844,6 +848,12 @@ class PyOpModelBackend(object):
             sup.insert(1, f'        """`super;` of `{entry.action}`: the body '
                           f'of `{fn.metadata["super_of"]}`."""')
             lines += [""] + sup
+        # The action's functions, each a private method (`AF_PREFIX`).
+        for fn in entry.helpers:
+            af = self.emit_operation(fn, comp, model)
+            af.insert(1, f'        """Function `{fn.metadata["action_function"]}`'
+                         f' of `{entry.action}`."""')
+            lines += [""] + af
         return lines
 
     def emit_constructor(self, node, model) -> List[str]:
@@ -903,6 +913,7 @@ class PyOpModelBackend(object):
                                        ctor_names=model.ctor_names,
                                        await_style=self.await_style,
                                        pkg_async=self._pkg_async(model))
+            be.line_directives = self.line_directives
             lines += be.stmts(ctor.body, 2)
         if model.is_root(comp) and model.initializes(comp):
             # The tree is built; initialize it (`emit_init`).
@@ -1046,6 +1057,7 @@ class PyOpModelBackend(object):
         be = cls(fn, comp, model, imports=model.imports,
                  ctor_names=model.ctor_names, await_style=self.await_style,
                  pkg_async=self._pkg_async(model))
+        be.line_directives = self.line_directives
         if ci.in_hierarchy(model.ctx, comp):
             base = self._declared(model, comp)[0]
             be.native = True

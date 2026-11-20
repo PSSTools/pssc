@@ -9,13 +9,28 @@ import shutil
 from pathlib import Path
 from typing import List, Optional, Union
 
-from .ast2ir import AstToIrTranslator, AstToIrContext
-from .runtime import IrToRuntimeBuilder, ClassRegistry
-from .frontend import (
-    Parser,
-    ParseException,
-)
 from .__version__ import version as __version__
+
+# The front end, the translator and the driver are imported on first use, not
+# here: the thin console entry (``pssc._entry``) imports this package and must
+# stay light (T-G6). ``from pssc import Parser`` still works (module __getattr__).
+_LAZY = {
+    "AstToIrTranslator": ".ast2ir", "AstToIrContext": ".ast2ir",
+    "IrToRuntimeBuilder": ".runtime", "ClassRegistry": ".runtime",
+    "Parser": ".frontend", "ParseException": ".frontend",
+    "to_core_context": ".ir",
+    "compile": ".driver", "CompileResult": ".driver", "CompileError": ".driver",
+}
+
+
+def __getattr__(name):
+    mod = _LAZY.get(name)
+    if mod is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    value = getattr(importlib.import_module(mod, __name__), name)
+    globals()[name] = value
+    return value
 
 class PssTranslationError(Exception):
     """Raised when PSS source cannot be fully translated to IR."""
@@ -26,8 +41,8 @@ class PssTranslationError(Exception):
         super().__init__(f"PSS IR translation failed with {len(errors)} error(s):\n  {joined}")
 
 
-def _configure_registry(reg: ClassRegistry, ctx: AstToIrContext,
-                        export_actions: Optional[List[str]]) -> ClassRegistry:
+def _configure_registry(reg: "ClassRegistry", ctx: "AstToIrContext",
+                        export_actions: Optional[List[str]]) -> "ClassRegistry":
     """Attach the export-api projection config (imports + export actions).
 
     Enables the ``registry.create(imports) -> ExportApi`` workflow.  Import specs
@@ -59,7 +74,7 @@ def _configure_registry(reg: ClassRegistry, ctx: AstToIrContext,
     return reg
 
 
-def load_pss(pss_text: str, *, export_actions: Optional[List[str]] = None) -> ClassRegistry:
+def load_pss(pss_text: str, *, export_actions: Optional[List[str]] = None) -> "ClassRegistry":
     """Parse PSS source text and return a registry of randomizable Python classes.
 
     Each PSS ``struct`` becomes a plain Python dataclass whose fields can be
@@ -86,6 +101,9 @@ def load_pss(pss_text: str, *, export_actions: Optional[List[str]] = None) -> Cl
         randomize(pkt, seed=42)
         assert pkt.addr % 4 == 0
     """
+    from .frontend import Parser
+    from .ast2ir import AstToIrTranslator
+    from .runtime import IrToRuntimeBuilder
     parser = Parser()
     parser.parses([('inline.pss', pss_text)])
     root = parser.link()
@@ -96,7 +114,7 @@ def load_pss(pss_text: str, *, export_actions: Optional[List[str]] = None) -> Cl
 
 
 def load_pss_files(paths: List[Union[str, os.PathLike]], *,
-                   export_actions: Optional[List[str]] = None) -> ClassRegistry:
+                   export_actions: Optional[List[str]] = None) -> "ClassRegistry":
     """Parse one or more ``.pss`` files and return a registry of Python classes.
 
     Files are parsed together so they can reference each other's types.  As with
@@ -112,6 +130,9 @@ def load_pss_files(paths: List[Union[str, os.PathLike]], *,
         cmd = ns.WriteCmd()
         randomize(cmd, seed=1)
     """
+    from .frontend import Parser
+    from .ast2ir import AstToIrTranslator
+    from .runtime import IrToRuntimeBuilder
     str_paths = [str(p) for p in paths]
     parser = Parser()
     parser.parse(str_paths)
@@ -150,6 +171,8 @@ def _get_runtime_lib_path() -> Path:
 
 def generate_sv(pss_text: str, output_dir: str, **options) -> List[Path]:
     """Parse PSS source text and generate SystemVerilog files."""
+    from .frontend import Parser
+    from .ast2ir import AstToIrTranslator
     parser = Parser()
     parser.parses([('inline.pss', pss_text)])
     root = parser.link()
@@ -161,6 +184,8 @@ def generate_sv(pss_text: str, output_dir: str, **options) -> List[Path]:
 
 def generate_sv_files(paths: List[Union[str, os.PathLike]], output_dir: str, **options) -> List[Path]:
     """Parse PSS source files and generate SystemVerilog files."""
+    from .frontend import Parser
+    from .ast2ir import AstToIrTranslator
     str_paths = [str(p) for p in paths]
     parser = Parser()
     parser.parse(str_paths)
@@ -171,7 +196,7 @@ def generate_sv_files(paths: List[Union[str, os.PathLike]], output_dir: str, **o
     return _generate_sv_from_ctx(ir_ctx, output_dir, **options)
 
 
-def _resolve_qualified_name(ir_ctx: AstToIrContext, raw_name: str,
+def _resolve_qualified_name(ir_ctx: "AstToIrContext", raw_name: str,
                             comp_hint: Optional[str] = None) -> str:
     """Resolve a raw PSS type name to its qualified ``type_map`` key.
 
@@ -192,7 +217,7 @@ def _resolve_qualified_name(ir_ctx: AstToIrContext, raw_name: str,
     return raw_name
 
 
-def _auto_detect_roots(ir_ctx: AstToIrContext):
+def _auto_detect_roots(ir_ctx: "AstToIrContext"):
     """Best-effort detection of the root component and root action.
 
     Returns ``(comp_name, action_name)`` as PSS names, or ``(None, None)`` if no
@@ -255,7 +280,7 @@ def _auto_detect_roots(ir_ctx: AstToIrContext):
     return comp_name, short(act_qname)
 
 
-def _generate_sv_from_ctx(ir_ctx: AstToIrContext, output_dir: str, **options) -> List[Path]:
+def _generate_sv_from_ctx(ir_ctx: "AstToIrContext", output_dir: str, **options) -> List[Path]:
     """Internal: lower IR context and write SV output files.
 
     ``projection`` selects the package shape:
@@ -378,10 +403,3 @@ def _generate_sv_from_ctx(ir_ctx: AstToIrContext, output_dir: str, **options) ->
     return written
 
 
-# ---------------------------------------------------------------------------
-# Phase 2 public API: the canonical IR hand-off, driver, and CLI-backed compile.
-# Imported last so the targets registry (which reaches back into this module for
-# the SV path) sees a fully-initialized package.
-# ---------------------------------------------------------------------------
-from .ir import to_core_context  # noqa: E402
-from .driver import compile, CompileResult, CompileError  # noqa: E402

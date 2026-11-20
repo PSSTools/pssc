@@ -134,9 +134,11 @@ class ProgSeqTarget(OpModelTarget):
         root_name = getattr(opts, "progseq_root", None)
         pkg_name = (getattr(opts, "progseq_package", None)
                     or (f"{root_name}_pkg" if root_name else ""))
-        return self.backend_class()(
+        backend = self.backend_class()(
             pkg_name, getattr(opts, "progseq_reg_fields", "named"),
             getattr(opts, "progseq_enum_items", "prefixed"))
+        backend.line_directives = getattr(opts, "line_directives", False)
+        return backend
 
     def sections(self, model, opts: argparse.Namespace) -> Dict[str, str]:
         return self.backend_for(opts).sections(model)

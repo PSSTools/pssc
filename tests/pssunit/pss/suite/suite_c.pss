@@ -1,0 +1,4 @@
+// The fixture: a component holding the DUT. Tests extend it.
+component suite_c {
+    dut_c dut;
+}

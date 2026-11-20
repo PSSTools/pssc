@@ -1,0 +1,13 @@
+import pssunit_pkg::*;
+import wb_dma_types_pkg::*;
+
+// The fixture: the root every WB DMA test runs under. It owns the device
+// and binds it at the base address the fake platform reports for "dma".
+component wb_dma_fx_c : fixture_c {
+    wb_dma_c dma;
+
+    @pssunit_pkg::setup
+    function void bind_dma() {
+        dma.initialize(base("dma"));
+    }
+}

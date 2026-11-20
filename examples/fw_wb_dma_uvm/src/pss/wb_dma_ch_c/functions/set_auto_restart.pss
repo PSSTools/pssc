@@ -1,0 +1,36 @@
+import wb_dma_regs_pkg::*;
+
+extend component wb_dma_ch_c {
+
+    // Set or clear the channel's auto-restart bit.
+    //
+    // *§3.2 group 1, configuration.* Completes when ARS has been updated; waits
+    // for nothing.
+    //
+    // Distinct from ``configure_channel()`` because clearing ARS mid-flight is
+    // the documented way to terminate an auto-restarting channel (§3.2.1),
+    // invoked on its own against a live channel from a parallel scenario branch.
+    // Rewriting the whole register bank to do that would be wrong.
+    //
+    // It is therefore the TERMINATING EVENT for an auto-restarting
+    // ``transfer_single()``: once ARS is clear, the in-flight iteration retires
+    // and DONE asserts.
+    //
+    // .. warning::
+    //    A read-modify-write against a live channel, so it shares the hazard
+    //    described on ``stop_channel_start()``: the read consumes any pending
+    //    read-to-clear status. Enabling ARS before arming is unaffected;
+    //    disabling it mid-flight is the exposed case.
+    //
+    // :param enable: 1 to auto-restart on completion, 0 to stop after the
+    //                current iteration
+    target function void set_auto_restart(bit enable) {
+        // Silently ignored by hardware without ARS, so decline rather than
+        // pretend.
+        if (!caps.ars) {
+            return;
+        }
+
+        regs.csr.write_field("ars", enable);
+    }
+}

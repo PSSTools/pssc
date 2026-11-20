@@ -81,7 +81,8 @@ def core_header_names(model, *, match_default: str, message_style: str):
 def generate(model, namespace: str, *,
              dispatch: str = "virtual",
              yield_mode: str = "none", match_default: str = "message",
-             message_style: str = "import", class_map=None) -> List[Path]:
+             message_style: str = "import", class_map=None,
+             line_directives: bool = False) -> List[Path]:
     """Generate the C++ programming API for the model's whole component tree.
 
     The walk, the component order, the register collection and the legality
@@ -132,7 +133,8 @@ def generate(model, namespace: str, *,
     components = lower_components(model, names, namespace, imports=imports,
                                   yield_mode=yield_mode,
                                   match_default=match_default,
-                                  message_style=message_style)
+                                  message_style=message_style,
+                                  line_directives=line_directives)
 
     has_chan = model_has_channels(model)
     needs_env = model_needs_env(match_default=match_default,

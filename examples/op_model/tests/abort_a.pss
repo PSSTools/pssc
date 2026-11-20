@@ -1,0 +1,38 @@
+import pssunit_pkg::*;
+import wb_dma_types_pkg::*;
+
+extend component wb_dma_routed_fx_c {
+    // A transfer aborted by STOP, as the companion example's ``abort_a``
+    // composes it. The two operations complete off one event: the device
+    // reports the abort as ERR, so both the stop and the aborted transfer
+    // return WB_DMA_ERROR. Here the transfer is started, then stopped, then
+    // its completion is collected.
+    function void abort() {
+        wb_dma_ch_cfg_s cfg;
+        wb_dma_status_e st;
+        cfg.src = 0x1000;
+        cfg.dst = 0x2000;
+        cfg.tot_sz = 64;
+        cfg.inc_src = 1;
+        cfg.inc_dst = 1;
+        cfg.mode = WB_DMA_SOFTWARE;
+
+        // csr reads: arming RMW, the STOP RMW, then the polls see ERR.
+        status_sequence("dma.ch[1].regs.csr", "err", 0);
+        status_sequence("dma.ch[1].regs.csr", "err", 0);
+        status_sequence("dma.ch[1].regs.csr", "err", 1);
+        status_sequence("dma.ch[1].regs.csr", "err", 1);
+
+        dma.ch[1].transfer_single_start(cfg);
+        st = dma.ch[1].stop_channel();
+        check(st == WB_DMA_ERROR, "stop reports the abort as an error");
+        check_written("dma.ch[1].regs.csr", "stop", 1, "STOP written");
+        st = dma.ch[1].wait_completion();
+        check(st == WB_DMA_ERROR, "the aborted transfer returns an error");
+        check_not_accessed("dma.ch[2].regs.csr", "other channels untouched");
+    }
+
+    action abort_a : test_a {
+        exec body { comp.abort(); }
+    }
+}

@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pssc.cov-report/1",
+  "title": "pssc cov report --json",
+  "description": "Points hit / points of a coverage report (pssunit.coverage/1 JSON or a pssc test --cov .cdb): in all, per scope (statements and branch arms) and per register (accesses, field value bins). Fields not listed here may be added; readers ignore them.",
+  "type": "object",
+  "required": ["schema", "report", "summary", "scopes", "registers"],
+  "properties": {
+    "schema": {"const": "pssc.cov-report/1"},
+    "report": {"type": "string", "description": "The report path as given."},
+    "summary": {
+      "type": "object",
+      "required": ["statements", "arms", "registers", "bins"],
+      "description": "registers: hit = read or written at least once.",
+      "properties": {
+        "statements": {"$ref": "#/$defs/ratio"}, "arms": {"$ref": "#/$defs/ratio"},
+        "registers": {"$ref": "#/$defs/ratio"}, "bins": {"$ref": "#/$defs/ratio"}
+      }
+    },
+    "scopes": {
+      "type": "array", "description": "Sorted by scope.",
+      "items": {
+        "type": "object",
+        "required": ["scope", "file", "statements", "arms"],
+        "properties": {
+          "scope": {"type": "string", "description": "The function, action coroutine or component type."},
+          "file": {"type": ["string", "null"], "description": "The source path of the scope's first point that has one, as the model's provenance spells it."},
+          "statements": {"$ref": "#/$defs/ratio"}, "arms": {"$ref": "#/$defs/ratio"}
+        }
+      }
+    },
+    "registers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "reads", "writes", "bins"],
+        "properties": {
+          "path": {"type": "string", "description": "The register instance path."},
+          "type": {"type": ["string", "null"], "description": "Its register type."},
+          "reads": {"type": "integer"}, "writes": {"type": "integer"},
+          "bins": {"$ref": "#/$defs/ratio", "description": "Field value bins seen."}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "ratio": {
+      "type": "object", "required": ["hit", "total"],
+      "properties": {"hit": {"type": "integer"}, "total": {"type": "integer"}}
+    }
+  }
+}

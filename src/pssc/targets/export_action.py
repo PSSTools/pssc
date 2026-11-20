@@ -37,6 +37,15 @@ body, so the statement does nothing). What an action inherits is checked like
 what it declares: a base's activity, `rand` attributes or solve execs refuse
 the entry.
 
+Action functions (a pssc extension, P2.11). A function the action declares or
+inherits is rendered as a private function of the component next to the
+entry (`EntryPoint.helpers`), named `AF_PREFIX<entry>_<name>` so that it can
+clash neither with the component's own functions nor with another entry's
+copy; a call `f(...)` in the entry, a base body or another helper names it.
+Its body is in the component's scope like the entry's, so it may not read an
+action attribute either. `super.f()` is already a call of the private copy
+`action_inherit` made, which is one more helper.
+
 Parameters are future work. An exported action's parameters are associated by
 name with its fields (20.10.1), so when entries take them, a parameter becomes
 an argument of `EntryPoint.function` and the read of that field becomes a read
@@ -74,16 +83,24 @@ class EntryPoint:
     #: The base actions' bodies that `super;` reaches, nearest base first, each
     #: rendered as a private function of the component (`SUPER_PREFIX`).
     supers: Tuple[Any, ...] = ()
+    #: The action's functions (its own and inherited), each rendered as a
+    #: private function of the component (`AF_PREFIX`), with its arguments
+    #: and result.
+    helpers: Tuple[Any, ...] = ()
 
     @property
     def functions(self) -> Tuple[Any, ...]:
-        """Every function the entry renders: the entry itself, then `supers`."""
-        return (self.function,) + tuple(self.supers)
+        """Every function the entry renders: the entry itself, then `supers`,
+        then `helpers`."""
+        return (self.function,) + tuple(self.supers) + tuple(self.helpers)
 
 
 #: Name prefix of a base action body's function. `_pss_` names are the
 #: generator's own; no PSS identifier the model declares is rendered with it.
 SUPER_PREFIX = "_pss_super_"
+
+#: Name prefix of an action function rendered for an entry (`helpers`).
+AF_PREFIX = "_pss_af_"
 
 
 #: Solve-time execs. An entry is not solved, so it cannot run them.
@@ -140,9 +157,12 @@ class _InComponentScope:
     downstream that asks "is this the same type" would say no.
     """
 
-    def __init__(self, qname: str, fields: Sequence[str]):
+    def __init__(self, qname: str, fields: Sequence[str],
+                 calls: Optional[dict] = None):
         self.qname = qname
         self.fields = frozenset(fields)
+        #: An action function's name -> its helper's (`AF_PREFIX`).
+        self.calls = dict(calls or {})
 
     def __call__(self, node):
         if isinstance(node, list):
@@ -158,6 +178,8 @@ class _InComponentScope:
             return node
         if _is_self_attr(node, "comp"):
             return ir.TypeExprRefSelf(loc=node.loc)
+        if _is_self_attr(node) and node.attr in self.calls:
+            return dc.replace(node, attr=self.calls[node.attr])
         if _is_self_attr(node) and node.attr in self.fields:
             raise ExportActionError(
                 f"action '{self.qname}' reads its attribute '{node.attr}'; an "
@@ -195,11 +217,24 @@ def _check_atomic(qname: str, act, via: str = "") -> None:
             f"entry runs only its `exec body`")
 
 
+def _is_marker(act) -> bool:
+    """Is ``act`` an empty action outside any component, that marks what
+    derives from it (as `pssunit_pkg::test_a` marks a test)? It adds nothing
+    an entry runs, so the chain may end at it."""
+    return (getattr(act, "super", None) is None
+            and getattr(act, "activity_ir", None) is None
+            and not [f for f in (getattr(act, "fields", None) or [])
+                     if f.name != "comp"]
+            and not [fn for fn in (getattr(act, "functions", None) or [])
+                     if fn.body])
+
+
 def _chain(ctx, qname: str, act) -> List[Tuple[str, Any]]:
     """``[(qualified name, datatype)]`` from the action to its root base.
 
     The base is the one the front end recorded as the linker resolved it; a
-    name that is not an action of the model is refused, never guessed at.
+    name that is not an action of the model is refused, never guessed at --
+    except an empty package-scope marker (`_is_marker`), where the chain ends.
     """
     tm = getattr(ctx, "type_map", {}) or {}
     parents = getattr(ctx, "parent_comp_names", {}) or {}
@@ -211,6 +246,8 @@ def _chain(ctx, qname: str, act) -> List[Tuple[str, Any]]:
             return out
         name = getattr(sup, "ref_name", None) or getattr(sup, "name", None)
         base = tm.get(name) if name else None
+        if base is not None and name not in parents and _is_marker(base):
+            return out      # a package-scope marker (`pssunit_pkg::test_a`)
         if base is None or name not in parents:
             raise ExportActionError(
                 f"action '{q}' inherits from '{name}', which is not an action "
@@ -281,7 +318,10 @@ def entry_point(ctx, name: str) -> EntryPoint:
     # An action sees every attribute along its chain.
     fields = [f.name for _, a in chain
               for f in (getattr(a, "fields", None) or []) if f.name != "comp"]
-    scope = _InComponentScope(qname, fields)
+    afns = [f for f in (getattr(act, "functions", None) or [])
+            if (getattr(f, "metadata", None) or {}).get("action_function")]
+    scope = _InComponentScope(
+        qname, fields, {f.name: f"{AF_PREFIX}{entry}_{f.name}" for f in afns})
     # Only actions that DECLARE a body are levels: one that declares none runs
     # its base's, so `super;` above it reaches the next body down.
     levels = [(q, b) for q, b in ((q, _body_of(a)) for q, a in chain)
@@ -322,8 +362,17 @@ def entry_point(ctx, name: str) -> EntryPoint:
         if not calls_next:
             break
         k += 1
+    helpers = []
+    for f in afns:
+        if (f.metadata or {}).get("abstract"):
+            continue        # never called: a concrete action implements it
+        helpers.append(dc.replace(
+            f, name=scope.calls[f.name], body=scope(list(f.body or [])),
+            metadata=dict(f.metadata or {}, export_action=qname,
+                          action_function=f.name)))
     return EntryPoint(action=qname, action_dtype=act, comp=comp, name=entry,
-                      function=fns[0], supers=tuple(fns[1:]))
+                      function=fns[0], supers=tuple(fns[1:]),
+                      helpers=tuple(helpers))
 
 
 def entry_points(ctx, names: Sequence[str]) -> Tuple[EntryPoint, ...]:

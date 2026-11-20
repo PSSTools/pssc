@@ -1,0 +1,196 @@
+// MAINTAINER NOTE, not documentation.
+//
+// WHY FOUR FUNCTIONS SHARE ONE FILE. Rule 1 of the coding guidelines gives a
+// function its own file, and these are the only functions in this tree that do
+// not get one. The reason is rule 1's own test -- "would a build ever want this
+// element without its neighbours?" -- and the answer is no: each of the three
+// operations is a *_start() plus wait_completion(), and there is no
+// configuration of this model that has some of them and not the others. That is
+// the same argument rule 5.2 makes for a register bank.
+//
+// The cost is real: you cannot find transfer_single() by looking for
+// transfer_single.pss. src/pss/README.md's operation table is how you find it.
+//
+// The NON-BLOCKING halves keep their own files -- transfer_single_start.pss,
+// transfer_list_start.pss, stop_channel_start.pss, plus probe_status.pss and
+// check_completion.pss. Those are the arm-and-poll API, they are separately
+// includable, and they are where the device knowledge is. What follows adds only
+// the loop.
+import addr_reg_pkg::*;
+import wb_dma_cfg_pkg::*;
+import wb_dma_regs_pkg::*;
+import wb_dma_types_pkg::*;
+
+extend component wb_dma_ch_c {
+
+  // Block until the operation running on this channel reaches a terminal state.
+  //
+  // *§3.1.* Not an operation in its own right: it is the ONE place in this tree
+  // that waits for a completion, and therefore the whole of what the end-to-end
+  // operations add over their ``*_start()`` halves. Present on every profile --
+  // these functions do not need a scheduler, they need a way to wait, and that
+  // choice is made once, in ``wait_hint()``.
+  //
+  // Waiting is realised as ``repeat { probe_status; wait_hint }``, where
+  // ``probe_status()`` is the same single CSR read ``check_completion()`` uses.
+  // Nothing is edge-triggered: the condition is re-read from the device on every
+  // iteration, waking threads test their own conditions, and a spurious wake is
+  // harmless. That is what makes the loop correct whether ``wait_hint()``
+  // suspends on an interrupt or merely spins -- the two differ in what a lap
+  // costs, not in what the loop concludes. **The wake is a hint; CHn_CSR is the
+  // event.**
+  //
+  // That sharing is the argument for the whole start/wait split. The
+  // non-blocking core is not a second implementation to be kept in step with
+  // this one -- it is the body of this one, hoisted. A SystemVerilog regression
+  // that only ever calls ``transfer_single()`` still executes every register
+  // access a firmware caller will make, in the same order, so the two paths
+  // cannot drift. That is why there is no second regression for the firmware
+  // profile.
+  //
+  // **The side-effect problem (§3.1.1).** ``probe_status()`` runs an unbounded
+  // number of times and it consumes state: reading CHn_CSR clears ERR and the
+  // three interrupt-source bits. It is safe because the value is captured by the
+  // same read that observes it, the loop exits holding it, and AT MOST ONE
+  // OPERATION PER CHANNEL AT A TIME makes the polling thread the sole consumer.
+  // ``stop_channel()`` is the one deliberate exception.
+  //
+  // **The guard is released here** because an operation is over when its
+  // completion has been reported, which is this return. Releasing here rather
+  // than in each caller keeps the claim and the release one fact in two places
+  // instead of one in three.
+  //
+  // A stale ``wake`` token costs one read, exactly, and only on the event-wait
+  // profile: the loop probes BEFORE it ever waits, and ``wake``'s depth of 1
+  // caps the leftover at one, so the worst case is probe, wait-immediate, probe,
+  // wait-blocks. There is deliberately no drain step at entry -- it would cost
+  // the same read it saves.
+  //
+  // .. warning::
+  //    On the event-wait profile the routing prerequisite is load-bearing. A
+  //    test that never called ``configure_interrupt_routing()`` raises no
+  //    interrupt, so nothing calls ``notify_irq()``, so this blocks forever.
+  //    Blind posting softens it -- any ONE routed channel's interrupt wakes
+  //    every waiter -- so a partially routed test still makes progress and a
+  //    test that routes nothing deadlocks. That is intended: a hang is a more
+  //    honest result than a green test whose completion path was never real. If
+  //    you are debugging a hang here, check INT_MSK_A/B before you look at the
+  //    DMA. A polling profile has no such exposure, because ``wait_hint()``
+  //    spins -- the routing requirement belongs to the wait primitive, not to
+  //    this operation.
+  target function wb_dma_status_e wait_completion() {
+      wb_dma_status_e status;
+      bit             tok;
+
+      while (true) {
+          status = probe_status();
+          if (status != WB_DMA_PENDING) {
+              break;
+          }
+          wait_hint();
+      }
+
+      // The operation is over: drop the claim its *_start() took. The result is
+      // discarded because there is one case where the token is legitimately
+      // absent -- a *_start() that reported a double-start and returned without
+      // arming, whose caller is already in error.
+      inflight.try_get(tok);
+
+      return status;
+  }
+
+  // Run one transfer to completion and report how it ended.
+  //
+  // *§3.2 group 1, end-to-end.* Completes when the channel's DONE (or ERR)
+  // interrupt has been observed and the CHn_CSR read has returned the status and
+  // cleared the source. Waits for channel DONE or ERR -- this is the core driver
+  // FSM: submit, RUNNING, completion.
+  //
+  // The body is the two halves, named. All of the device knowledge -- what to
+  // program, in what order, which write arms the channel -- is in
+  // ``transfer_single_start()``; all of the waiting is in ``wait_completion()``.
+  // This function contributes the composition and the return type.
+  //
+  // .. warning::
+  //    Two callers' obligations this signature does not encode, both stated in
+  //    full on ``transfer_single_start()``. With
+  //    ``mode == WB_DMA_HW_HANDSHAKE`` this call cannot complete on its own:
+  //    something must be calling ``request_chunk()`` on the matching
+  //    ``wb_dma_hs_c`` concurrently (§2.2). With ``cfg.auto_restart`` this call
+  //    is DELIBERATELY NON-TERMINATING: another thread must clear ARS or abort
+  //    the channel. It is a blocking read on a stream that ends when someone
+  //    closes it, so an ARS transfer must never be the only operation a scenario
+  //    waits on.
+  //
+  // :param cfg: what to program before arming
+  target function wb_dma_status_e transfer_single(wb_dma_ch_cfg_s cfg) {
+      transfer_single_start(cfg);
+      return wait_completion();
+  }
+
+  // Run a descriptor chain to completion and report how it ended.
+  //
+  // *§3.2 group 3, end-to-end.* Completes when a descriptor with EOL set has
+  // been processed -- the engine stops, sets DONE in CHn_CSR, and raises the
+  // channel interrupt. Waits for EOL DONE, plus optional intermediate wakes:
+  // RUNNING has internal structure here, being per-descriptor progress inside
+  // one outstanding request.
+  //
+  // The four-step arming procedure of §3.3 lives in ``transfer_list_start()``,
+  // along with the note about which configuration a descriptor does NOT carry
+  // and must therefore come from a prior ``configure_channel()``.
+  //
+  // Unlike ``transfer_single()`` this completion is unconditional: ARS is
+  // documented as meaningless and ignored with external descriptors (§3.3). Two
+  // end-to-end operations differing only in completion contract is why neither
+  // subsumes the other -- and the difference is entirely in the arming half, not
+  // in the wait, which is why both share one ``wait_completion()``.
+  //
+  // :param head: head of the descriptor chain, as returned when the list was
+  //              built; must be reachable from interface 0
+  target function wb_dma_status_e transfer_list(addr_handle_t head) {
+      transfer_list_start(head);
+      return wait_completion();
+  }
+
+  // Abort whatever is running on this channel and wait for the abort to land.
+  //
+  // *§3.2 group 1, end-to-end.* Completes when STOP has been written, the
+  // channel has aborted, ERR is set, and the error interrupt (if enabled) has
+  // been raised. Waits for channel ERR -- an abort path that completes the SAME
+  // outstanding request from a second entry point.
+  //
+  // An abort is reported as an ERROR, not as a clean stop. Note the consequence
+  // for the scenario layer: the aborted ``transfer_single()`` also returns, with
+  // ``WB_DMA_ERROR``. Two end-to-end operations complete off one event.
+  //
+  // **It has its own loop rather than calling** ``wait_completion()``. By
+  // definition it aborts a transfer that is still running, so it violates the
+  // one-operation-per-channel rule that makes the polling read safe.
+  // ``stop_channel_start()`` claims no token, so this function holds none -- and
+  // ``wait_completion()`` ends by RELEASING one, which would take the aborted
+  // transfer's. Hence the loop below: identical to ``wait_completion()``'s
+  // except that it does not touch the guard. The duplication is five lines and
+  // it is the honest shape; a "do not release" flag would hide the one place in
+  // this model where two operations legitimately share a channel.
+  //
+  // See ``stop_channel_start()`` for what that sharing costs -- which read
+  // consumes the ERR is not determined by this model -- and for open item §6.5.
+  target function wb_dma_status_e stop_channel() {
+      wb_dma_status_e status;
+
+      stop_channel_start();
+
+      // wait_completion()'s loop, minus the guard release. See above.
+      while (true) {
+          status = probe_status();
+          if (status != WB_DMA_PENDING) {
+              break;
+          }
+          wait_hint();
+      }
+
+      return status;
+  }
+
+}

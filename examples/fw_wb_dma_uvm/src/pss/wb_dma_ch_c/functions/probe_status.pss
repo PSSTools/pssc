@@ -1,0 +1,49 @@
+import wb_dma_regs_pkg::*;
+import wb_dma_types_pkg::*;
+
+extend component wb_dma_ch_c {
+
+    // Decode one read of CHn_CSR into a status. The unguarded primitive both
+    // layers are built from.
+    //
+    // Not an operation, and not the API: no in-progress guard, no blocking, no
+    // loop. It exists because the guard and the decode are separable concerns
+    // and exactly one caller needs the decode without the guard.
+    //
+    // ``check_completion()``
+    //     Guard plus this. The non-blocking API; firmware calls it.
+    //
+    // ``wait_completion()``
+    //     This, in a loop, under a wake. The guard would be wrong inside a loop
+    //     -- it is claimed once by the ``*_start()`` and released once by the
+    //     operation that started it, not taken and put back on every poll.
+    //
+    // ``stop_channel()``
+    //     This, in a loop, holding no token. Stop is the documented exemption
+    //     from the one-operation-per-channel rule, so it has none to release.
+    //
+    // ERR is tested before DONE because the two are not exclusive: an aborted
+    // transfer can retire with both set, and a stop that lands on an
+    // already-completed channel certainly does. Reporting ERROR is the
+    // conservative reading -- a scenario that expected DONE learns something
+    // went wrong, where the reverse order would hide it.
+    //
+    // .. warning::
+    //    Callers outside this component should use ``check_completion()``. PSS
+    //    has no visibility control, so this cannot be enforced -- but reaching
+    //    past the guard opts out of the only detector for the read-to-clear
+    //    hazard, and the read is a side effect every time.
+    target function wb_dma_status_e probe_status() {
+        wb_dma_csr_s csr;
+
+        csr = regs.csr.read();
+
+        if (csr.err == 1) {
+            return WB_DMA_ERROR;
+        }
+        if (csr.done == 1) {
+            return WB_DMA_DONE;
+        }
+        return WB_DMA_PENDING;
+    }
+}

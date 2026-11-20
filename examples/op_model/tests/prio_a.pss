@@ -1,0 +1,45 @@
+import pssunit_pkg::*;
+import wb_dma_types_pkg::*;
+
+extend component wb_dma_fx_c {
+    // One software transfer on channel 0 at priority ``prio``; the channel
+    // must be programmed with that priority and complete.
+    function void prio_copy(bit[2] prio) {
+        wb_dma_ch_cfg_s cfg;
+        cfg.src = 0x1000;
+        cfg.dst = 0x2000;
+        cfg.tot_sz = 16;
+        cfg.inc_src = 1;
+        cfg.inc_dst = 1;
+        cfg.mode = WB_DMA_SOFTWARE;
+        cfg.prio = prio;
+        status_sequence("dma.ch[0].regs.csr", "done", 0);
+        status_sequence("dma.ch[0].regs.csr", "done", 1);
+        check(dma.ch[0].transfer_single(cfg) == WB_DMA_DONE, "transfer completes");
+        check_field("dma.ch[0].regs.csr", "prio", prio, "priority programmed");
+    }
+
+    // A property: any priority, solved afresh on each run.
+    @pssunit_pkg::property {.runs=8}
+    action prio_a : test_a {
+        rand bit[2] prio;
+        exec body { comp.prio_copy(prio); }
+    }
+
+    // A test function: routing a bank's interrupts writes its mask register.
+    @pssunit_pkg::test
+    function void t_routing_mask() {
+        dma.configure_interrupt_routing(WB_DMA_INT_B, 0x5);
+        check_reg("dma.regs.int_msk_b", 0x5, "bank B mask");
+        check_written("dma.regs.int_msk_b", "ch", 0x5, "channel mask written");
+    }
+
+    // An expected error: routing bank A must touch int_msk_a, which this
+    // test forbids, so the run stops with the fake's access error.
+    @pssunit_pkg::test
+    @pssunit_pkg::expect_error {.text="fail_on_access"}
+    function void t_forbidden_mask() {
+        fail_on_access("dma.regs.int_msk_a");
+        dma.configure_interrupt_routing(WB_DMA_INT_A, 0x1);
+    }
+}

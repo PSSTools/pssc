@@ -1,0 +1,22 @@
+extend component wb_dma_ch_c {
+
+    // Publish a new software read pointer for a channel's circular buffer.
+    //
+    // Traversed repeatedly, concurrently with a live ``transfer_single_a`` on
+    // the same channel, to model a software reader draining a FIFO in memory.
+    // The data the reader consumes is read on the test writer's own memory path;
+    // this action only publishes how far it has got.
+    //
+    // :realizes:  set_software_pointer()
+    // :exec body: writes CHn_SWPTR
+    action set_software_pointer_a {
+        rand bit[31] ptr;
+        rand bit     enable;
+
+        constraint default enable == 1;
+
+        exec body {
+            comp.set_software_pointer(ptr, enable);
+        }
+    }
+}

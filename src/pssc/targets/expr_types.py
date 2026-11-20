@@ -133,6 +133,18 @@ def convert(v: int, t: PssType) -> int:
     return v
 
 
+def _entry_helpers(fn, tm) -> Dict[str, Any]:
+    """For a body of an exported action's entry: its action's functions, by
+    helper name (`AF_PREFIX<entry>_<name>`). Empty for any other body."""
+    from .export_action import AF_PREFIX
+    qn = (getattr(fn, "metadata", None) or {}).get("export_action")
+    act = tm.get(qn) if qn else None
+    if act is None:
+        return {}
+    pre = f"{AF_PREFIX}{qn.split('::')[-1]}_"
+    return {pre + f.name: f for f in getattr(act, "functions", None) or []}
+
+
 class ExprTypes:
     """Types for the expressions of one body: ``fn`` running in ``comp``."""
 
@@ -141,6 +153,9 @@ class ExprTypes:
         tm = getattr(ctx, "type_map", {}) or {}
         self._tm = tm
         self.functions = getattr(ctx, "functions", {}) or {}
+        #: An exported action's functions, by the name its entry calls them
+        #: (`export_action.EntryPoint.helpers`).
+        self.helpers = _entry_helpers(fn, tm)
         self.args: Dict[str, Any] = {
             a.arg: a.annotation
             for a in (getattr(getattr(fn, "args", None), "args", None) or [])}
@@ -359,7 +374,7 @@ class ExprTypes:
                 t = self._method_result(recv.dtype, name)
                 if t is not None:
                     return t
-        fn = self.functions.get(name)
+        fn = self.functions.get(name) or self.helpers.get(name)
         if fn is not None:
             return self._returns(fn)
         return None

@@ -5,6 +5,7 @@ See `_matrix` for what a case is and how it is run.
 from __future__ import annotations
 
 from ._matrix import ALL, Case, define_tests, on, ONE, Refused
+from ._matrix import pyvm_xfail, BC_ARRAY, BC_SELECT, BC_STRUCT_LIT, BC_STRUCT_RET
 
 
 #: A derived struct used where its base is expected (8.3, 20.3.2): C, C++
@@ -504,5 +505,28 @@ component pss_top {""" + ONE + """
   }
 }""", ["2 1 4"], covers=("DT-TYPEDEF.2", "DT-TYPEDEF", "DT-STRUCT.11")),
 }
+
+pyvm_xfail(CASES, 'pyvm: bc cannot move a conditional of structs (ExprIfExp)',
+           'a conditional of struct values')
+pyvm_xfail(CASES, 'pyvm: bc rejects a derived struct assigned to a base',
+           'a derived struct assigned to a base')
+pyvm_xfail(CASES, 'pyvm: a static const struct reads as zeros (0 0 0, want 3 4 7)',
+           'a static const struct in a component')
+pyvm_xfail(CASES, BC_STRUCT_LIT,
+           'a struct literal',
+           'struct equality with a partial literal',
+           'struct literals assigned, nested and passed')
+pyvm_xfail(CASES, BC_ARRAY,
+           'a struct literal overwrites every member',
+           'a struct with an array member')
+pyvm_xfail(CASES, BC_STRUCT_RET,
+           'a struct returned by a function',
+           'typedefs of a struct and an array')
+pyvm_xfail(CASES, BC_SELECT,
+           "default values: an enum's first item, a bare local")
+pyvm_xfail(CASES, 'pyvm: bc has no struct parameter of a recursive function',
+           'recursion with a struct parameter')
+pyvm_xfail(CASES, 'pyvm: bc has no reference through an array element (ExprSubscript .x)',
+           'struct defaults in array elements')
 
 test_construct = define_tests(CASES)

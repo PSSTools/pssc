@@ -190,6 +190,8 @@ name the model no longer carries.
   "path": ["regs", "channels", "CSR"],
   "offset": 32,
   "strides": [32],
+  "counts": [31],
+  "array_at": [1],
   "bits": 32,
   "access_width": 32,
   "access": "READWRITE",
@@ -202,6 +204,8 @@ name the model no longer carries.
 | `path` | the register-group path from the component to the register |
 | `offset` | the **folded** constant byte offset from the handle bound to the group `path[0]` |
 | `strides` | one byte stride per array dimension in `path`, outermost first |
+| `counts` | the element count of each of those arrays, in the same order |
+| `array_at` | for each of those arrays, the index in `path` of the segment it indexes |
 | `bits` | the register's declared width |
 | `access_width` | the bus transaction width it is accessed at (8/16/32/64) |
 | `access` | `READWRITE`, `READONLY` or `WRITEONLY` |

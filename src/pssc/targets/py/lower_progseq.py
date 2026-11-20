@@ -361,6 +361,13 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
         self.chan_fields = {f.name for f in channel_fields(comp)}
         self.subs = {s.name: s for s in sub_components(comp)}
         self.model_ops = {f.name for f in comp.functions}
+        #: Exported actions' functions rendered beside them in this component
+        #: (`export_action.EntryPoint.helpers`), by name.
+        self.entry_helpers = {
+            h.name: h for e in (model.entries_of(comp)
+                                if hasattr(model, "entries_of") else ())
+            for h in e.helpers}
+        self.model_ops |= set(self.entry_helpers)
         #: The loop variables in scope, by IR name, with their PSS types --
         #: how `ExprTypes` learns the type of one. See `_loop_var`. Before
         #: the scan below, which renders a channel's index.
@@ -489,6 +496,11 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
         finally:
             self._pending = outer
             self._ind = outer_ind
+
+    def line_directive(self, path: str, line: int, pad: str) -> List[str]:
+        # Python has no line directive: a comment at the statement's indent,
+        # which a reader (or a tool mapping a traceback back) can follow.
+        return [f"{pad}# {path}:{line}"]
 
     # -- expressions ---------------------------------------------------------
 
@@ -984,10 +996,9 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
         if _dt_name(func) != "ExprAttribute" or func.attr not in (
                 "get_offset_of_instance", "get_offset_of_instance_array"):
             return None
-        chain = self._chain(func.value)
-        if not chain or len(chain) != 1 or chain[0][0] not in self.reg_groups:
+        group = self._fold_group(self._chain(func.value))
+        if group is None:
             return None
-        group = self.reg_groups[chain[0][0]]
         m, args = func.attr, call.args
         if m == "get_offset_of_instance":
             return f"0x{scalar_offset(group, _str_const(args[0], m)):x}"
@@ -997,10 +1008,65 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
     #: A group offset is folded wherever it is called.
     call_fold = call_offset_fold
 
+    def _fold_group(self, chain):
+        """The register group `self.<group>` or `self.<sub>...<group>` names
+        (an element of a sub-component array has the same offsets as any
+        other), else ``None``."""
+        if not chain:
+            return None
+        if len(chain) == 1:
+            return self.reg_groups.get(chain[0][0])
+        sub = self.subs.get(chain[0][0])
+        for name, _ in chain[1:-1]:
+            if sub is None:
+                return None
+            sub = {s.name: s for s in sub_components(sub.dtype)}.get(name)
+        if sub is None:
+            return None
+        return {f.name: f.datatype for f in sub.dtype.fields
+                if field_is_reg_group(f)}.get(chain[-1][0])
+
     def call_model_op(self, call) -> Optional[str]:
         return self._model_call(call)
 
     call_import = call_model_op
+
+    def call_subcomp_ctor(self, call) -> Optional[str]:
+        # Also outside a constructor: a fixture's setup function binds its
+        # device (`dma.initialize(base("dma"))`), which here constructs it anew.
+        return self._sub_ctor_call(call)
+
+    def _sub_ctor_call(self, call) -> Optional[str]:
+        """`ch[i].initialize(...)` -> constructing the sub-component object.
+
+        A sub-component is a real object here, unlike in C where it is embedded
+        storage that `_init` writes into. So the constructor CALL is the
+        construction, and the list element is assigned rather than addressed.
+        """
+        func = call.func
+        if _dt_name(func) != "ExprAttribute":
+            return None
+        chain = self._chain(func.value)
+        if not chain or len(chain) != 1 or chain[0][0] not in self.subs:
+            return None
+        sub = self.subs[chain[0][0]]
+        if func.attr not in (self.ctor_names or ()):
+            raise ValueError(
+                f"'{sub.name}.{func.attr}()' is called during construction, but "
+                f"only a sub-component's constructor may be. An operation is a "
+                f"target function and cannot run in a solve exec.")
+        fn = next((f for f in getattr(sub.dtype, "functions", None) or ()
+                   if f.name == func.attr), None)
+        args = [f"self.{IMPORTS_ATTR}"] + self.call_args(call.args, fn)
+        ctor = f"{class_name(getattr(sub.dtype, 'name', ''))}(" + \
+               ", ".join(args) + ")"
+        idx = chain[0][1]
+        target = (f"self.{mangle(sub.name)}[{self.expr(idx)}]"
+                  if idx is not None else f"self.{mangle(sub.name)}")
+        # An ASSIGNMENT, not a call, which is why this reaches the output only
+        # through `stmt_expr`: PSS states sub-component construction as a call
+        # statement, and it is never an operand of anything.
+        return f"{target} = {ctor}"
 
     # -- registers -----------------------------------------------------------
 
@@ -1451,6 +1517,7 @@ class _BodyEmitter(IntSemantics, CallDispatch, BodyWalker):
                 and _dt_name(func.value) == "TypeExprRefSelf"):
             name = func.attr
         callee = (self.imports.get(name) if name in self.imports else
+                  self.entry_helpers.get(name) or
                   next((f for f in getattr(self.comp, "functions", None) or ()
                         if f.name == name), None))
         args = self.call_args(call.args, callee)
@@ -2172,9 +2239,6 @@ class _CtorMixin:
     #: calls on a register GROUP, which has no object in the generated Python.
     call_fold = call_structural
 
-    def call_subcomp_ctor(self, call) -> Optional[str]:
-        return self._sub_ctor_call(call)
-
     def _group_call(self, call) -> Optional[str]:
         func = call.func
         if _dt_name(func) != "ExprAttribute":
@@ -2209,38 +2273,6 @@ class _CtorMixin:
             f"unsupported register-group method '{m}'. This target folds group "
             f"offsets at generation time; a method it does not know would "
             f"become a call on a group object that does not exist.")
-
-    def _sub_ctor_call(self, call) -> Optional[str]:
-        """`ch[i].initialize(...)` -> constructing the sub-component object.
-
-        A sub-component is a real object here, unlike in C where it is embedded
-        storage that `_init` writes into. So the constructor CALL is the
-        construction, and the list element is assigned rather than addressed.
-        """
-        func = call.func
-        if _dt_name(func) != "ExprAttribute":
-            return None
-        chain = self._chain(func.value)
-        if not chain or len(chain) != 1 or chain[0][0] not in self.subs:
-            return None
-        sub = self.subs[chain[0][0]]
-        if func.attr not in (self.ctor_names or ()):
-            raise ValueError(
-                f"'{sub.name}.{func.attr}()' is called during construction, but "
-                f"only a sub-component's constructor may be. An operation is a "
-                f"target function and cannot run in a solve exec.")
-        fn = next((f for f in getattr(sub.dtype, "functions", None) or ()
-                   if f.name == func.attr), None)
-        args = [f"self.{IMPORTS_ATTR}"] + self.call_args(call.args, fn)
-        ctor = f"{class_name(getattr(sub.dtype, 'name', ''))}(" + \
-               ", ".join(args) + ")"
-        idx = chain[0][1]
-        target = (f"self.{mangle(sub.name)}[{self.expr(idx)}]"
-                  if idx is not None else f"self.{mangle(sub.name)}")
-        # An ASSIGNMENT, not a call, which is why this reaches the output only
-        # through `stmt_expr`: PSS states sub-component construction as a call
-        # statement, and it is never an operand of anything.
-        return f"{target} = {ctor}"
 
 
 class _CtorEmitter(_CtorMixin, _BodyEmitter):

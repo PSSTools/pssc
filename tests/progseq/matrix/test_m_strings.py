@@ -6,6 +6,7 @@ See `_matrix` for what a case is and how it is run.
 from __future__ import annotations
 
 from ._matrix import Case, define_tests, ERROR, on, ONE, Refused
+from ._matrix import pyvm_xfail
 
 W37 = ("W37: an out-of-range sub-string is not an error "
        "(8.6.3; ruling R12 open)")
@@ -322,5 +323,8 @@ component pss_top {""" + ONE + """
         refused=on(("c", "cpp"), Refused([r": a string", r"ruling R3"])),
         covers=("LIB-ERR.3",)),
 }
+
+pyvm_xfail(CASES, "pyvm: C's refusal (a string in an import, ruling R3) is in C's code generation, not the gate pyvm runs",
+           'a string in an import signature')
 
 test_construct = define_tests(CASES)

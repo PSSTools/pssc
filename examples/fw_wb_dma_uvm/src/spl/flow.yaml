@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=https://dv-flow.github.io/flow.dv.schema.json
+fragment:
+  # Behavioral (class-based) DMA core model -- the target-independent SPL model.
+  # It speaks the protocol-independent fw_mem_if edge (fw-hdl) plus fw.proto.gpio's
+  # ABSTRACT drive API (gpio_drive_if) for its interrupt outputs -- so it needs
+  # fw-hdl.hdl.sv-src (fw_hdl_pkg + fw_std_pkg) and fw.proto.gpio.files (for
+  # fw_proto_gpio_pkg). It depends on gpio's API interface-class only: the kit's
+  # transactor bridges ride along in the package (compiled, never instanced). NO
+  # signal-level / Wishbone content here -- that is the RTL-boundary binding, which
+  # lives in src/spl-rtl (task `spl-rtl`). incdir '.' (from sv-package) picks up the
+  # model-component .svh includes. The dir now holds exactly one package, so the
+  # sv-package glob sequences it -- no explicit include needed.
+  tasks:
+  #
+  # `reg-model` (src/rdl/flow.yaml) is the REGISTER MODEL: wb_dma_reg_pkg,
+  # generated from src/rdl/*.rdl by peakrdl-fw-hdl. wb_dma_spl_pkg imports it,
+  # so it compiles between the fw-hdl library it is built on (fw_reg_block /
+  # fw_reg) and this fragment's own sources -- hence its position in the list:
+  # `needs` order IS compile order.
+  - export: spl
+    uses: sv-package
+    needs: [fw-hdl.hdl.sv-src, reg-model, fw.proto.wb.files, fw.proto.gpio.files]
